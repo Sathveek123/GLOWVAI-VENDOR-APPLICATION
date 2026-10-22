@@ -1,0 +1,1354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GlowVAI Enterprise Admin Console — Dark Store Fleet & Multi-Vendor Cloud Command</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,600;0,700;1,600&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+  
+  <!-- Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- Firebase SDK (Compat CDN for standalone client hosting on GitHub Pages) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  
+  <!-- Socket.IO Client -->
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #ffffff;
+      --card: #ffffff;
+      --card-alt: #f8fafc;
+      --line: #e2e8f0;
+      --line-subtle: #f8fafc;
+      --ink: #0f172a;
+      --ink-muted: #334155;
+      --sub: #64748b;
+      --gold: #1d4ed8;
+      --dark-btn: #1d4ed8;
+      --dark-btn-hover: #1e40af;
+      --accent: #1d4ed8;
+      --green: #16a34a;
+      --amber: #d97706;
+      --red: #dc2626;
+      --purple: #1d4ed8;
+      --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      padding: 24px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    code, pre { font-family: 'JetBrains Mono', monospace; }
+
+    /* Top Navigation Bar */
+    .header {
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow-sm);
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .logo {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: #0f172a;
+      color: #facc15;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 22px;
+      box-shadow: 0 4px 10px rgba(15,23,42,0.15);
+    }
+    .badge-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 20px;
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      color: #059669;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .badge-live::before {
+      content: '';
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10b981;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1; transform:scale(1);} 50%{opacity:0.4; transform:scale(0.85);} }
+
+    .btn {
+      background: var(--dark-btn);
+      color: #ffffff;
+      border: 0;
+      padding: 10px 18px;
+      border-radius: 9px;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.18s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      box-shadow: var(--shadow-sm);
+    }
+    .btn:hover { background: var(--dark-btn-hover); transform: translateY(-1px); }
+    .btn-gold {
+      background: #f59e0b;
+      color: #0f172a;
+      font-weight: 700;
+    }
+    .btn-gold:hover { background: #d97706; color: #ffffff; }
+    .btn-secondary {
+      background: #ffffff;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+    }
+    .btn-secondary:hover { background: #f8fafc; border-color: #94a3b8; }
+    .btn-sm {
+      padding: 6px 12px;
+      font-size: 12px;
+      border-radius: 6px;
+    }
+
+    /* Top Stats Grid */
+    .grid-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px 22px;
+      box-shadow: var(--shadow-sm);
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .stat-card:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-md);
+    }
+    .stat-label {
+      font-size: 12px;
+      color: var(--sub);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-bottom: 6px;
+      font-weight: 700;
+    }
+    .stat-val { font-size: 28px; font-weight: 700; letter-spacing: -0.6px; color: var(--ink); }
+
+    /* Main Navigation Tabs */
+    .nav-tabs-bar {
+      display: flex;
+      gap: 8px;
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 6px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow-sm);
+      overflow-x: auto;
+    }
+    .tab-item {
+      padding: 10px 20px;
+      font-size: 13.5px;
+      font-weight: 700;
+      color: var(--sub);
+      border-radius: 10px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .tab-item.active {
+      background: var(--dark-btn);
+      color: #ffffff;
+      box-shadow: var(--shadow-sm);
+    }
+    .tab-badge {
+      background: rgba(255,255,255,0.25);
+      color: #ffffff;
+      font-size: 12px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-weight: 700;
+    }
+    .tab-item:not(.active) .tab-badge {
+      background: #e2e8f0;
+      color: #475569;
+    }
+
+    /* Section Wrapper */
+    .panel-section {
+      display: none;
+    }
+    .panel-section.active {
+      display: block;
+    }
+
+    /* Section Card Box */
+    .section-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 22px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow-sm);
+    }
+    .section-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .section-title {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* Filter Toolbar */
+    .toolbar-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    .search-input {
+      padding: 9px 14px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      font-size: 13px;
+      background: #ffffff;
+      color: var(--ink);
+      outline: none;
+      min-width: 240px;
+      font-family: inherit;
+    }
+    .search-input:focus { border-color: var(--accent); }
+    .select-dropdown {
+      padding: 9px 14px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      font-size: 13px;
+      background: #ffffff;
+      color: var(--ink);
+      outline: none;
+      font-family: inherit;
+      cursor: pointer;
+    }
+
+    /* Tables */
+    .table-container {
+      overflow-x: auto;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+    }
+    th {
+      background: #f8fafc;
+      padding: 12px 16px;
+      font-weight: 700;
+      color: #475569;
+      border-bottom: 1px solid var(--line);
+      text-transform: uppercase;
+      font-size: 12px;
+      letter-spacing: 0.5px;
+    }
+    td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+      color: var(--ink);
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #fbfcfe; }
+
+    /* Badges & Pills */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .pill-green { background: #ecfdf5; color: #16a34a; border: 1px solid #bbf7d0; }
+    .pill-amber { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+    .pill-blue { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+    .pill-purple { background: #faf5ff; color: #7c3aed; border: 1px solid #e9d5ff; }
+    .pill-red { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+
+    /* Steppers */
+    .stepper {
+      display: inline-flex;
+      align-items: center;
+      background: #f1f5f9;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      overflow: hidden;
+    }
+    .stepper-btn {
+      background: transparent;
+      border: none;
+      padding: 5px 9px;
+      cursor: pointer;
+      font-weight: 700;
+      color: var(--ink);
+      font-size: 13px;
+    }
+    .stepper-btn:hover { background: #e2e8f0; }
+    .stepper-val {
+      padding: 5px 10px;
+      font-weight: 700;
+      min-width: 38px;
+      text-align: center;
+      font-size: 13px;
+    }
+
+    /* Modal Backdrop */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px);
+      z-index: 999;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+    .modal-box {
+      background: #ffffff;
+      border-radius: 20px;
+      width: 100%;
+      max-width: 640px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 24px;
+      box-shadow: var(--shadow-lg);
+      position: relative;
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .modal-title { font-size: 18px; font-weight: 700; color: var(--ink); }
+    .modal-close {
+      background: #f1f5f9;
+      border: none;
+      width: 32px;
+      height: 32px;
+      border-radius: 16px;
+      cursor: pointer;
+      font-size: 16px;
+      color: #64748b;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-close:hover { background: #e2e8f0; color: #0f172a; }
+    .form-group { margin-bottom: 14px; }
+    .form-label { display: block; font-size: 12px; font-weight: 700; color: #475569; margin-bottom: 5px; text-transform: uppercase; }
+    .form-control {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      font-size: 13.5px;
+      font-family: inherit;
+      outline: none;
+    }
+    .form-control:focus { border-color: var(--accent); }
+
+    /* Vendor Dossier Grid */
+    .vendor-grid-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 18px;
+    }
+    .vendor-card {
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: var(--shadow-sm);
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+    .vendor-card:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-md);
+      border-color: #cbd5e1;
+    }
+    .vendor-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+    .vendor-avatar-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .vendor-avatar {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: #f1f5f9;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 18px;
+      border: 1px solid #e2e8f0;
+    }
+    .vendor-info h4 { font-size: 15px; font-weight: 700; color: var(--ink); }
+    .vendor-info p { font-size: 12px; color: var(--sub); }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <div class="header">
+    <div class="brand">
+      <div class="logo">G</div>
+      <div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <h1 style="font-size:20px; font-weight: 700; letter-spacing:-0.5px;">GlowVAI Admin Console</h1>
+          <span class="badge-live" id="firebaseSyncBadge">Firebase Live Sync</span>
+        </div>
+        <p style="font-size:12.5px; color:var(--sub);">Dark Store Fleet, Multi-Vendor Catalog & Real-Time Orders Database</p>
+      </div>
+    </div>
+
+    <!-- Quick Action Controls -->
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <button class="btn btn-secondary" onclick="exportDatabaseJson()">
+        <i class="fa-solid fa-download"></i> Export Data
+      </button>
+      <button class="btn btn-gold" onclick="openSimulateOrderModal()">
+        <i class="fa-solid fa-bolt"></i> Simulate Live Order
+      </button>
+    </div>
+  </div>
+
+  <!-- Top Operational Stats Grid -->
+  <div class="grid-stats">
+    <div class="stat-card">
+      <div class="stat-label">Active Dark Stores</div>
+      <div class="stat-val" id="statActiveVendors">4</div>
+      <div style="font-size:12px; color:#16a34a; font-weight:700; margin-top:4px;">🟢 100% SLA Coverage</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total SKUs in Catalog</div>
+      <div class="stat-val" id="statTotalSkus">48</div>
+      <div style="font-size:12px; color:var(--sub); margin-top:4px;">Across all vendors</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Today's Orders</div>
+      <div class="stat-val" id="statOrdersToday">18</div>
+      <div style="font-size:12px; color:#2563eb; font-weight:700; margin-top:4px;">⚡ 8.4m avg dispatch</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Platform 12% Revenue</div>
+      <div class="stat-val" id="statPlatformRev">₹24,890</div>
+      <div style="font-size:12px; color:#16a34a; font-weight:700; margin-top:4px;">+14.8% net growth</div>
+    </div>
+  </div>
+
+  <!-- Navigation Tabs Bar -->
+  <div class="nav-tabs-bar">
+    <div class="tab-item active" onclick="switchTab('vendors', this)">
+      <i class="fa-solid fa-store"></i> All Vendors & Dark Stores
+      <span class="tab-badge" id="tabBadgeVendors">4</span>
+    </div>
+    <div class="tab-item" onclick="switchTab('inventory', this)">
+      <i class="fa-solid fa-boxes-stacked"></i> Vendor Stock & Catalog
+      <span class="tab-badge" id="tabBadgeInventory">0</span>
+    </div>
+    <div class="tab-item" onclick="switchTab('orders', this)">
+      <i class="fa-solid fa-clipboard-list"></i> Live Orders & Settlement
+      <span class="tab-badge" id="tabBadgeOrders">0</span>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- TAB 1: ALL VENDORS & DARK STORES                                     -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-vendors" class="panel-section active">
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">
+          <i class="fa-solid fa-shop"></i> Registered Merchants & Fulfillment Hubs
+        </div>
+        <button class="btn btn-dark" onclick="openAddVendorModal()">
+          <i class="fa-solid fa-plus"></i> Onboard New Vendor
+        </button>
+      </div>
+
+      <!-- Vendor Cards Grid -->
+      <div class="vendor-grid-cards" id="vendorsContainer">
+        <!-- Rendered by JS / Firebase -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- TAB 2: VENDOR STOCK & CATALOG MATRIX                                 -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-inventory" class="panel-section">
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">
+          <i class="fa-solid fa-cubes"></i> Live Stock & Inventory Input by Vendors
+        </div>
+        <button class="btn btn-dark" onclick="openAddProductModal()">
+          <i class="fa-solid fa-plus"></i> Add Product SKU
+        </button>
+      </div>
+
+      <!-- Filter Toolbar -->
+      <div class="toolbar-row">
+        <input type="text" id="inventorySearch" class="search-input" placeholder="🔍 Search SKU, product name, or brand..." oninput="filterInventoryTable()">
+        <select id="vendorSelectFilter" class="select-dropdown" onchange="filterInventoryTable()">
+          <option value="ALL">All Dark Stores / Vendors</option>
+        </select>
+        <select id="categoryFilter" class="select-dropdown" onchange="filterInventoryTable()">
+          <option value="ALL">All Categories</option>
+          <option value="Serums">Serums</option>
+          <option value="Face Wash">Face Wash</option>
+          <option value="Sunscreen">Sunscreen</option>
+          <option value="Groceries">Groceries</option>
+          <option value="Personal Care">Personal Care</option>
+        </select>
+      </div>
+
+      <!-- Inventory Table -->
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>SKU / Product</th>
+              <th>Category</th>
+              <th>Vendor / Store</th>
+              <th>Selling Price</th>
+              <th>Stock on Hand</th>
+              <th>Available Stock</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="inventoryTableBody">
+            <!-- Populated live -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- TAB 3: LIVE ORDERS & SETTLEMENT                                      -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div id="tab-orders" class="panel-section">
+    <div class="section-card">
+      <div class="section-header">
+        <div class="section-title">
+          <i class="fa-solid fa-receipt"></i> Orders Queue & 12% Take-Rate Settlement
+        </div>
+        <div style="font-size:13px; font-weight:700; color:#16a34a;">
+          ⚡ Auto-split: 88% Vendor Instant Wallet · 12% Admin Fee
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Order ID</th>
+              <th>Customer</th>
+              <th>Assigned Vendor</th>
+              <th>Items</th>
+              <th>Grand Total</th>
+              <th>Platform 12%</th>
+              <th>Vendor 88%</th>
+              <th>Status</th>
+              <th>Timeline</th>
+            </tr>
+          </thead>
+          <tbody id="ordersTableBody">
+            <!-- Populated live -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- MODAL 1: INDIVIDUAL VENDOR DOSSIER                                   -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div class="modal-backdrop" id="vendorDossierModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 class="modal-title" id="dossierVendorName">Vendor Dossier</h3>
+        <button class="modal-close" onclick="closeModal('vendorDossierModal')">&times;</button>
+      </div>
+      <div id="dossierContent">
+        <!-- Rendered dynamically -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- MODAL 2: ADD PRODUCT SKU                                             -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div class="modal-backdrop" id="addProductModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 class="modal-title">Publish Product to Database</h3>
+        <button class="modal-close" onclick="closeModal('addProductModal')">&times;</button>
+      </div>
+      <form onsubmit="handleCreateProductSubmit(event)">
+        <div class="form-group">
+          <label class="form-label">Vendor Store</label>
+          <select id="modalProdVendor" class="form-control" required></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Product Name</label>
+          <input type="text" id="modalProdName" class="form-control" placeholder="e.g. Minimalist Niacinamide 10%" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Category</label>
+          <select id="modalProdCat" class="form-control">
+            <option value="Serums">Serums</option>
+            <option value="Face Wash">Face Wash</option>
+            <option value="Sunscreen">Sunscreen</option>
+            <option value="Groceries">Groceries</option>
+            <option value="Personal Care">Personal Care</option>
+          </select>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label class="form-label">Selling Price (₹)</label>
+            <input type="number" id="modalProdPrice" class="form-control" placeholder="599" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Initial Stock Quantity</label>
+            <input type="number" id="modalProdStock" class="form-control" placeholder="24" required>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-dark" style="width:100%; justify-content:center; margin-top:10px;">
+          Save Product & Sync to Database 🚀
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- MODAL 3: ONBOARD NEW VENDOR                                          -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div class="modal-backdrop" id="addVendorModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 class="modal-title">Onboard New Dark Store Vendor</h3>
+        <button class="modal-close" onclick="closeModal('addVendorModal')">&times;</button>
+      </div>
+      <form onsubmit="handleCreateVendorSubmit(event)">
+        <div class="form-group">
+          <label class="form-label">Shop / Dark Store Name</label>
+          <input type="text" id="modalVendorShop" class="form-control" placeholder="e.g. Tirupati Quick Mart" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Owner Full Name</label>
+          <input type="text" id="modalVendorOwner" class="form-control" placeholder="e.g. Ramesh Naidu" required>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="form-group">
+            <label class="form-label">Phone Number</label>
+            <input type="text" id="modalVendorPhone" class="form-control" placeholder="98480 12345" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Store ID</label>
+            <input type="text" id="modalVendorStoreId" class="form-control" placeholder="DS-TPT-01" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Locality / Hub Address</label>
+          <input type="text" id="modalVendorAddress" class="form-control" placeholder="e.g. MR Palli Circle, Tirupati" required>
+        </div>
+        <button type="submit" class="btn btn-dark" style="width:100%; justify-content:center; margin-top:10px;">
+          Register Vendor & Activate Store 🟢
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- MODAL 4: SET EXACT STOCK QUANTITY                                    -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div class="modal-backdrop" id="setExactStockModal">
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header">
+        <h3 class="modal-title">Adjust Exact Stock</h3>
+        <button class="modal-close" onclick="closeModal('setExactStockModal')">&times;</button>
+      </div>
+      <form onsubmit="handleSetExactStockSubmit(event)">
+        <input type="hidden" id="exactStockProdId">
+        <div class="form-group">
+          <label class="form-label">New Total Stock Units</label>
+          <input type="number" id="exactStockInput" class="form-control" min="0" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Reason for adjustment</label>
+          <input type="text" id="exactStockReason" class="form-control" value="Physical shelf audit" required>
+        </div>
+        <button type="submit" class="btn btn-dark" style="width:100%; justify-content:center; margin-top:10px;">
+          Confirm & Save Stock Update 💾
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- MODAL 5: SIMULATE ORDER                                              -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <div class="modal-backdrop" id="simulateOrderModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 class="modal-title">Simulate Customer Quick-Commerce Order</h3>
+        <button class="modal-close" onclick="closeModal('simulateOrderModal')">&times;</button>
+      </div>
+      <form onsubmit="handleSimulateOrderSubmit(event)">
+        <div class="form-group">
+          <label class="form-label">Target Vendor Store</label>
+          <select id="simVendorSelect" class="form-control"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Customer Name</label>
+          <input type="text" id="simCustomerName" class="form-control" value="Priya Sharma (Benz Circle)" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Product Item</label>
+          <select id="simProductSelect" class="form-control"></select>
+        </div>
+        <button type="submit" class="btn btn-gold" style="width:100%; justify-content:center; margin-top:10px;">
+          ⚡ Dispatch Live Order (Triggers Ringing Sound & Popup)
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <!-- JAVASCRIPT: FIREBASE TWO-WAY REAL-TIME CLIENT ENGINE                  -->
+  <!-- ══════════════════════════════════════════════════════════════════════ -->
+  <script>
+    // 1. Firebase Configuration
+    const firebaseConfig = {
+      apiKey: "AIzaSyBmnNTVqZ5vmSjimFLv3YXnQ_agHwR5H3s",
+      authDomain: "glowvai-v2.firebaseapp.com",
+      databaseURL: "https://glowvai-v2-default-rtdb.firebaseio.com",
+      projectId: "glowvai-v2",
+      storageBucket: "glowvai-v2.firebasestorage.app",
+      messagingSenderId: "1094835664474",
+      appId: "1:1094835664474:web:6333c6d5be3a998b0a8a63"
+    };
+
+    let rtdb = null;
+    let vendorsState = [];
+    let inventoryState = [];
+    let ordersState = [];
+
+    // Initialize Firebase
+    try {
+      firebase.initializeApp(firebaseConfig);
+      rtdb = firebase.database();
+      console.log('✅ Connected directly to Firebase Realtime Database (glowvai-v2)');
+      document.getElementById('firebaseSyncBadge').textContent = 'Firebase Live Connected 🟢';
+    } catch (e) {
+      console.warn('Firebase init warning:', e);
+      document.getElementById('firebaseSyncBadge').textContent = 'REST Fallback Active 🟡';
+    }
+
+    // Connect to Socket.IO backend if available
+    let socket = null;
+    try {
+      socket = io('http://localhost:4000', { reconnectionAttempts: 5, timeout: 2000 });
+      socket.on('connect', () => console.log('✅ Connected to local backend socket gateway'));
+      socket.on('inventory:stockUpdated', updateStockLocally);
+      socket.on('order:statusUpdated', updateOrderLocally);
+    } catch (_) {}
+
+    // 2. Real-time Firebase RTDB Listeners
+    if (rtdb) {
+      // Vendors Listener
+      rtdb.ref('vendors').on('value', (snap) => {
+        const val = snap.val() || {};
+        vendorsState = Object.values(val);
+        renderVendors();
+        updateStats();
+        populateVendorDropdowns();
+      });
+
+      // Inventory Listener
+      rtdb.ref('inventory').on('value', (snap) => {
+        const val = snap.val() || {};
+        inventoryState = Object.values(val);
+        renderInventoryTable();
+        updateStats();
+      });
+
+      // Orders Listener
+      rtdb.ref('orders').on('value', (snap) => {
+        const val = snap.val() || {};
+        ordersState = Object.values(val).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        renderOrdersTable();
+        updateStats();
+      });
+    }
+
+    // 3. Fallback Initial Seed if database is blank
+    async function checkAndSeedInitialData() {
+      if (vendorsState.length === 0) {
+        try {
+          const res = await fetch('http://localhost:4000/api/vendor/VND-001');
+          const data = await res.json();
+          if (data?.vendor) {
+            vendorsState = [data.vendor];
+            renderVendors();
+          }
+        } catch (_) {}
+      }
+    }
+    setTimeout(checkAndSeedInitialData, 1500);
+
+    // 4. Tab Switching
+    function switchTab(tabId, el) {
+      document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel-section').forEach(s => s.classList.remove('active'));
+      el.classList.add('active');
+      document.getElementById('tab-' + tabId).classList.add('active');
+    }
+
+    // 5. Render Vendors Grid
+    function renderVendors() {
+      const container = document.getElementById('vendorsContainer');
+      document.getElementById('tabBadgeVendors').textContent = vendorsState.length;
+      document.getElementById('statActiveVendors').textContent = vendorsState.filter(v => v.isOnline).length + ' / ' + vendorsState.length;
+
+      if (!vendorsState.length) {
+        container.innerHTML = '<div style="grid-column:1/-1; text-align:center; padding:40px; color:#94a3b8;">No registered vendors found.</div>';
+        return;
+      }
+
+      container.innerHTML = vendorsState.map(v => `
+        <div class="vendor-card" onclick="openVendorDossier('${v.vendorId}')">
+          <div class="vendor-card-header">
+            <div class="vendor-avatar-row">
+              <div class="vendor-avatar">${(v.shopName || v.name || 'V').charAt(0)}</div>
+              <div class="vendor-info">
+                <h4>${v.shopName || v.name}</h4>
+                <p>ID: <b>${v.vendorId}</b> · Store: ${v.storeId || 'DS-VIJ-01'}</p>
+              </div>
+            </div>
+            <span class="pill ${v.isOnline ? 'pill-green' : 'pill-amber'}">
+              ${v.isOnline ? '🟢 ON DUTY' : '🔴 PAUSED'}
+            </span>
+          </div>
+          <div style="font-size:12.5px; color:#475569; margin:10px 0;">
+            📍 ${v.locality || 'Benz Circle'}, ${v.city || 'Vijayawada'}<br>
+            📞 ${v.phone || '9848022338'} · ⭐ ${v.rating || 4.9} rating
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--line); padding-top:10px; font-size:12px;">
+            <span style="color:#2563eb; font-weight:700;">View Products & Stock &rarr;</span>
+            <span style="color:#64748b;">${(v.categories || []).slice(0, 2).join(', ')}</span>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // 6. Render Inventory Table
+    function renderInventoryTable() {
+      const tbody = document.getElementById('inventoryTableBody');
+      const search = (document.getElementById('inventorySearch').value || '').toLowerCase();
+      const vendorFilter = document.getElementById('vendorSelectFilter').value;
+      const catFilter = document.getElementById('categoryFilter').value;
+
+      document.getElementById('tabBadgeInventory').textContent = inventoryState.length;
+      document.getElementById('statTotalSkus').textContent = inventoryState.length;
+
+      const filtered = inventoryState.filter(it => {
+        const matchSearch = !search || (it.name || '').toLowerCase().includes(search) || (it.sku || '').toLowerCase().includes(search);
+        const matchVendor = vendorFilter === 'ALL' || it.vendorId === vendorFilter || it.storeId === vendorFilter;
+        const matchCat = catFilter === 'ALL' || it.category === catFilter;
+        return matchSearch && matchVendor && matchCat;
+      });
+
+      if (!filtered.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:30px; color:#94a3b8;">No inventory items match the filter.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = filtered.map(it => {
+        const stock = it.stockOnHand ?? it.stock ?? 0;
+        const available = it.availableStock ?? stock;
+        const isLow = stock <= (it.lowStockThreshold || 5);
+        return `
+          <tr>
+            <td>
+              <div style="font-weight: 700; color:var(--ink);">${it.name}</div>
+              <div style="font-size: 12px; color:#64748b;">SKU: ${it.sku || it.productId}</div>
+            </td>
+            <td><span class="pill pill-blue">${it.category || 'General'}</span></td>
+            <td><span class="pill pill-purple">${it.storeId || it.vendorId || 'DS-VIJ-01'}</span></td>
+            <td style="font-weight: 700;">₹${it.price || it.sellingPrice || it.mrp}</td>
+            <td>
+              <div class="stepper">
+                <button class="stepper-btn" onclick="stepStock('${it.productId}', -1)">-</button>
+                <div class="stepper-val">${stock}</div>
+                <button class="stepper-btn" onclick="stepStock('${it.productId}', 1)">+</button>
+              </div>
+            </td>
+            <td>
+              <span style="font-weight: 700; color:${available > 0 ? '#16a34a' : '#dc2626'};">${available}</span>
+              ${it.reservedStock ? `<span style="font-size: 12px; color:#d97706;"> (${it.reservedStock} locked)</span>` : ''}
+            </td>
+            <td>
+              <span class="pill ${stock === 0 ? 'pill-red' : isLow ? 'pill-amber' : 'pill-green'}">
+                ${stock === 0 ? 'OUT OF STOCK' : isLow ? 'LOW STOCK' : 'IN STOCK'}
+              </span>
+            </td>
+            <td>
+              <button class="btn btn-secondary btn-sm" onclick="setExactStockModal('${it.productId}', ${stock})">Set Qty</button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // 7. Render Orders Table
+    function renderOrdersTable() {
+      const tbody = document.getElementById('ordersTableBody');
+      document.getElementById('tabBadgeOrders').textContent = ordersState.length;
+      document.getElementById('statOrdersToday').textContent = ordersState.length;
+
+      let totalGross = 0;
+      ordersState.forEach(o => totalGross += (o.pricing?.grandTotal || 0));
+      const platformTake = Math.round(totalGross * 0.12);
+      document.getElementById('statPlatformRev').textContent = '₹' + platformTake.toLocaleString('en-IN');
+
+      if (!ordersState.length) {
+        tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; padding:30px; color:#94a3b8;">No orders recorded yet.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = ordersState.map(o => {
+        const grand = o.pricing?.grandTotal || 599;
+        const adminFee = Math.round(grand * 0.12);
+        const vendorNet = grand - adminFee;
+        return `
+          <tr>
+            <td style="font-weight: 700;">#${o.orderId}</td>
+            <td>
+              <div style="font-weight:700;">${o.customerName || 'Customer'}</div>
+              <div style="font-size: 12px; color:#64748b;">${o.customerPhone || '+91 98480 22338'}</div>
+            </td>
+            <td><span class="pill pill-purple">${o.vendorId || o.storeId || 'VND-001'}</span></td>
+            <td style="font-size:12px;">${(o.items || []).map(i => `${i.quantity || 1}x ${i.productName || i.name}`).join(', ')}</td>
+            <td style="font-weight: 700;">₹${grand}</td>
+            <td style="color:#2563eb; font-weight: 700;">₹${adminFee}</td>
+            <td style="color:#16a34a; font-weight: 700;">₹${vendorNet}</td>
+            <td><span class="pill pill-green">${o.status}</span></td>
+            <td style="font-size: 12px; color:#64748b;">${new Date(o.createdAt || Date.now()).toLocaleTimeString()}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // 8. Stock Step Adjustment (Updates Firebase directly)
+    async function stepStock(productId, delta) {
+      const item = inventoryState.find(i => i.productId === productId);
+      if (!item) return;
+      const current = item.stockOnHand ?? item.stock ?? 0;
+      const next = Math.max(0, current + delta);
+
+      // Optimistic update
+      item.stockOnHand = next;
+      item.availableStock = Math.max(0, next - (item.reservedStock || 0));
+      item.stock = next;
+      renderInventoryTable();
+
+      // Write to Firebase RTDB
+      if (rtdb) {
+        await rtdb.ref(`inventory/${productId}`).update({
+          stockOnHand: next,
+          availableStock: item.availableStock,
+          stock: next,
+          isAvailable: next > 0,
+          updatedAt: Date.now()
+        });
+      }
+
+      // Write to Backend API
+      try {
+        await fetch(`http://localhost:4000/api/inventory/${productId}/stock`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ delta, reason: 'Admin adjustment' })
+        });
+      } catch (_) {}
+    }
+
+    // 9. Vendor Dossier Modal
+    function openVendorDossier(vendorId) {
+      const v = vendorsState.find(x => x.vendorId === vendorId);
+      if (!v) return;
+      document.getElementById('dossierVendorName').textContent = v.shopName || v.name;
+      const vItems = inventoryState.filter(i => i.vendorId === vendorId || i.storeId === v.storeId);
+
+      document.getElementById('dossierContent').innerHTML = `
+        <div style="display:flex; justify-content:space-between; margin-bottom:16px;">
+          <div>
+            <div style="font-size:14px; font-weight: 700;">Owner: ${v.name}</div>
+            <div style="font-size:12px; color:#64748b;">Store ID: <b>${v.storeId}</b> · Phone: <b>${v.phone}</b></div>
+            <div style="font-size:12px; color:#64748b;">Address: ${v.address || v.locality || 'Vijayawada'}</div>
+          </div>
+          <span class="pill ${v.isOnline ? 'pill-green' : 'pill-amber'}">
+            ${v.isOnline ? '🟢 ON DUTY' : '🔴 PAUSED'}
+          </span>
+        </div>
+
+        <h4 style="font-size:14px; font-weight: 700; margin:16px 0 8px;">Products Input by this Vendor (${vItems.length} SKUs):</h4>
+        <div style="max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:10px; padding:10px;">
+          ${vItems.length === 0 ? '<p style="color:#94a3b8; font-size:12px;">No products added yet.</p>' : vItems.map(it => `
+            <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #f1f5f9; font-size:12.5px;">
+              <span><b>${it.name}</b> (SKU: ${it.sku || it.productId})</span>
+              <span>Stock: <b>${it.stockOnHand ?? it.stock}</b> · ₹${it.price || it.sellingPrice}</span>
+            </div>
+          `).join('')}
+        </div>
+
+        <button class="btn btn-dark" style="width:100%; justify-content:center; margin-top:16px;" onclick="filterToVendor('${v.vendorId}')">
+          Filter Main Catalog for this Vendor &rarr;
+        </button>
+      `;
+      document.getElementById('vendorDossierModal').classList.add('open');
+    }
+
+    function filterToVendor(vendorId) {
+      closeModal('vendorDossierModal');
+      switchTab('inventory', document.querySelectorAll('.tab-item')[1]);
+      document.getElementById('vendorSelectFilter').value = vendorId;
+      filterInventoryTable();
+    }
+
+    // 10. Modals Management (Open / Close Handlers)
+    function openAddProductModal() {
+      populateVendorDropdowns();
+      document.getElementById('addProductModal').classList.add('open');
+    }
+    function openAddVendorModal() {
+      document.getElementById('addVendorModal').classList.add('open');
+    }
+    function setExactStockModal(productId, currentStock) {
+      document.getElementById('exactStockProdId').value = productId;
+      document.getElementById('exactStockInput').value = currentStock;
+      document.getElementById('setExactStockModal').classList.add('open');
+    }
+    function openSimulateOrderModal() {
+      populateVendorDropdowns();
+      populateProductDropdowns();
+      document.getElementById('simulateOrderModal').classList.add('open');
+    }
+    function closeModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('open');
+    }
+
+    function populateVendorDropdowns() {
+      const select = document.getElementById('vendorSelectFilter');
+      const modalSelect = document.getElementById('modalProdVendor');
+      const simSelect = document.getElementById('simVendorSelect');
+
+      const options = vendorsState.map(v => `<option value="${v.vendorId}">${v.shopName || v.name} (${v.storeId || v.vendorId})</option>`).join('');
+      if (select) select.innerHTML = '<option value="ALL">All Dark Stores / Vendors</option>' + options;
+      if (modalSelect) modalSelect.innerHTML = options;
+      if (simSelect) simSelect.innerHTML = options;
+    }
+
+    function populateProductDropdowns() {
+      const prodSelect = document.getElementById('simProductSelect');
+      if (prodSelect) {
+        if (inventoryState && inventoryState.length > 0) {
+          prodSelect.innerHTML = inventoryState.map(p => `<option value="${p.productId || p.id}">${p.name} - ₹${p.price || p.sellingPrice || 599}</option>`).join('');
+        } else {
+          const defaultItems = [
+            { id: 'SKU-SER-001', name: 'Minimalist 10% Niacinamide Face Serum (30ml)', price: 599 },
+            { id: 'SKU-CLN-002', name: 'CeraVe Hydrating Cleanser for Dry Skin (237ml)', price: 999 },
+            { id: 'SKU-SUN-003', name: 'Re\'equil Ultra Matte Dry Touch Sunscreen SPF 50', price: 699 },
+            { id: 'SKU-GRO-004', name: 'Aashirvaad Superior MP Whole Wheat Atta (5kg)', price: 280 },
+            { id: 'SKU-MOI-006', name: 'Laneige Water Sleeping Mask (70ml)', price: 1450 }
+          ];
+          prodSelect.innerHTML = defaultItems.map(p => `<option value="${p.id}">${p.name} - ₹${p.price}</option>`).join('');
+        }
+      }
+    }
+
+    // 11. Create Product Handler
+    async function handleCreateProductSubmit(e) {
+      e.preventDefault();
+      const vendorId = document.getElementById('modalProdVendor').value;
+      const name = document.getElementById('modalProdName').value;
+      const category = document.getElementById('modalProdCat').value;
+      const price = parseFloat(document.getElementById('modalProdPrice').value) || 599;
+      const stock = parseInt(document.getElementById('modalProdStock').value) || 24;
+
+      const productId = 'SKU-' + Date.now().toString().slice(-6);
+      const newProd = {
+        productId,
+        name,
+        category,
+        sku: 'SKU-' + name.slice(0, 4).toUpperCase() + '-' + Math.floor(100 + Math.random() * 900),
+        price,
+        sellingPrice: price,
+        mrp: Math.round(price * 1.15),
+        stockOnHand: stock,
+        availableStock: stock,
+        reservedStock: 0,
+        lowStockThreshold: 5,
+        isAvailable: true,
+        vendorId,
+        storeId: 'DS-VIJ-01',
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+
+      // Direct Firebase Write
+      if (rtdb) {
+        await rtdb.ref(`inventory/${productId}`).set(newProd);
+      }
+
+      // Backend API write
+      try {
+        await fetch('http://localhost:4000/api/inventory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newProd)
+        });
+      } catch (_) {}
+
+      closeModal('addProductModal');
+      alert(`Product "${name}" successfully saved to database!`);
+    }
+
+    // 12. Create Vendor Handler
+    async function handleCreateVendorSubmit(e) {
+      e.preventDefault();
+      const shopName = document.getElementById('modalVendorShop').value;
+      const name = document.getElementById('modalVendorOwner').value;
+      const phone = document.getElementById('modalVendorPhone').value;
+      const storeId = document.getElementById('modalVendorStoreId').value;
+      const address = document.getElementById('modalVendorAddress').value;
+
+      const vendorId = 'VND-' + Math.floor(100 + Math.random() * 900);
+      const newVendor = {
+        vendorId,
+        storeId,
+        name,
+        shopName,
+        phone,
+        address,
+        locality: address,
+        city: 'Vijayawada',
+        isOnline: true,
+        rating: 4.9,
+        totalOrders: 0,
+        kycStatus: 'APPROVED',
+        categories: ['Skincare', 'Serums', 'Groceries'],
+        joinedAt: Date.now(),
+        updatedAt: Date.now()
+      };
+
+      if (rtdb) {
+        await rtdb.ref(`vendors/${vendorId}`).set(newVendor);
+      }
+
+      closeModal('addVendorModal');
+      alert(`Vendor "${shopName}" onboarded successfully!`);
+    }
+
+    // 13. Set Exact Stock Handler
+    async function handleSetExactStockSubmit(e) {
+      e.preventDefault();
+      const productId = document.getElementById('exactStockProdId').value;
+      const quantity = parseInt(document.getElementById('exactStockInput').value) || 0;
+      const reason = document.getElementById('exactStockReason').value;
+
+      const item = inventoryState.find(i => i.productId === productId);
+      if (item) {
+        item.stockOnHand = quantity;
+        item.availableStock = Math.max(0, quantity - (item.reservedStock || 0));
+        item.stock = quantity;
+        renderInventoryTable();
+      }
+
+      if (rtdb) {
+        await rtdb.ref(`inventory/${productId}`).update({
+          stockOnHand: quantity,
+          availableStock: item ? item.availableStock : quantity,
+          stock: quantity,
+          isAvailable: quantity > 0,
+          updatedAt: Date.now()
+        });
+      }
+
+      try {
+        await fetch(`http://localhost:4000/api/inventory/${productId}/stock`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ exactQuantity: quantity, reason })
+        });
+      } catch (_) {}
+
+      closeModal('setExactStockModal');
+      alert(`Stock for SKU ${productId} updated to ${quantity} units.`);
+    }
+
+    // 14. Simulate Live Customer Order Handler
+    async function handleSimulateOrderSubmit(e) {
+      e.preventDefault();
+      const vendorId = document.getElementById('simVendorSelect').value;
+      const customerName = document.getElementById('simCustomerName').value;
+      const productId = document.getElementById('simProductSelect').value;
+      const prod = inventoryState.find(p => p.productId === productId) || inventoryState[0] || { name: 'Minimalist Niacinamide Serum', price: 599 };
+
+      const orderId = 'ORD-' + Math.floor(100000 + Math.random() * 900000);
+      const newOrder = {
+        orderId,
+        vendorId,
+        storeId: 'DS-VIJ-01',
+        customerName,
+        customerPhone: '+91 98480 22338',
+        shippingAddress: { fullAddress: 'Flat 4B, Srinagar Colony, Benz Circle, Vijayawada' },
+        items: [{ productId: prod.productId, productName: prod.name, quantity: 1, price: prod.price || prod.sellingPrice || 599 }],
+        pricing: { subtotal: prod.price || 599, deliveryFee: 0, discount: 0, grandTotal: prod.price || 599 },
+        status: 'PENDING',
+        payment: { method: 'UPI_ONLINE', status: 'PAID' },
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+
+      // Write to Firebase
+      if (rtdb) {
+        await rtdb.ref(`orders/${orderId}`).set(newOrder);
+      }
+
+      // Trigger via backend
+      try {
+        await fetch('http://localhost:4000/api/orders/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newOrder)
+        });
+      } catch (_) {}
+
+      closeModal('simulateOrderModal');
+      alert(`⚡ Order #${orderId} dispatched live! The vendor app is now ringing with incoming alert.`);
+    }
+
+    function filterInventoryTable() {
+      renderInventoryTable();
+    }
+
+    function updateStats() {
+      // Handled in renderers
+    }
+
+    function updateStockLocally({ productId, stockOnHand, availableStock }) {
+      const it = inventoryState.find(i => i.productId === productId);
+      if (it) {
+        it.stockOnHand = stockOnHand;
+        it.availableStock = availableStock;
+        it.stock = stockOnHand;
+        renderInventoryTable();
+      }
+    }
+
+    function updateOrderLocally({ orderId, status }) {
+      const o = ordersState.find(x => x.orderId === orderId);
+      if (o) {
+        o.status = status;
+        renderOrdersTable();
+      }
+    }
+
+    function exportDatabaseJson() {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({
+        vendors: vendorsState,
+        inventory: inventoryState,
+        orders: ordersState,
+        exportedAt: new Date().toISOString()
+      }, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `glowvai_database_${Date.now()}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+    }
+  </script>
+</body>
+</html>

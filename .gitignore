@@ -1,0 +1,36 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+.expo/
+.expo-shared/
+web-build/
+*.log
+
+# Secrets and local configuration: never commit
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+local.properties
+service-account*.json
+*-adminsdk-*.json
+
+# Gradle and Android caches
+.gradle/
+.gradle_cache/
+mobile/android/.gradle/
+mobile/android/app/build/
+mobile/android/build/
+*.iml
+.idea/
+.vscode/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+
+# Generated JS bundle for Android
+mobile/android/app/src/main/assets/index.android.bundle
+mobile/dist/

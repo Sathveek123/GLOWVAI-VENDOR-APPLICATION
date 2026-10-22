@@ -105,10 +105,12 @@ Mobile (`mobile/.env`, see `mobile/.env.example`):
 |---|---|
 | `EXPO_PUBLIC_VENDOR_API_URL` | Backend base URL. Use your computer's LAN IP when testing on a phone. |
 | `EXPO_PUBLIC_VENDOR_ID`, `EXPO_PUBLIC_STORE_ID` | Vendor and store identifiers for the session |
+| `EXPO_PUBLIC_ENABLE_SOCKET` | Turns the realtime connection on or off |
+| `EXPO_PUBLIC_ORDER_POLL_INTERVAL_MS` | How often orders are polled as a fallback to the socket |
 | `EXPO_PUBLIC_FIREBASE_*` | Firebase web configuration (project identifiers, not secrets) |
-| `EXPO_PUBLIC_CUSTOMER_APP_URL` | Optional. Shows the customer storefront link when set. |
+| `EXPO_PUBLIC_CUSTOMER_APP_URL` | Optional. Shows the customer storefront link when set. Not in `.env.example`; add it when needed. |
 
-Backend (`backend/.env`, see `backend/.env.example`): `PORT`, `NODE_ENV`, `JWT_SECRET`, `VENDOR_API_KEY`, and Firebase project settings. These are secrets. Keep them out of version control.
+Backend (`backend/.env`, see `backend/.env.example`): `PORT`, `NODE_ENV`, `FIREBASE_SERVICE_ACCOUNT_PATH`, `JWT_SECRET`, and `CORS_ORIGINS`. These are secrets. Keep them out of version control. The full table is in [docs/development/02-environment-variables.md](docs/development/02-environment-variables.md).
 
 ## Engineering standards
 
@@ -152,10 +154,14 @@ Backend (`backend/.env`, see `backend/.env.example`): `PORT`, `NODE_ENV`, `JWT_S
 
 ## Documentation
 
-- [docs/12_TYPOGRAPHY_SYSTEM.md](docs/12_TYPOGRAPHY_SYSTEM.md): fonts, sizes, weights, and the wordmark
-- [docs/11_UI_FRONTEND_FULL_AUDIT.md](docs/11_UI_FRONTEND_FULL_AUDIT.md): full front-end audit and what was fixed
-- [docs/10_PRODUCT_UX_AND_ARCHITECTURE_AUDIT.md](docs/10_PRODUCT_UX_AND_ARCHITECTURE_AUDIT.md): product and architecture audit
-- [docs/00_MASTER_OVERVIEW_AND_ARCHITECTURE.md](docs/00_MASTER_OVERVIEW_AND_ARCHITECTURE.md) through [docs/09_TESTING_SIMULATION_AND_TROUBLESHOOTING_GUIDE.md](docs/09_TESTING_SIMULATION_AND_TROUBLESHOOTING_GUIDE.md): system design, API reference, realtime, inventory, financials, and testing
+The full index is in [docs/README.md](docs/README.md). It covers:
+
+- **Features:** 12 feature docs in [docs/features/](docs/features/)
+- **Mobile screens:** 11 files in [docs/mobile/](docs/mobile/), one group per flow
+- **Web pages:** 10 files in [docs/web/](docs/web/), one group per area
+- **Development:** setup, environment, testing, release, and troubleshooting in [docs/development/](docs/development/)
+- **Design:** colour, components, and states in [docs/design/](docs/design/), plus [typography](docs/12_TYPOGRAPHY_SYSTEM.md)
+- **Architecture specs** from earlier phases, numbered 00 to 11 in [docs/](docs/)
 
 ## Branches
 

@@ -38,7 +38,7 @@
 - Scan item field and a checklist per item.
 - Tamper-seal serial and handover PIN.
 - *Confirm handover →*.
-- **Known issue:** the web page shows the test PIN `4892` as a "readable manual verification PIN". See [Feature 04](../features/04-packing-and-rider-handover.md). Remove before release.
+- The PIN boxes are empty and the rider's code is not shown. The test PIN `4892` was removed. See [Feature 04](../features/04-packing-and-rider-handover.md).
 
 ## Known gaps
 

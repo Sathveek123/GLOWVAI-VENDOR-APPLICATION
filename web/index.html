@@ -1363,14 +1363,14 @@
 
               <!-- 4-Digit OTP PIN -->
               <div style="display:flex; justify-content:center; gap:8px; margin-bottom:12px;">
-                <div style="width:48px; height:52px; background:#EFF6FF; border:1.5px solid #BFDBFE; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight: 700; color:#1D4ED8;">4</div>
-                <div style="width:48px; height:52px; background:#EFF6FF; border:1.5px solid #BFDBFE; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight: 700; color:#1D4ED8;">8</div>
-                <div style="width:48px; height:52px; background:#EFF6FF; border:1.5px solid #BFDBFE; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight: 700; color:#1D4ED8;">9</div>
-                <div style="width:48px; height:52px; background:#EFF6FF; border:1.5px solid #BFDBFE; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight: 700; color:#1D4ED8;">2</div>
+                <div style="width:48px; height:52px; background:#EFF6FF; border:1.5px solid #BFDBFE; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight: 700; color:#1D4ED8;"></div>
+                <div style="width:48px; height:52px; background:#EFF6FF; border:1.5px solid #BFDBFE; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight: 700; color:#1D4ED8;"></div>
+                <div style="width:48px; height:52px; background:#EFF6FF; border:1.5px solid #BFDBFE; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight: 700; color:#1D4ED8;"></div>
+                <div style="width:48px; height:52px; background:#EFF6FF; border:1.5px solid #BFDBFE; border-radius:8px; display:flex; align-items:center; justify-content:center; font-size:24px; font-weight: 700; color:#1D4ED8;"></div>
               </div>
 
               <div style="font-size:12px; color:#64748B; margin-bottom:16px;">
-                Readable manual verification PIN: <strong style="color:#1D4ED8;">4892</strong>
+                Ask the rider for the 4-digit PIN shown in their app.
               </div>
 
               <button class="btn-primary" style="width:100%; height:48px; justify-content:center; background:#16A34A; font-size:14px; font-weight: 700; border-radius:10px;" onclick="showToast('Order #GV-9912 dispatched successfully!')">
@@ -4240,19 +4240,6 @@
             <div style="font-size:12px; color:#334155; line-height:1.5; margin-top:2px;">
               Sensitive owner workflows (Payout bank accounts, GST tax filings, KYC document replacements, and security settings) remain strictly locked to your primary owner login and cannot be delegated to staff accounts.
             </div>
-          </div>
-        </div>
-
-        <!-- Edge State Testing Toolbar -->
-        <div style="background:#F1F5F9; border:1px solid #CBD5E1; border-radius:10px; padding:10px 14px; margin-bottom:16px; display:flex; align-items:center; justify-content:space-between;">
-          <div style="font-size: 12px; font-weight: 700; color:#475569; text-transform:uppercase; letter-spacing:0.5px;">
-            🧪 Test Team Access Edge States:
-          </div>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="edge-btn" id="edge-team-loading-btn" onclick="toggleWebTeamEdgeState('loading')">Loading Skeletons</button>
-            <button class="edge-btn" id="edge-team-offline-btn" onclick="toggleWebTeamEdgeState('offline')">Offline Mode</button>
-            <button class="edge-btn" onclick="document.getElementById('modal-last-owner-alert').classList.add('open')">Last Owner Protection</button>
-            <button class="edge-btn" onclick="document.getElementById('modal-active-packing-alert').classList.add('open')">Active Order Warning</button>
           </div>
         </div>
 

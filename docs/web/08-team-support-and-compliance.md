@@ -14,7 +14,7 @@
 - **Granular permission matrix** for the selected member.
 - **Notices:** "Last owner protection", "Active order warning".
 - **States:** loading skeletons, offline mode.
-- **Known issue:** the "Test team access edge states" strip is visible. Gate it behind `__DEV__` or remove it before release.
+- The "Test team access edge states" strip has been removed. The offline banner still works through its own state.
 
 ## Merchant support (`page-support`)
 
@@ -39,4 +39,4 @@
 
 - Team roles and permissions are display only. The server must enforce them.
 - Tickets and audit exports are sample data.
-- Developer edge-state strips are still visible on the team page.
+- The team page no longer has a developer strip. Other web pages still do (see [web pages 09](09-insights-growth-and-operations.md)).

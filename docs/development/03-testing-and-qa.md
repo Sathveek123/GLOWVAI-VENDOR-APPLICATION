@@ -38,4 +38,4 @@ Most screens have a strip of buttons that force a state (for example "Rider dela
 - No automated UI tests.
 - No backend tests.
 - The home-screen stall has no reproduction script. See [Feature 12](../features/12-realtime-and-offline-behaviour.md#known-issue-home-stall).
-- Developer strips still visible on the web team page (see [web pages 08](../web/08-team-support-and-compliance.md)).
+- Developer state strips still visible on the other web pages (see [web pages 09](../web/09-insights-growth-and-operations.md)).

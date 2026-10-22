@@ -18,7 +18,7 @@ After picking, the packer confirms each item, seals the bag, and shows a pickup 
 - The expected PIN comes only from the order record. There is no fallback constant.
 - If the order has no PIN, the screen says the parcel must not be handed over.
 - A wrong PIN shows "Ask the rider to check the code again" and does not dispatch.
-- **The web packing screen displays the test PIN `4892`** as a "Readable manual verification PIN". This is in the static prototype, not behind a development flag. Remove it before any release.
+- The web packing screen used to display the test PIN `4892`. It now shows empty PIN boxes and asks the rider for the code. The web confirm button still does not check a PIN; that check must be built on the server.
 
 ## Edge states
 

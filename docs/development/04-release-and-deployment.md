@@ -10,8 +10,8 @@
 Work through this list in order. Do not skip items.
 
 1. **Secrets:** no `.env`, keystore, `local.properties`, or service account file is tracked. Check `git ls-files | grep -iE "\.env|keystore|service-account"`.
-2. **Test PINs and test codes:** `4892` must not be reachable in a production build. Check the OTP screen, the handover screen, and the web handover page. The web packing page currently displays `4892` and must be fixed.
-3. **Developer strips:** the web team page still shows its test strip. Gate or remove it.
+2. **Test PINs and test codes:** `4892` must not be reachable in a production build. Check the OTP screen and the mobile handover screen. The web handover page no longer displays it.
+3. **Developer strips:** the web team page strip is removed. The other web pages still have state strips (see [web pages 09](../web/09-insights-growth-and-operations.md)). Gate or remove them.
 4. **Splash route list:** the web splash page lists internal navigation. Remove it.
 5. **Coming-soon screens:** confirm the list in [mobile screens](../mobile/01-entry-and-auth.md) matches what the team expects to show.
 6. **Admin console role check:** not implemented. The admin console must not ship to users until it is.

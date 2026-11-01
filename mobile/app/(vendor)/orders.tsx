@@ -1,1390 +1,626 @@
 /**
- * SCREEN 11: Orders List & History Filter
- * Desktop 1440x1024 Reference Layout with Left Navigation Rail & Right Order Preview Drawer
+ * Orders queue: every order for this store, filtered by status, date and search.
+ * Rows come only from the orders API. Empty and error states say what happened.
  * File: mobile/app/(vendor)/orders.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import Wordmark from '../../src/components/Wordmark';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
   TextInput,
-  StyleSheet,
-  SafeAreaView,
+  Pressable,
   ScrollView,
-  TouchableOpacity,
-  RefreshControl,
   ActivityIndicator,
   Platform,
-  Alert,
-  Modal,
+  RefreshControl,
+  StyleSheet,
   useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
+import { FontFamily } from '../../src/theme/typography';
 import useVendorStore from '../../src/store/useVendorStore';
-import { useVendorSession } from '../../src/services/session';
-import { ordersApi } from '../../src/services/api';
 import type { Order } from '../../src/store/useVendorStore';
+import { ordersApi } from '../../src/services/api';
+import ScreenShell from '../../src/components/ScreenShell';
 import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
 import MobileBottomNav from '../../src/components/MobileBottomNav';
-import AppHeader from '../../src/components/AppHeader';
 
-
-const FILTER_TABS = [
-  { key: 'ALL',        label: 'All Orders' },
-  { key: 'PENDING',    label: 'Pending' },
-  { key: 'ACCEPTED',   label: 'Active' },
-  { key: 'DELIVERED',  label: 'Delivered' },
-  { key: 'CANCELLED',  label: 'Cancelled' },
+const STATUS_TABS: { key: string; label: string; statuses: string[] | null }[] = [
+  { key: 'ALL', label: 'All', statuses: null },
+  { key: 'NEW', label: 'New', statuses: ['PENDING'] },
+  { key: 'ACTIVE', label: 'Active', statuses: ['ACCEPTED', 'PREPARING'] },
+  { key: 'READY', label: 'Ready', statuses: ['PACKED', 'READY_FOR_PICKUP', 'DISPATCHED'] },
+  { key: 'DELIVERED', label: 'Delivered', statuses: ['DELIVERED'] },
+  { key: 'CANCELLED', label: 'Cancelled', statuses: ['CANCELLED'] },
 ];
 
-const DATE_RANGES = ['Today', 'Yesterday', 'Last 7 Days', 'This Month'];
-const SORT_OPTIONS = ['SLA Urgency', 'Newest First', 'Highest Payout'];
+const DATE_RANGES = [
+  { key: 'today', label: 'Today' },
+  { key: 'week', label: 'Last 7 days' },
+  { key: 'month', label: 'This month' },
+  { key: 'all', label: 'All time' },
+];
 
-function formatRelativeTime(timestamp: number) {
-  if (!timestamp) return 'Just now';
+const SORTS = [
+  { key: 'oldest', label: 'Oldest first' },
+  { key: 'newest', label: 'Newest first' },
+  { key: 'value', label: 'Highest value' },
+];
+
+const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
+  PENDING: { label: 'New offer', color: Colors.warning, bg: Colors.warningLight },
+  ACCEPTED: { label: 'Accepted', color: Colors.primary, bg: Colors.primaryLight },
+  PREPARING: { label: 'Preparing', color: Colors.primary, bg: Colors.primaryLight },
+  PACKED: { label: 'Packed', color: Colors.success, bg: Colors.successLight },
+  READY_FOR_PICKUP: { label: 'Ready for pickup', color: Colors.success, bg: Colors.successLight },
+  DISPATCHED: { label: 'Dispatched', color: Colors.success, bg: Colors.successLight },
+  DELIVERED: { label: 'Delivered', color: Colors.success, bg: Colors.successLight },
+  CANCELLED: { label: 'Cancelled', color: Colors.danger, bg: Colors.dangerLight },
+};
+
+const formatINR = (value: number | undefined | null) =>
+  `₹${Number(value || 0).toLocaleString('en-IN')}`;
+
+function formatAgo(timestamp: number) {
+  if (!timestamp) return '';
   const diff = Date.now() - timestamp;
   if (diff < 60000) return 'Just now';
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  return `${Math.floor(diff / 3600000)}h ago`;
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} min ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} hr ago`;
+  return new Date(timestamp).toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+function inDateRange(ts: number, range: string, now: number) {
+  if (range === 'all') return true;
+  const d = new Date(now);
+  if (range === 'today') return ts >= new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  if (range === 'week') return ts >= now - 7 * 86400000;
+  return ts >= new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+}
+
+/** The action a vendor takes next, by status. */
+function nextStep(status: string): { label: string; route: 'pack-order' | 'ready-pickup' | 'order-detail' } {
+  if (status === 'PENDING') return { label: 'Review offer', route: 'order-detail' };
+  if (status === 'ACCEPTED' || status === 'PREPARING') return { label: 'Pack order', route: 'pack-order' };
+  if (status === 'PACKED' || status === 'READY_FOR_PICKUP') return { label: 'Hand over', route: 'ready-pickup' };
+  return { label: 'View details', route: 'order-detail' };
+}
+
+/** Desktop only: text links to the other vendor screens. On phones the bottom bar does this job. */
+function TopNavLinks({ current }: { current: 'home' | 'orders' }) {
+  const router = useRouter();
+  const links = [
+    { key: 'home', label: 'Home', route: '/(vendor)/home' },
+    { key: 'orders', label: 'Orders', route: '/(vendor)/orders' },
+    { key: 'catalog', label: 'Catalog', route: '/(vendor)/catalog' },
+    { key: 'earnings', label: 'Earnings', route: '/(vendor)/earnings' },
+    { key: 'profile', label: 'Profile', route: '/(vendor)/profile' },
+  ];
+  return (
+    <View style={tn.row}>
+      {links.map(link => {
+        const active = link.key === current;
+        return (
+          <Pressable
+            key={link.key}
+            onPress={() => { if (!active) router.replace(link.route as any); }}
+            accessibilityRole="link"
+            accessibilityLabel={link.label}
+            accessibilityState={{ selected: active }}
+            style={({ pressed }) => [tn.item, active && tn.itemActive, pressed && { opacity: 0.7 }]}
+          >
+            <Text style={[tn.label, active && tn.labelActive]}>{link.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 }
 
 export default function OrdersScreen() {
-  // The signed-in vendor (the backend also takes it from the session token).
-  const vendorSession = useVendorSession();
-  const STORE_ID = vendorSession.storeId || '';
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isExpanded = width >= 1024;
 
-  const { orders, setOrders, updateOrder } = useVendorStore();
+  const { orders, setOrders } = useVendorStore();
+
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [errorMessage, setErrorMessage] = useState('');
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
 
   const [activeTab, setActiveTab] = useState('ALL');
+  const [dateRange, setDateRange] = useState('all');
+  const [sortKey, setSortKey] = useState('oldest');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedDateRange, setSelectedDateRange] = useState('Today');
-  const [selectedSort, setSelectedSort] = useState('SLA Urgency');
-  const [refreshing, setRefreshing] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [isConnected, setIsConnected] = useState(true);
-  const [lastUpdatedText, setLastUpdatedText] = useState('Updated just now');
-
-  // Preview Drawer State
-  const [selectedOrderPreview, setSelectedOrderPreview] = useState<Order | null>(null);
-  const [isExportingCSV, setIsExportingCSV] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const loadOrders = useCallback(async () => {
-    setLoading(true);
+    setErrorMessage('');
     try {
       const res = await ordersApi.getAll();
-      if (res?.orders && Array.isArray(res.orders)) {
-        setOrders(res.orders);
-        setIsConnected(true);
-      }
-      const now = new Date();
-      setLastUpdatedText(`Updated at ${now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`);
-    } catch (e) {
-      setIsConnected(false);
-    } finally {
-      setLoading(false);
+      setOrders(Array.isArray(res?.orders) ? res.orders : []);
+      setHasLoaded(true);
+      setLastUpdated(Date.now());
+      setStatus('ready');
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'We could not reach the server.');
+      setStatus('error');
     }
   }, [setOrders]);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = "Orders Queue & History | GlowVAI Vendor Console";
+      document.title = 'Orders | GlowVAI Vendor Console';
     }
     loadOrders();
   }, [loadOrders]);
 
-  const onRefresh = async () => {
+  const handleRefresh = async () => {
     setRefreshing(true);
     await loadOrders();
     setRefreshing(false);
   };
 
-  // Orders come only from the store (populated by the API). No demo fallback.
   const ordersPool = useMemo(() => (Array.isArray(orders) ? orders : []), [orders]);
 
-  // Tab Order Counts
+  // Date range first, so the tab counts match what the list can show.
+  const inRange = useMemo(() => {
+    const now = Date.now();
+    return ordersPool.filter(o => inDateRange(o.createdAt || 0, dateRange, now));
+  }, [ordersPool, dateRange]);
+
   const tabCounts = useMemo(() => {
-    const counts: Record<string, number> = { ALL: ordersPool.length, PENDING: 0, ACCEPTED: 0, PACKED: 0, DELIVERED: 0, CANCELLED: 0 };
-    ordersPool.forEach(o => {
-      if (o.status === 'PENDING') counts.PENDING++;
-      else if (o.status === 'ACCEPTED' || o.status === 'PREPARING') counts.ACCEPTED++;
-      else if (o.status === 'PACKED' || o.status === 'READY_FOR_PICKUP' || o.status === 'DISPATCHED') counts.PACKED++;
-      else if (o.status === 'DELIVERED') counts.DELIVERED++;
-      else if (o.status === 'CANCELLED') counts.CANCELLED++;
+    const counts: Record<string, number> = {};
+    STATUS_TABS.forEach(tab => {
+      counts[tab.key] = tab.statuses
+        ? inRange.filter(o => tab.statuses!.includes(o.status)).length
+        : inRange.length;
     });
     return counts;
-  }, [ordersPool]);
+  }, [inRange]);
 
-  // Filter & Sort Order Pipeline
   const filteredOrders = useMemo(() => {
-    return ordersPool.filter(order => {
-      let matchesTab = false;
-      if (activeTab === 'ALL') {
-        matchesTab = true;
-      } else if (activeTab === 'PACKED') {
-        matchesTab = order.status === 'PACKED' || order.status === 'READY_FOR_PICKUP' || order.status === 'DISPATCHED';
-      } else if (activeTab === 'ACCEPTED') {
-        matchesTab = order.status === 'ACCEPTED' || order.status === 'PREPARING';
-      } else {
-        matchesTab = order.status === activeTab;
-      }
-
-      if (!matchesTab) return false;
-
-      if (!searchQuery.trim()) return true;
-      const q = searchQuery.toLowerCase();
-      const orderIdMatch = order.orderId?.toLowerCase().includes(q);
-      const customerMatch = order.customerName?.toLowerCase().includes(q);
-      const localityMatch = (order.shippingAddress as any)?.locality?.toLowerCase().includes(q) ||
-                            order.shippingAddress?.fullAddress?.toLowerCase().includes(q);
-      const itemMatch = order.items?.some(i => i.productName?.toLowerCase().includes(q));
-
-      return orderIdMatch || customerMatch || localityMatch || itemMatch;
-    }).sort((a, b) => {
-      if (selectedSort === 'Newest First') {
-        return (b.createdAt || 0) - (a.createdAt || 0);
-      } else if (selectedSort === 'Highest Payout') {
-        return (b.pricing?.grandTotal || 0) - (a.pricing?.grandTotal || 0);
-      }
-      // Default: SLA Urgency
+    const tab = STATUS_TABS.find(t => t.key === activeTab);
+    const q = searchQuery.trim().toLowerCase();
+    const list = inRange.filter(order => {
+      if (tab?.statuses && !tab.statuses.includes(order.status)) return false;
+      if (!q) return true;
+      return (
+        order.orderId?.toLowerCase().includes(q) ||
+        order.customerName?.toLowerCase().includes(q) ||
+        order.shippingAddress?.fullAddress?.toLowerCase().includes(q) ||
+        order.items?.some(i => i.productName?.toLowerCase().includes(q))
+      );
+    });
+    return [...list].sort((a, b) => {
+      if (sortKey === 'newest') return (b.createdAt || 0) - (a.createdAt || 0);
+      if (sortKey === 'value') return (b.pricing?.grandTotal || 0) - (a.pricing?.grandTotal || 0);
       return (a.createdAt || 0) - (b.createdAt || 0);
     });
-  }, [ordersPool, activeTab, searchQuery, selectedSort]);
+  }, [inRange, activeTab, searchQuery, sortKey]);
 
-  const handleExportCSV = () => {
-    setIsExportingCSV(true);
-    setTimeout(() => {
-      setIsExportingCSV(false);
-      Alert.alert('Orders Exported 📥', `Exported ${filteredOrders.length} order ledger records to GlowVAI_Orders_${selectedDateRange}.csv`);
-    }, 1000);
+  const selectedOrder: Order | undefined = useMemo(
+    () => filteredOrders.find(o => o.orderId === selectedId) ?? undefined,
+    [filteredOrders, selectedId]
+  );
+
+  const isLoading = status === 'loading' && !hasLoaded;
+  const hasFilters = activeTab !== 'ALL' || dateRange !== 'all' || searchQuery.trim() !== '';
+
+  const clearFilters = () => {
+    setActiveTab('ALL');
+    setDateRange('all');
+    setSearchQuery('');
   };
 
-  const handleNextAction = (order: Order) => {
-    if (order.status === 'PENDING') {
-      router.push({
-        pathname: '/(vendor)/order-detail',
-        params: { orderId: order.orderId },
-      });
-    } else if (order.status === 'ACCEPTED' || order.status === 'PREPARING') {
-      router.push({
-        pathname: '/(vendor)/pack-order' as any,
-        params: { orderId: order.orderId },
-      });
-    } else if (order.status === 'PACKED' || order.status === 'READY_FOR_PICKUP' || order.status === 'DISPATCHED') {
-      router.push({
-        pathname: '/(vendor)/ready-pickup' as any,
-        params: { orderId: order.orderId },
-      });
+  const openOrder = (order: Order) => {
+    const step = nextStep(order.status);
+    if (step.route === 'order-detail') {
+      router.push({ pathname: '/(vendor)/order-detail', params: { orderId: order.orderId } } as any);
     } else {
-      setSelectedOrderPreview(order);
+      router.push({ pathname: `/(vendor)/${step.route}` as any, params: { orderId: order.orderId } });
     }
   };
 
-  return (
-    <SafeAreaView style={s.root}>
-      <View style={s.desktopLayout}>
+  const renderEmpty = () => {
+    if (hasFilters) {
+      return (
+        <View style={s.emptyBox}>
+          <Ionicons name="search-outline" size={28} color={Colors.textSubtle} />
+          <Text style={s.emptyTitle}>No orders match these filters</Text>
+          <Text style={s.emptySub}>Try a different status, date range or search term.</Text>
+          <Pressable onPress={clearFilters} accessibilityRole="button" style={({ pressed }) => [s.emptyAction, pressed && { opacity: 0.85 }]}>
+            <Text style={s.emptyActionText}>Clear filters</Text>
+          </Pressable>
+        </View>
+      );
+    }
+    return (
+      <View style={s.emptyBox}>
+        <Ionicons name="file-tray-outline" size={28} color={Colors.textSubtle} />
+        <Text style={s.emptyTitle}>No orders yet</Text>
+        <Text style={s.emptySub}>Orders you receive appear here. Keep the store open to get them.</Text>
+      </View>
+    );
+  };
 
-        {/* ── Desktop Left Navigation Rail ───────────────────────────────────────── */}
-        {isExpanded && (
-          <View style={s.navRail}>
-            <View style={s.railBrandGroup}>
-              <View style={s.railBrandLogo}>
-                <Ionicons name="sparkles" size={18} color="#FFFFFF" style={s.railBrandLogoIcon} />
-              </View>
-              <View>
-                <Wordmark size={17} />
-                <Text style={s.railBrandSub}>Vendor Console</Text>
-              </View>
-            </View>
-
-            {/* Navigation Group */}
-            <View style={s.railNavGroup}>
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.replace('/(vendor)/home')} activeOpacity={0.8}>
-                <Ionicons name="home-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Home</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[s.railNavItem, s.railNavItemActive]} activeOpacity={0.8}>
-                <Ionicons name="clipboard-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={[s.railNavLabel, s.railNavLabelActive]}>Orders</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/catalog')} activeOpacity={0.8}>
-                <Ionicons name="cube-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Catalog</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/earnings')} activeOpacity={0.8}>
-                <Ionicons name="wallet-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Earnings</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <Ionicons name="settings-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Settings</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Bottom Rail Section */}
-            <View style={s.railFooter}>
-              <TouchableOpacity style={s.storeSelectorPill} activeOpacity={0.8}>
-                <Text style={s.storeSelectorText} numberOfLines={1}>📍 Benz Circle Store ▼</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railHelpBtn} activeOpacity={0.8}>
-                <Text style={s.railHelpText}>Help & Support 💬</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railProfileCard} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <View style={s.railAvatar}>
-                  <Text style={s.railAvatarText}>S</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.railProfileName} numberOfLines={1}>Store account</Text>
-                  <Text style={s.railProfileRole}>Store Admin</Text>
-                </View>
-              </TouchableOpacity>
-            </View>
+  const renderOrderRow = (order: Order) => {
+    const meta = STATUS_META[order.status] ?? { label: order.status, color: Colors.textSecondary, bg: Colors.surface };
+    const step = nextStep(order.status);
+    const itemCount = order.items?.length || 0;
+    const isSelected = isExpanded && selectedId === order.orderId;
+    const place = order.shippingAddress?.fullAddress;
+    return (
+      <Pressable
+        key={order.orderId}
+        onPress={() => (isExpanded ? setSelectedId(order.orderId) : openOrder(order))}
+        accessibilityRole="button"
+        accessibilityLabel={`Order ${order.orderId}, ${meta.label}, ${formatINR(order.pricing?.grandTotal)}`}
+        style={({ pressed }) => [s.orderCard, isSelected && s.orderCardSelected, pressed && { opacity: 0.85 }]}
+      >
+        <View style={s.orderTop}>
+          <Text style={s.orderId} numberOfLines={1}>#{order.orderId}</Text>
+          <View style={[s.statusPill, { backgroundColor: meta.bg }]}>
+            <Text style={[s.statusPillText, { color: meta.color }]}>{meta.label}</Text>
           </View>
+        </View>
+
+        <Text style={s.orderMeta} numberOfLines={1}>
+          {[order.customerName, place].filter(Boolean).join(' • ') || 'Customer details unavailable'}
+        </Text>
+        <Text style={s.orderItems} numberOfLines={1}>
+          {itemCount} {itemCount === 1 ? 'item' : 'items'}
+          {itemCount ? `: ${order.items.map(i => i.productName).join(', ')}` : ''}
+        </Text>
+
+        <View style={s.orderBottom}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.orderValue}>{formatINR(order.pricing?.grandTotal)}</Text>
+            <Text style={s.orderAgo}>{formatAgo(order.createdAt)}</Text>
+          </View>
+          {!isExpanded && (
+            <View style={s.stepPill}>
+              <Text style={s.stepPillText}>{step.label}</Text>
+            </View>
+          )}
+        </View>
+      </Pressable>
+    );
+  };
+
+  const renderDetailPanel = () => {
+    if (!selectedOrder) {
+      return (
+        <View style={s.detailEmpty}>
+          <Ionicons name="receipt-outline" size={28} color={Colors.textSubtle} />
+          <Text style={s.emptyTitle}>Select an order</Text>
+          <Text style={s.emptySub}>Its items and totals show here.</Text>
+        </View>
+      );
+    }
+    const meta = STATUS_META[selectedOrder.status] ?? { label: selectedOrder.status, color: Colors.textSecondary, bg: Colors.surface };
+    const step = nextStep(selectedOrder.status);
+    const pricing = selectedOrder.pricing;
+    return (
+      <View style={s.detailCard}>
+        <View style={s.orderTop}>
+          <Text style={s.detailTitle} numberOfLines={1}>#{selectedOrder.orderId}</Text>
+          <View style={[s.statusPill, { backgroundColor: meta.bg }]}>
+            <Text style={[s.statusPillText, { color: meta.color }]}>{meta.label}</Text>
+          </View>
+        </View>
+        {!!selectedOrder.customerName && <Text style={s.detailCustomer}>{selectedOrder.customerName}</Text>}
+        {!!selectedOrder.shippingAddress?.fullAddress && (
+          <Text style={s.mutedText}>{selectedOrder.shippingAddress.fullAddress}</Text>
         )}
 
-        {/* ── Main Content Console ────────────────────────────────────────────── */}
-        <View style={s.mainConsole}>
-          
-          {/* Main Top Header */}
-          <AppHeader
-            title="Orders"
-            subtitle="Real-time 10-minute quick commerce fulfillment • Benz Circle Store"
-            showBell={true}
-            rightActions={<CustomerAppRedirectButton storeName="Your store" />}
-          />
+        <Text style={s.sectionLabel}>Items</Text>
+        {(selectedOrder.items ?? []).map((item, idx) => (
+          <View key={`${item.sku ?? item.productName}-${idx}`} style={[s.itemRow, idx > 0 && s.rowDivider]}>
+            <Text style={s.itemName} numberOfLines={2}>{item.productName}</Text>
+            <Text style={s.mutedText}>x{item.quantity}</Text>
+            <Text style={s.itemPrice}>{formatINR(item.price * item.quantity)}</Text>
+          </View>
+        ))}
 
-          {/* ── Desktop Filters & Search Toolbar ──────────────────────────────── */}
-          <View style={s.toolbarBar}>
-            {/* Search Field */}
-            <View style={s.searchFieldWrap}>
-              <Ionicons name="search-outline" size={18} color="#475569" style={s.searchIcon} />
-              <TextInput
-                style={s.searchInput}
-                placeholder="Search order ID, customer name, or SKU..."
-                placeholderTextColor={Colors.textMuted}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-              />
-              {searchQuery.length > 0 && (
-                <TouchableOpacity onPress={() => setSearchQuery('')} style={s.clearSearchBtn}>
-                  <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-                </TouchableOpacity>
-              )}
+        <Text style={s.sectionLabel}>Totals</Text>
+        <View style={s.totalRow}><Text style={s.mutedText}>Subtotal</Text><Text style={s.totalVal}>{formatINR(pricing?.subtotal)}</Text></View>
+        {!!pricing?.discount && (
+          <View style={s.totalRow}><Text style={s.mutedText}>Discount</Text><Text style={s.totalVal}>-{formatINR(pricing.discount)}</Text></View>
+        )}
+        <View style={s.totalRow}><Text style={s.mutedText}>Delivery fee</Text><Text style={s.totalVal}>{formatINR(pricing?.deliveryFee)}</Text></View>
+        <View style={[s.totalRow, s.grandRow]}>
+          <Text style={s.grandLabel}>Order total</Text>
+          <Text style={s.grandVal}>{formatINR(pricing?.grandTotal)}</Text>
+        </View>
+
+        <Pressable
+          onPress={() => openOrder(selectedOrder)}
+          accessibilityRole="button"
+          accessibilityLabel={`${step.label} for order ${selectedOrder.orderId}`}
+          style={({ pressed }) => [s.primaryBtn, pressed && { opacity: 0.85 }]}
+        >
+          <Text style={s.primaryBtnText}>{step.label}</Text>
+        </Pressable>
+      </View>
+    );
+  };
+
+  return (
+    <View style={s.screen}>
+      <ScreenShell
+        header={{
+          title: 'Orders',
+          subtitle: lastUpdated ? `Updated ${new Date(lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Live order queue',
+          showBell: true,
+          rightActions: (
+            <View style={s.headerRight}>
+              {isExpanded && <TopNavLinks current="orders" />}
+              <CustomerAppRedirectButton storeName="Your store" />
             </View>
-
-            {/* Date Range Chips */}
-            <View style={s.toolbarFilterGroup}>
-              <Text style={s.toolbarLabel}>Date Range:</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow}>
-                {DATE_RANGES.map(range => (
-                  <TouchableOpacity
-                    key={range}
-                    style={[s.filterChip, selectedDateRange === range && s.filterChipActive]}
-                    onPress={() => setSelectedDateRange(range)}
-                  >
-                    <Text style={[s.filterChipText, selectedDateRange === range && s.filterChipTextActive]}>
-                      {range}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            </View>
-
-            {/* Sort Dropdown Selector */}
-            <View style={s.toolbarSortGroup}>
-              <Text style={s.toolbarLabel}>Sort:</Text>
-              <View style={s.sortSelectPill}>
-                <Text style={s.sortSelectText}>⚡ {selectedSort}</Text>
-              </View>
-            </View>
-
-            {/* Manual Refresh Button */}
-            <TouchableOpacity style={s.refreshIconButton} onPress={onRefresh} activeOpacity={0.7}>
-              <Ionicons name="refresh-outline" size={18} style={{ color: '#475569' }} />
-            </TouchableOpacity>
+          ),
+        }}
+        backgroundColor={Colors.surface}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={Colors.primary} colors={[Colors.primary]} />
+        }
+        contentContainerStyle={s.scrollContent}
+      >
+        <View style={s.stack}>
+          {/* Search */}
+          <View style={s.searchWrap}>
+            <Ionicons name="search-outline" size={18} color={Colors.textSubtle} />
+            <TextInput
+              style={s.searchInput}
+              placeholder="Search order ID, customer, address or item"
+              placeholderTextColor={Colors.textSubtle}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              accessibilityLabel="Search orders"
+              returnKeyType="search"
+            />
+            {searchQuery.length > 0 && (
+              <Pressable onPress={() => setSearchQuery('')} accessibilityRole="button" accessibilityLabel="Clear search" style={s.clearHit}>
+                <Ionicons name="close-circle" size={18} color={Colors.textSubtle} />
+              </Pressable>
+            )}
           </View>
 
-          {/* ── Segmented Status Tabs ────────────────────────────────────────── */}
-          <View style={s.tabsWrapper}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.tabsContent}>
-              {FILTER_TABS.map(tab => {
-                const isSelected = activeTab === tab.key;
-                const count = tabCounts[tab.key] || 0;
+          {/* Status tabs */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow} accessibilityRole="tablist">
+            {STATUS_TABS.map(tab => {
+              const selected = activeTab === tab.key;
+              return (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setActiveTab(tab.key)}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={`${tab.label}, ${tabCounts[tab.key] ?? 0} orders`}
+                  style={({ pressed }) => [s.tab, selected && s.tabSelected, pressed && { opacity: 0.85 }]}
+                >
+                  <Text style={[s.tabText, selected && s.tabTextSelected]}>{tab.label}</Text>
+                  <View style={[s.tabCount, selected && s.tabCountSelected]}>
+                    <Text style={[s.tabCountText, selected && s.tabCountTextSelected]}>{tabCounts[tab.key] ?? 0}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
 
+          {/* Date range and sort */}
+          <View style={s.filterBlock}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow} accessibilityLabel="Date range">
+              {DATE_RANGES.map(range => {
+                const selected = dateRange === range.key;
                 return (
-                  <TouchableOpacity
-                    key={tab.key}
-                    style={[s.tabPill, isSelected && s.tabPillSelected]}
-                    onPress={() => setActiveTab(tab.key)}
-                    activeOpacity={0.8}
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: isSelected }}
+                  <Pressable
+                    key={range.key}
+                    onPress={() => setDateRange(range.key)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    style={({ pressed }) => [s.chip, selected && s.chipSelected, pressed && { opacity: 0.85 }]}
                   >
-                    <Text style={[s.tabLabelText, isSelected && s.tabLabelTextSelected]}>
-                      {tab.label}
-                    </Text>
-                    <View style={[s.tabBadge, isSelected && s.tabBadgeSelected]}>
-                      <Text style={[s.tabBadgeText, isSelected && s.tabBadgeTextSelected]}>
-                        {count}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
+                    <Text style={[s.chipText, selected && s.chipTextSelected]}>{range.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow} accessibilityLabel="Sort order">
+              {SORTS.map(sort => {
+                const selected = sortKey === sort.key;
+                return (
+                  <Pressable
+                    key={sort.key}
+                    onPress={() => setSortKey(sort.key)}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected }}
+                    style={({ pressed }) => [s.chip, selected && s.chipSelected, pressed && { opacity: 0.85 }]}
+                  >
+                    <Text style={[s.chipText, selected && s.chipTextSelected]}>{sort.label}</Text>
+                  </Pressable>
                 );
               })}
             </ScrollView>
           </View>
 
-          {/* Subheader Status Line */}
-          <View style={s.subHeaderRow}>
-            <Text style={s.subHeaderTimestamp}>{lastUpdatedText}</Text>
-            <Text style={s.subHeaderCount}>Showing {filteredOrders.length} orders in queue</Text>
-          </View>
-
-          {/* ── Queue Content Area with Main List & Preview Drawer Layout ──────── */}
-          <View style={s.queueLayoutRow}>
-            
-            {/* Main Orders Data List */}
-            <ScrollView
-              style={s.scrollBody}
-              contentContainerStyle={s.scrollContent}
-              showsVerticalScrollIndicator={false}
-              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[Colors.primary]} />}
-            >
-              {!isConnected && (
-                <View style={s.offlineBanner}>
-                  <Text style={s.offlineBannerText}>📡 Socket connection offline. Re-establishing live order feed...</Text>
-                </View>
-              )}
-
-              {loading && !refreshing && ordersPool.length === 0 ? (
-                <View style={s.loadingCard}>
-                  <ActivityIndicator size="small" color={Colors.primary} />
-                  <Text style={s.loadingText}>Fetching orders from dark store gateway...</Text>
-                </View>
-              ) : filteredOrders.length === 0 ? (
-                <View style={s.emptyQueueCard}>
-                  <Ionicons name="file-tray-outline" size={34} color="#94A3B8" />
-                  <Text style={s.emptyTitle}>
-                    {searchQuery ? `No orders matching "${searchQuery}"` : activeTab === 'ALL' ? 'No orders yet' : `No ${activeTab.toLowerCase()} orders`}
-                  </Text>
-                  <Text style={s.emptySub}>
-                    {searchQuery
-                      ? 'Try adjusting your search keywords or clear current filters.'
-                      : 'Incoming customer orders will appear here automatically.'}
-                  </Text>
-                  {searchQuery.length > 0 && (
-                    <TouchableOpacity style={s.resetSearchBtn} onPress={() => setSearchQuery('')}>
-                      <Text style={s.resetSearchBtnText}>Clear Search Filters</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              ) : (
-                filteredOrders.map(order => {
-                  const customerName = order.customerName || 'Priya S.';
-                  const locality = (order.shippingAddress as any)?.locality || order.shippingAddress?.fullAddress || 'Benz Circle';
-                  const itemsCount = order.items?.length || 1;
-                  const grandTotal = order.pricing?.grandTotal || 948;
-                  const netPayout = (grandTotal * 0.88).toFixed(2);
-                  const isPending = order.status === 'PENDING';
-                  const isAccepted = order.status === 'ACCEPTED' || order.status === 'PREPARING';
-                  const isReady = order.status === 'PACKED' || order.status === 'READY_FOR_PICKUP' || order.status === 'DISPATCHED';
-                  const isCompleted = order.status === 'DELIVERED';
-                  const isCancelled = order.status === 'CANCELLED';
-                  const isSelected = selectedOrderPreview?.orderId === order.orderId;
-
-                  return (
-                    <TouchableOpacity
-                      key={order.orderId}
-                      style={[s.orderRowCard, isSelected && s.orderRowCardSelected]}
-                      onPress={() => setSelectedOrderPreview(order)}
-                      activeOpacity={0.85}
-                    >
-                      {/* Left Block: ID & Privacy-Safe Customer */}
-                      <View style={{ flex: 2 }}>
-                        <View style={s.orderIdGroup}>
-                          <Text style={s.orderIdText}>#{order.orderId}</Text>
-                          <View style={s.itemCountBadge}>
-                            <Text style={s.itemCountBadgeText}>{itemsCount} items</Text>
-                          </View>
-                        </View>
-                        <Text style={s.customerMetaText}>
-                          👤 {customerName} • 📍 {locality}
-                        </Text>
-                        <Text style={s.itemPreviewSnippet} numberOfLines={1}>
-                          {order.items?.map(i => i.productName).join(', ')}
-                        </Text>
-                      </View>
-
-                      {/* Middle Block: Timer & Status Pill */}
-                      <View style={{ flex: 1.5, alignItems: 'flex-start' }}>
-                        {isPending || isAccepted ? (
-                          <View style={s.slaTimerBadge}>
-                            <Text style={s.slaTimerText}>⏱️ SLA: 04:15 remaining</Text>
-                          </View>
-                        ) : (
-                          <View style={[
-                            s.statusPill,
-                            isReady && s.statusPillReady,
-                            isCompleted && s.statusPillCompleted,
-                            isCancelled && s.statusPillCancelled,
-                          ]}>
-                            <Text style={[
-                              s.statusPillText,
-                              isReady && s.statusPillTextReady,
-                              isCompleted && s.statusPillTextCompleted,
-                              isCancelled && s.statusPillTextCancelled,
-                            ]}>
-                              {isReady ? '🛵 Ready Pickup' : isCompleted ? '✓ Completed' : '✕ Cancelled'}
-                            </Text>
-                          </View>
-                        )}
-
-                        <Text style={s.timeAgoText}>Updated {formatRelativeTime(order.updatedAt || order.createdAt)}</Text>
-                      </View>
-
-                      {/* Financial Block: Payout */}
-                      <View style={{ flex: 1, alignItems: 'flex-end' }}>
-                        <Text style={s.payoutValText}>₹{netPayout}</Text>
-                        <Text style={s.payoutSubText}>Net Vendor Payout</Text>
-                      </View>
-
-                      {/* Action Button Block */}
-                      <View style={{ flex: 1.2, alignItems: 'flex-end', justifyContent: 'center' }}>
-                        <TouchableOpacity
-                          style={[
-                            s.actionBtn,
-                            isPending && s.actionBtnNew,
-                            isAccepted && s.actionBtnAccepted,
-                            isReady && s.actionBtnReady,
-                            (isCompleted || isCancelled) && s.actionBtnGhost,
-                          ]}
-                          onPress={() => handleNextAction(order)}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={[
-                            s.actionBtnText,
-                            (isCompleted || isCancelled) && s.actionBtnGhostText,
-                          ]}>
-                            {isPending
-                              ? 'Review offer ⚡'
-                              : isAccepted
-                              ? 'Continue packing →'
-                              : isReady
-                              ? 'View pickup →'
-                              : 'Inspect details'}
-                          </Text>
-                        </TouchableOpacity>
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })
-              )}
-
-              <View style={{ height: 40 }} />
-            </ScrollView>
-
-            {/* ── Right-Side Desktop Quick Order Preview Drawer ──────────────── */}
-            {isExpanded && selectedOrderPreview && (
-              <View style={s.previewDrawer}>
-                <View style={s.drawerHeader}>
-                  <View>
-                    <Text style={s.drawerTitle}>Order #{selectedOrderPreview.orderId}</Text>
-                    <Text style={s.drawerSub}>Placed {formatRelativeTime(selectedOrderPreview.createdAt)}</Text>
-                  </View>
-                  <TouchableOpacity style={s.drawerCloseBtn} onPress={() => setSelectedOrderPreview(null)}>
-                    <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-                  </TouchableOpacity>
-                </View>
-
-                <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                  {/* Customer Privacy Section */}
-                  <View style={s.drawerSectionCard}>
-                    <Text style={s.drawerSectionLabel}>CUSTOMER & LOCALITY</Text>
-                    <Text style={s.drawerCustomerName}>
-                      {selectedOrderPreview.customerName || 'Priya S.'}
-                    </Text>
-                    <Text style={s.drawerLocalityText}>
-                      📍 {(selectedOrderPreview.shippingAddress as any)?.locality || selectedOrderPreview.shippingAddress?.fullAddress || 'Benz Circle, Vijayawada'}
-                    </Text>
-                    <Text style={s.privacyNoticeText}>🔒 Full phone number and exact door unit are protected by GlowVAI Privacy Guard.</Text>
-                  </View>
-
-                  {/* Items Breakdown Table */}
-                  <View style={s.drawerSectionCard}>
-                    <Text style={s.drawerSectionLabel}>ORDERED ITEMS ({selectedOrderPreview.items?.length || 1})</Text>
-                    {selectedOrderPreview.items?.map((item, idx) => (
-                      <View key={idx} style={s.drawerItemRow}>
-                        <Ionicons name="cube-outline" size={18} color="#475569" style={s.drawerItemIcon} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={s.drawerItemName}>{item.productName}</Text>
-                          <Text style={s.drawerItemSub}>Shelf Bin: <Text style={s.binText}>Shelf A-01-05</Text> • Qty: {item.quantity}</Text>
-                        </View>
-                        <Text style={s.drawerItemPrice}>₹{item.price * item.quantity}</Text>
-                      </View>
-                    ))}
-                  </View>
-
-                  {/* Payout & Payment Split */}
-                  <View style={s.drawerSectionCard}>
-                    <Text style={s.drawerSectionLabel}>PAYMENT SUMMARY</Text>
-                    <View style={s.drawerFeeRow}>
-                      <Text style={s.drawerFeeLabel}>Subtotal</Text>
-                      <Text style={s.drawerFeeVal}>₹{selectedOrderPreview.pricing?.subtotal || 918}</Text>
-                    </View>
-                    <View style={s.drawerFeeRow}>
-                      <Text style={s.drawerFeeLabel}>Platform Commission (12%)</Text>
-                      <Text style={s.drawerFeeVal}>-₹{((selectedOrderPreview.pricing?.grandTotal || 948) * 0.12).toFixed(2)}</Text>
-                    </View>
-                    <View style={[s.drawerFeeRow, s.drawerPayoutRow]}>
-                      <Text style={s.drawerPayoutLabel}>Net Vendor Payout</Text>
-                      <Text style={s.drawerPayoutVal}>₹{((selectedOrderPreview.pricing?.grandTotal || 948) * 0.88).toFixed(2)}</Text>
-                    </View>
-                  </View>
-                </ScrollView>
-
-                {/* Drawer Footer CTA */}
-                <View style={s.drawerFooter}>
-                  <TouchableOpacity
-                    style={s.drawerPrimaryBtn}
-                    onPress={() => handleNextAction(selectedOrderPreview)}
-                  >
-                    <Text style={s.drawerPrimaryBtnText}>Open Order Fulfillment Queue →</Text>
-                  </TouchableOpacity>
-                </View>
+          {/* Error banner when a refresh fails after data was loaded */}
+          {status === 'error' && hasLoaded && (
+            <View style={s.bannerError} accessibilityRole="alert">
+              <Ionicons name="alert-circle" size={18} color={Colors.danger} />
+              <View style={{ flex: 1 }}>
+                <Text style={s.bannerErrorTitle}>Could not refresh orders</Text>
+                <Text style={s.bannerErrorText}>{errorMessage} Showing the last loaded orders.</Text>
               </View>
-            )}
-          </View>
-        </View>
-      </View>
+              <Pressable onPress={handleRefresh} accessibilityRole="button" accessibilityLabel="Retry refresh" style={s.bannerRetry}>
+                <Text style={s.bannerRetryText}>Retry</Text>
+              </Pressable>
+            </View>
+          )}
 
-      {/* Mobile Bottom Navigation Bar */}
+          {/* Result list */}
+          {isLoading ? (
+            <View style={s.loadingBox}>
+              <ActivityIndicator color={Colors.primary} />
+              <Text style={s.mutedText}>Loading orders</Text>
+            </View>
+          ) : status === 'error' && !hasLoaded ? (
+            <View style={s.errorPanel}>
+              <Ionicons name="cloud-offline-outline" size={32} color={Colors.danger} />
+              <Text style={s.emptyTitle}>We could not load orders</Text>
+              <Text style={s.emptySub}>{errorMessage} Check your connection and try again.</Text>
+              <Pressable onPress={handleRefresh} accessibilityRole="button" style={({ pressed }) => [s.primaryBtn, s.retryBtn, pressed && { opacity: 0.85 }]}>
+                <Text style={s.primaryBtnText}>Try again</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={[s.layout, isExpanded && s.layoutWide]}>
+              <View style={[s.listCol, isExpanded && s.listColWide]}>
+                <Text style={s.countText}>
+                  {filteredOrders.length} {filteredOrders.length === 1 ? 'order' : 'orders'}
+                </Text>
+                {filteredOrders.length === 0 ? renderEmpty() : filteredOrders.map(renderOrderRow)}
+              </View>
+              {isExpanded && (
+                <View style={s.detailCol}>{renderDetailPanel()}</View>
+              )}
+            </View>
+          )}
+        </View>
+      </ScreenShell>
+
       <MobileBottomNav currentTab="orders" />
-    </SafeAreaView>
+    </View>
   );
 }
 
+const tn = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 8 },
+  item: { minHeight: 44, paddingHorizontal: 10, justifyContent: 'center', borderRadius: BorderRadii.input },
+  itemActive: { backgroundColor: Colors.primaryLight },
+  label: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.textSecondary },
+  labelActive: { color: Colors.primary },
+});
+
 const s = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: Colors.surface, // Warm off-white #F8FAFC
-  },
-  desktopLayout: {
-    flex: 1,
-    flexDirection: 'row',
-  },
+  screen: { flex: 1, backgroundColor: Colors.surface },
+  headerRight: { flexDirection: 'row', alignItems: 'center' },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 32 },
+  stack: { gap: Spacing.md },
 
-  /* Navigation Rail */
-  navRail: {
-    width: 240,
-    backgroundColor: Colors.card,
-    borderRightWidth: 1,
-    borderRightColor: Colors.border,
-    padding: Spacing.lg,
-    justifyContent: 'space-between',
+  // Search and filters
+  searchWrap: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    minHeight: 48, paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.background, borderRadius: BorderRadii.input,
+    borderWidth: 1, borderColor: Colors.inputBorder,
   },
-  railBrandGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.xl,
+  searchInput: { flex: 1, minHeight: 44, fontFamily: FontFamily.regular, fontSize: 15, color: Colors.textPrimary },
+  clearHit: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  chipRow: { flexDirection: 'row', gap: Spacing.sm, paddingVertical: 2, paddingRight: Spacing.lg },
+  filterBlock: { gap: 2 },
+  chip: {
+    minHeight: 44, paddingHorizontal: 14, borderRadius: BorderRadii.pill,
+    borderWidth: 1, borderColor: Colors.border, backgroundColor: Colors.background,
+    alignItems: 'center', justifyContent: 'center',
   },
-  railBrandLogo: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  railBrandLogoIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-    color: '#FFFFFF',
-  },
-  railBrandTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  railBrandSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  railNavGroup: {
-    gap: 6,
-    flex: 1,
-  },
-  railNavItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: BorderRadii.input,
-  },
-  railNavItemActive: {
-    backgroundColor: Colors.primaryLight,
-  },
-  railNavIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-  },
-  railNavLabel: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  railNavLabelActive: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  railFooter: {
-    gap: Spacing.sm,
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  storeSelectorPill: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    padding: 8,
-  },
-  storeSelectorText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  railHelpBtn: {
-    paddingVertical: 4,
-  },
-  railHelpText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  railProfileCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingTop: 6,
-  },
-  railAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  railAvatarText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  railProfileName: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  railProfileRole: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
+  chipSelected: { borderColor: Colors.primaryBorder, backgroundColor: Colors.primaryLight },
+  chipText: { fontFamily: FontFamily.semibold, fontSize: 13, color: Colors.textSecondary },
+  chipTextSelected: { color: Colors.primary },
 
-  /* Main Console Area */
-  mainConsole: {
-    flex: 1,
+  tab: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    minHeight: 44, paddingHorizontal: 14, borderRadius: BorderRadii.pill,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
   },
-  topHeader: {
-    backgroundColor: Colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  pageTitle: {
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    letterSpacing: -0.4,
-  },
-  storeSubTitle: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  headerActionsRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  liveConnectionBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-  },
-  offlineConnectionBadge: {
-    backgroundColor: Colors.dangerLight,
-    borderColor: Colors.dangerBorder,
-  },
-  liveDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  liveDotText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  exportCsvBtn: {
-    backgroundColor: Colors.primaryLight,
-    borderWidth: 1,
-    borderColor: Colors.primaryBorder,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.input,
-  },
-  exportCsvBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  notifBellBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  notifBellIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 16,
-  },
+  tabSelected: { backgroundColor: Colors.textPrimary, borderColor: Colors.textPrimary },
+  tabText: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.textPrimary },
+  tabTextSelected: { color: '#FFFFFF' },
+  tabCount: { minWidth: 22, paddingHorizontal: 6, height: 20, borderRadius: 10, backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center' },
+  tabCountSelected: { backgroundColor: 'rgba(255,255,255,0.2)' },
+  tabCountText: { fontFamily: FontFamily.bold, fontSize: 12, color: Colors.textSecondary },
+  tabCountTextSelected: { color: '#FFFFFF' },
 
-  /* Toolbar Bar */
-  toolbarBar: {
-    backgroundColor: Colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.sm,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
+  // Status lines and banners
+  countText: { fontFamily: FontFamily.semibold, fontSize: 13, color: Colors.textSubtle, marginTop: 2 },
+  bannerError: {
+    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    backgroundColor: Colors.dangerLight, borderWidth: 1, borderColor: Colors.dangerBorder,
+    borderRadius: BorderRadii.card, padding: Spacing.md,
   },
-  searchFieldWrap: {
-    flex: 1,
-    height: 38,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-  },
-  searchIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 14,
-    marginRight: 6,
-  },
-  searchInput: {
-    flex: 1,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: Colors.textPrimary,
-  },
-  clearSearchBtn: {
-    padding: 4,
-  },
-  clearSearchText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  toolbarFilterGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  toolbarLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-  },
-  chipRow: {
-    gap: 4,
-  },
-  filterChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  filterChipActive: {
-    backgroundColor: Colors.primaryLight,
-    borderColor: Colors.primaryBorder,
-  },
-  filterChipText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  filterChipTextActive: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  toolbarSortGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  sortSelectPill: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-  },
-  sortSelectText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  refreshIconButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.surface,
-  },
-  refreshIconText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 14,
-  },
+  bannerErrorTitle: { fontFamily: FontFamily.semibold, fontSize: 14, color: '#7F1D1D' },
+  bannerErrorText: { fontFamily: FontFamily.regular, fontSize: 12, lineHeight: 16, color: '#7F1D1D' },
+  bannerRetry: { minHeight: 44, minWidth: 44, paddingHorizontal: 10, justifyContent: 'center', alignItems: 'center' },
+  bannerRetryText: { fontFamily: FontFamily.bold, fontSize: 14, color: Colors.danger },
 
-  /* Segmented Status Tabs */
-  tabsWrapper: {
-    backgroundColor: Colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingVertical: Spacing.xs,
+  loadingBox: { alignItems: 'center', justifyContent: 'center', gap: Spacing.sm, paddingVertical: 48 },
+  errorPanel: {
+    backgroundColor: Colors.background, borderRadius: BorderRadii.card, borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.xl, alignItems: 'center', gap: Spacing.sm,
   },
-  tabsContent: {
-    paddingHorizontal: Spacing.xl,
-    gap: Spacing.xs,
-  },
-  tabPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.pill,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  tabPillSelected: {
-    backgroundColor: Colors.primary, // Strong Royal Blue
-    borderColor: Colors.primary,
-  },
-  tabIconText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-  },
-  tabLabelText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  tabLabelTextSelected: {
-    color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  tabBadge: {
-    backgroundColor: Colors.border,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  tabBadgeSelected: {
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-  },
-  tabBadgeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  tabBadgeTextSelected: {
-    color: '#FFFFFF',
-  },
+  retryBtn: { flex: 0, alignSelf: 'stretch', minWidth: 180 },
 
-  /* Sub Header Row */
-  subHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.xs,
-    backgroundColor: Colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  subHeaderTimestamp: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  subHeaderCount: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
+  // Layout
+  layout: { gap: Spacing.lg },
+  layoutWide: { flexDirection: 'row', alignItems: 'flex-start' },
+  listCol: { gap: Spacing.sm },
+  listColWide: { flex: 7, minWidth: 0 },
+  detailCol: { flex: 5, minWidth: 0 },
 
-  /* Queue Layout Row */
-  queueLayoutRow: {
-    flex: 1,
-    flexDirection: 'row',
+  // Order rows
+  orderCard: {
+    backgroundColor: Colors.background, borderRadius: BorderRadii.card,
+    borderWidth: 1, borderColor: Colors.border, padding: 14, gap: 4,
   },
-  scrollBody: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: Spacing.xl,
-  },
+  orderCardSelected: { borderColor: Colors.primary, borderWidth: 1.5 },
+  orderTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
+  orderId: { flex: 1, fontFamily: FontFamily.bold, fontSize: 15, color: Colors.textPrimary },
+  statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: BorderRadii.pill },
+  statusPillText: { fontFamily: FontFamily.semibold, fontSize: 12 },
+  orderMeta: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSecondary },
+  orderItems: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle },
+  orderBottom: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: 6 },
+  orderValue: { fontFamily: FontFamily.bold, fontSize: 16, color: Colors.textPrimary },
+  orderAgo: { fontFamily: FontFamily.regular, fontSize: 12, color: Colors.textSubtle },
+  stepPill: { minHeight: 36, paddingHorizontal: 12, borderRadius: BorderRadii.input, backgroundColor: Colors.primary, justifyContent: 'center' },
+  stepPillText: { fontFamily: FontFamily.semibold, fontSize: 13, color: '#FFFFFF' },
 
-  /* Offline & Loading Banners */
-  offlineBanner: {
-    backgroundColor: Colors.warningLight,
-    borderWidth: 1,
-    borderColor: Colors.warningBorder,
-    padding: Spacing.md,
-    borderRadius: BorderRadii.input,
-    marginBottom: Spacing.lg,
-  },
-  offlineBannerText: {
-    fontSize: 12,
-    color: Colors.warning,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  loadingCard: {
-    padding: Spacing.xl,
-    alignItems: 'center',
-  },
-  loadingText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: Colors.textMuted,
-    marginTop: Spacing.xs,
-  },
-  emptyQueueCard: {
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.xxl,
-    alignItems: 'center',
-  },
-  emptyIconText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 36,
-    marginBottom: Spacing.xs,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  emptySub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 18,
-    marginTop: 4,
-  },
-  resetSearchBtn: {
-    marginTop: Spacing.md,
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.pill,
-  },
-  resetSearchBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
+  // Empty states
+  emptyBox: { alignItems: 'center', gap: 6, paddingVertical: Spacing.xxl, paddingHorizontal: Spacing.lg },
+  emptyTitle: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary, textAlign: 'center', marginTop: 4 },
+  emptySub: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle, textAlign: 'center', maxWidth: 340 },
+  emptyAction: { minHeight: 44, paddingHorizontal: 16, justifyContent: 'center', marginTop: 4 },
+  emptyActionText: { fontFamily: FontFamily.bold, fontSize: 14, color: Colors.primary },
 
-  /* Order Row Card */
-  orderRowCard: {
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 6,
-    elevation: 1,
+  // Detail panel (desktop)
+  detailEmpty: {
+    alignItems: 'center', gap: 6, padding: Spacing.xl,
+    backgroundColor: Colors.background, borderRadius: BorderRadii.card, borderWidth: 1, borderColor: Colors.border,
   },
-  orderRowCardSelected: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryLight,
+  detailCard: {
+    backgroundColor: Colors.background, borderRadius: BorderRadii.card, borderWidth: 1, borderColor: Colors.border,
+    padding: Spacing.lg, gap: Spacing.sm,
   },
-  orderIdGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
+  detailTitle: { flex: 1, fontFamily: FontFamily.bold, fontSize: 18, color: Colors.textPrimary },
+  detailCustomer: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary },
+  sectionLabel: { fontFamily: FontFamily.semibold, fontSize: 12, color: Colors.textSubtle, marginTop: Spacing.md },
+  itemRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: 8 },
+  rowDivider: { borderTopWidth: 1, borderTopColor: Colors.border },
+  itemName: { flex: 1, fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: Colors.textPrimary },
+  itemPrice: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.textPrimary },
+  mutedText: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle },
+  totalRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 2 },
+  totalVal: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.textPrimary },
+  grandRow: { borderTopWidth: 1, borderTopColor: Colors.border, marginTop: 6, paddingTop: 8 },
+  grandLabel: { fontFamily: FontFamily.bold, fontSize: 15, color: Colors.textPrimary },
+  grandVal: { fontFamily: FontFamily.bold, fontSize: 16, color: Colors.textPrimary },
+  primaryBtn: {
+    minHeight: 48, borderRadius: BorderRadii.input, backgroundColor: Colors.primary,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16, marginTop: Spacing.md,
   },
-  orderIdText: {
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  itemCountBadge: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: BorderRadii.pill,
-  },
-  itemCountBadgeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  customerMetaText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    marginTop: 2,
-  },
-  itemPreviewSnippet: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 2,
-  },
-
-  /* Status Pills & SLA Badges */
-  slaTimerBadge: {
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: BorderRadii.pill,
-  },
-  slaTimerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.warning,
-  },
-  statusPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: BorderRadii.pill,
-    backgroundColor: Colors.surface,
-  },
-  statusPillReady: {
-    backgroundColor: Colors.primaryLight,
-  },
-  statusPillCompleted: {
-    backgroundColor: '#F0FDF4',
-  },
-  statusPillCancelled: {
-    backgroundColor: Colors.dangerLight,
-  },
-  statusPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  statusPillTextReady: {
-    color: Colors.primary,
-  },
-  statusPillTextCompleted: {
-    color: Colors.success,
-  },
-  statusPillTextCancelled: {
-    color: Colors.danger,
-  },
-  timeAgoText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 4,
-  },
-
-  /* Payout Text */
-  payoutValText: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  payoutSubText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-
-  /* Action Buttons */
-  actionBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.input,
-  },
-  actionBtnNew: {
-    backgroundColor: Colors.primary,
-  },
-  actionBtnAccepted: {
-    backgroundColor: Colors.primary,
-  },
-  actionBtnReady: {
-    backgroundColor: Colors.success,
-  },
-  actionBtnGhost: {
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  actionBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  actionBtnGhostText: {
-    color: Colors.textSecondary,
-  },
-
-  /* Right-Side Desktop Quick Order Preview Drawer */
-  previewDrawer: {
-    width: 380,
-    backgroundColor: Colors.card,
-    borderLeftWidth: 1,
-    borderLeftColor: Colors.border,
-    padding: Spacing.lg,
-  },
-  drawerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingBottom: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    marginBottom: Spacing.md,
-  },
-  drawerTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  drawerSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 1,
-  },
-  drawerCloseBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  drawerCloseText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  drawerSectionCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadii.input,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
-  },
-  drawerSectionLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
-    marginBottom: 6,
-  },
-  drawerCustomerName: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  drawerLocalityText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  privacyNoticeText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 6,
-    fontStyle: 'italic',
-  },
-  drawerItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 4,
-  },
-  drawerItemIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 16,
-  },
-  drawerItemName: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  drawerItemSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  binText: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  drawerItemPrice: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  drawerFeeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 3,
-  },
-  drawerFeeLabel: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  drawerFeeVal: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  drawerPayoutRow: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    paddingTop: 6,
-    marginTop: 4,
-  },
-  drawerPayoutLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-  },
-  drawerPayoutVal: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-  },
-  drawerFooter: {
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  drawerPrimaryBtn: {
-    backgroundColor: Colors.primary,
-    height: 40,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  drawerPrimaryBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
+  primaryBtnText: { fontFamily: FontFamily.bold, fontSize: 16, color: '#FFFFFF' },
 });

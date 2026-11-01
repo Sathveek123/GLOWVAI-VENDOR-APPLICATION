@@ -4,7 +4,7 @@
  * Manages earnings ledgers, bank settlements, UTR receipts, GST invoices, and KYC profile state
  */
 
-export const USE_MOCK_FINANCE_EXTRAS = true;
+export const USE_MOCK_FINANCE_EXTRAS = __DEV__;
 
 export interface EarningsSummary {
   period: string;
@@ -329,38 +329,47 @@ const MOCK_KYC_DOCUMENTS: KycDocument[] = [
 // ── Finance Adapter Methods ──────────────────────────────────────────────────
 
 export async function fetchEarningsSummary(): Promise<EarningsSummary> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_SUMMARY;
 }
 
 export async function fetchLedgerEntries(): Promise<LedgerEntry[]> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_LEDGER;
 }
 
 export async function fetchSettlements(): Promise<SettlementItem[]> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_SETTLEMENTS;
 }
 
 export async function fetchTaxDocuments(): Promise<TaxDocumentItem[]> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_TAX_DOCUMENTS;
 }
 
 export async function fetchBankAccountDetails(): Promise<PayoutAccountDetails> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_BANK_ACCOUNT;
 }
 
 export async function fetchBankPolicy(): Promise<BankPolicy> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_BANK_POLICY;
 }
 
 export async function fetchRecentBankChanges(): Promise<RecentBankChange[]> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_RECENT_CHANGES;
 }
 
 export async function fetchStoreProfile(): Promise<StoreProfileDetails> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_STORE_PROFILE;
 }
 
 export async function fetchKycDocuments(): Promise<KycDocument[]> {
+  if (!USE_MOCK_FINANCE_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_KYC_DOCUMENTS;
 }
 

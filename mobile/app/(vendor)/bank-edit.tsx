@@ -1,1371 +1,579 @@
 /**
- * SCREEN 24: Bank Account & UPI Management
+ * Payout account: view the bank account and UPI ID that settlements go to, and request a change.
  * File: mobile/app/(vendor)/bank-edit.tsx
  *
- * Production-grade payout destination & bank account security hub for GlowVAI Vendors.
- * Features:
- *   • Masked bank card (HDFC ••••••4589) & UPI handle (glow••••@hdfcbank)
- *   • Guided 3-step secure change flow (OTP Identity, New Details with paste-blocked field, Review & Submit)
- *   • Real-time IFSC branch lookup & penny-drop verification simulation
- *   • 24-Hour security cooling period policy warnings & audit trail
- *   • Complete edge states (OTP error, Lockout, IFSC error, Mismatch, Cooling active, Offline)
+ * Changes use a three-step sheet: identity code, new details, review. Nothing is saved yet:
+ * code verification and the change endpoint are not connected, so the final step says so.
+ * Account details come from the finance adapter and appear only in __DEV__ builds, labelled.
  */
-
-import Ionicons from '@expo/vector-icons/Ionicons';
-import { withComingSoon } from '../../src/components/ComingSoon';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
-  SafeAreaView,
-  ScrollView,
-  TouchableOpacity,
   TextInput,
-  Modal,
+  Pressable,
+  ScrollView,
   ActivityIndicator,
+  Modal,
+  StyleSheet,
   Platform,
-  Alert,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
-import useVendorStore from '../../src/store/useVendorStore';
-import { soundService } from '../../src/services/sound';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import ScreenShell from '../../src/components/ScreenShell';
+import MobileBottomNav from '../../src/components/MobileBottomNav';
+import { fetchBankAccountDetails, type PayoutAccountDetails } from '../../src/features/finance/adapter';
+import { Colors } from '../../src/theme/tokens';
+import { FontFamily, TypeScale } from '../../src/theme/typography';
 
-const COLOR_ROYAL_BLUE = Colors.primary;
-const COLOR_EMERALD = Colors.success;
-const COLOR_AMBER = Colors.warning;
-const COLOR_DANGER = Colors.danger;
-const COLOR_SLATE = '#64748B';
+// Flip to true only when the SMS code check exists on the server.
+const VERIFICATION_CONNECTED = false;
+
+type ChangeType = 'BANK' | 'UPI';
+type LoadStatus = 'loading' | 'ready' | 'error';
+
+const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+const ACCOUNT_RE = /^\d{9,18}$/;
+const UPI_RE = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z]{2,64}$/;
+
+const STATUS_STYLE: Record<PayoutAccountDetails['status'], { bg: string; fg: string }> = {
+  Verified: { bg: Colors.successLight, fg: Colors.success },
+  'Pending verification': { bg: Colors.warningLight, fg: '#B45309' },
+  'Change in progress': { bg: Colors.warningLight, fg: '#B45309' },
+  Failed: { bg: Colors.dangerLight, fg: Colors.danger },
+};
 
 function BankEditScreen() {
   const router = useRouter();
-  const { vendor } = useVendorStore();
+  const { width } = useWindowDimensions();
+  const isWide = width >= 720;
 
-  // Screen State
-  const [defaultChannel, setDefaultChannel] = useState<'BANK' | 'UPI'>('BANK');
-  const [isEditModalOpen, setIsEditModalOpen] = useState<boolean>(false);
-  const [editStep, setEditStep] = useState<1 | 2 | 3>(1);
-  const [editType, setEditType] = useState<'BANK' | 'UPI'>('BANK');
+  const [status, setStatus] = useState<LoadStatus>('loading');
+  const [account, setAccount] = useState<PayoutAccountDetails | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
-  // Step 1: OTP State
-  const [otpValue, setOtpValue] = useState<string>('');
-  const [resendTimer, setResendTimer] = useState<number>(30);
-  const [otpAttempts, setOtpAttempts] = useState<number>(0);
-  const [isLockedOut, setIsLockedOut] = useState<boolean>(false);
-  const [otpError, setOtpError] = useState<string>('');
-
-  // Step 2: New Bank / UPI Form
-  const [beneficiaryName, setBeneficiaryName] = useState<string>('Priya Beauty Retail Pvt Ltd');
-  const [bankName, setBankName] = useState<string>('HDFC Bank');
-  const [accountNumber, setAccountNumber] = useState<string>('');
-  const [confirmAccountNumber, setConfirmAccountNumber] = useState<string>('');
-  const [ifscCode, setIfscCode] = useState<string>('HDFC0001234');
-  const [resolvedBranch, setResolvedBranch] = useState<string>('Benz Circle Branch, Vijayawada');
-  const [isResolvingIfsc, setIsResolvingIfsc] = useState<boolean>(false);
-  const [ifscError, setIfscError] = useState<string>('');
-  const [upiHandle, setUpiHandle] = useState<string>('');
-  const [upiVerifiedName, setUpiVerifiedName] = useState<string | null>(null);
-  const [isVerifyingUpi, setIsVerifyingUpi] = useState<boolean>(false);
-
-  // Step 3: Review & Submission
-  const [isConfirmedCheckbox, setIsConfirmedCheckbox] = useState<boolean>(false);
-  const [changeReason, setChangeReason] = useState<string>('');
-  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [changeSubmitted, setChangeSubmitted] = useState<boolean>(false);
-
-  // Edge & Simulation States
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isOffline, setIsOffline] = useState<boolean>(false);
-  const [isCoolingPeriodActive, setIsCoolingPeriodActive] = useState<boolean>(false);
-  const [isPermissionDenied, setIsPermissionDenied] = useState<boolean>(false);
+  // Change sheet
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [changeType, setChangeType] = useState<ChangeType>('BANK');
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [otp, setOtp] = useState('');
+  const [holder, setHolder] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [accountNo, setAccountNo] = useState('');
+  const [confirmNo, setConfirmNo] = useState('');
+  const [ifsc, setIfsc] = useState('');
+  const [upi, setUpi] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [reason, setReason] = useState('');
+  const [agreed, setAgreed] = useState(false);
+  const [submitMsg, setSubmitMsg] = useState('');
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = 'Bank Account & UPI Management | GlowVAI Vendor';
+      document.title = 'Payout account | GlowVAI Vendor';
     }
   }, []);
 
-  // OTP Timer countdown
   useEffect(() => {
-    let timer: any = null;
-    if (isEditModalOpen && editStep === 1 && resendTimer > 0) {
-      timer = setInterval(() => setResendTimer((prev) => prev - 1), 1000);
-    }
-    return () => clearInterval(timer);
-  }, [isEditModalOpen, editStep, resendTimer]);
-
-  const handleStartEditFlow = (type: 'BANK' | 'UPI') => {
-    setEditType(type);
-    setEditStep(1);
-    setOtpValue('');
-    setOtpError('');
-    setOtpAttempts(0);
-    setIsLockedOut(false);
-    setResendTimer(30);
-    setAccountNumber('');
-    setConfirmAccountNumber('');
-    setIfscError('');
-    setIsConfirmedCheckbox(false);
-    setChangeSubmitted(false);
-    setIsEditModalOpen(true);
-  };
-
-  const handleVerifyOtp = () => {
-    if (isLockedOut) return;
-    // OTP verification must happen on the server. Until that exists, only the
-    // developer test code passes, and only in __DEV__ builds.
-    if (__DEV__ && otpValue.trim() === '4892') {
-      soundService.playSuccessDing();
-      setEditStep(2);
-      setOtpError('');
-    } else {
-      setOtpError('Verification is not available in this build yet. Payout details cannot be changed.');
-    }
-  };
-
-  const handleIfscLookup = async (code: string) => {
-    const cleanIfsc = code.toUpperCase().trim();
-    setIfscCode(cleanIfsc);
-    if (cleanIfsc.length === 11) {
-      setIsResolvingIfsc(true);
-      setIfscError('');
-      setTimeout(() => {
-        setIsResolvingIfsc(false);
-        if (cleanIfsc.startsWith('HDFC')) {
-          setResolvedBranch('Benz Circle Branch, Vijayawada');
-          setBankName('HDFC Bank');
-        } else if (cleanIfsc.startsWith('SBIN')) {
-          setResolvedBranch('MG Road Main Branch, Vijayawada');
-          setBankName('State Bank of India');
-        } else {
-          setResolvedBranch('Main Commerce Branch, Vijayawada');
+    let cancelled = false;
+    setStatus('loading');
+    // Live account lookup is not connected yet. Only __DEV__ builds read adapter sample data.
+    (async () => {
+      try {
+        const details = __DEV__ ? await fetchBankAccountDetails() : null;
+        if (!cancelled) {
+          setAccount(details);
+          setStatus('ready');
         }
-      }, 500);
-    } else {
-      setResolvedBranch('');
-    }
+      } catch (_) {
+        if (!cancelled) setStatus('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [attempt]);
+
+  const showingSample = __DEV__ && !!account;
+
+  const openSheet = (type: ChangeType) => {
+    setChangeType(type);
+    setStep(1);
+    setOtp('');
+    setHolder('');
+    setBankName('');
+    setAccountNo('');
+    setConfirmNo('');
+    setIfsc('');
+    setUpi('');
+    setErrors({});
+    setReason('');
+    setAgreed(false);
+    setSubmitMsg('');
+    setSheetOpen(true);
   };
 
-  const handleVerifyUpiHandle = async () => {
-    if (!upiHandle.includes('@')) {
-      Alert.alert('Invalid UPI', 'Enter a valid UPI VPA handle (e.g. name@bank)');
+  const goToDetails = () => {
+    if (__DEV__) setStep(2);
+  };
+
+  const validateDetails = () => {
+    const e: Record<string, string> = {};
+    if (changeType === 'BANK') {
+      if (holder.trim().length < 3) e.holder = 'Enter the account holder name as it appears on the bank account.';
+      if (bankName.trim().length < 2) e.bankName = 'Enter the bank name.';
+      if (!ACCOUNT_RE.test(accountNo)) e.accountNo = 'Enter 9 to 18 digits.';
+      if (confirmNo !== accountNo) e.confirmNo = 'The account numbers do not match.';
+      if (!IFSC_RE.test(ifsc.toUpperCase())) e.ifsc = 'IFSC is 11 characters: 4 letters, a 0, then 6 letters or digits.';
+    } else if (!UPI_RE.test(upi.trim())) {
+      e.upi = 'Enter a UPI ID in the form name@bank.';
+    }
+    setErrors(e);
+    return Object.keys(e).length === 0;
+  };
+
+  const goToReview = () => {
+    if (validateDetails()) setStep(3);
+  };
+
+  const submitChange = () => {
+    if (!agreed) {
+      setErrors({ agreed: 'Tick the box to confirm the account belongs to your business.' });
       return;
     }
-    setIsVerifyingUpi(true);
-    setTimeout(() => {
-      setIsVerifyingUpi(false);
-      setUpiVerifiedName(beneficiaryName);
-      soundService.playSuccessDing();
-      Alert.alert('UPI Handle Verified ✅', `Registered Name: ${beneficiaryName}`);
-    }, 600);
+    setErrors({});
+    setSubmitMsg('Payout changes cannot be saved in this build yet. Your current account is unchanged.');
   };
 
-  const handleProceedToStep3 = () => {
-    if (editType === 'BANK') {
-      if (!accountNumber || !confirmAccountNumber) {
-        Alert.alert('Required Fields', 'Please enter and confirm your bank account number.');
-        return;
-      }
-      if (accountNumber !== confirmAccountNumber) {
-        Alert.alert('Account Mismatch ⚠️', 'Account number and confirm account number do not match.');
-        return;
-      }
-      if (ifscCode.length !== 11) {
-        Alert.alert('Invalid IFSC', 'IFSC code must be exactly 11 alphanumeric characters.');
-        return;
-      }
-    } else {
-      if (!upiHandle || !upiHandle.includes('@')) {
-        Alert.alert('Required', 'Please enter a valid UPI VPA handle.');
-        return;
-      }
-    }
-    soundService.playSuccessDing();
-    setEditStep(3);
-  };
-
-  const handleSubmitAccountChange = async () => {
-    if (!isConfirmedCheckbox) {
-      Alert.alert('Confirmation Required', 'Please check the box to confirm account ownership.');
-      return;
-    }
-    // No payout-change endpoint exists yet. Do not report a change that was not saved.
-    Alert.alert(
-      'Not available yet',
-      'Payout account changes cannot be saved in this build. Your existing account is unchanged.'
-    );
-  };
+  const maskedNew = accountNo.length >= 4 ? `••••${accountNo.slice(-4)}` : '';
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      {/* ── Top Header ────────────────────────────────────────────────────────── */}
-      <View style={styles.header}>
-        <TouchableOpacity style={styles.backBtn} onPress={() => router.back()}>
-          <Text style={styles.backBtnText}>←</Text>
-        </TouchableOpacity>
-        <View style={styles.headerTitleWrap}>
-          <Text style={styles.headerTitle}>Payout Account</Text>
-          <Text style={styles.headerSubTitle}>Bank Account & UPI Payout Destinations</Text>
-        </View>
-
-        <View style={styles.secPill}>
-          <Text style={styles.secPillText}>🔒 Encrypted</Text>
-        </View>
-      </View>
-
-      {/* Edge State Banners */}
-      {isOffline && (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>
-            ⚡ Offline Mode — Displaying cached bank account details.
-          </Text>
-        </View>
-      )}
-
-      {isCoolingPeriodActive && (
-        <View style={styles.coolingBanner}>
-          <Text style={styles.coolingBannerText}>
-            ⌛ 24-Hour Security Cooling Period Active — Daily payouts paused until Tomorrow 06:00 AM.
-          </Text>
-        </View>
-      )}
-
-      {isPermissionDenied && (
-        <View style={styles.deniedBanner}>
-          <Text style={styles.deniedBannerText}>
-            🔒 Permission Denied — Only primary Store Owners can modify payout bank accounts.
-          </Text>
-        </View>
-      )}
-
-      <ScrollView
-        style={styles.scrollArea}
-        contentContainerStyle={styles.scrollContent}
+    <View style={s.screen}>
+      <ScreenShell
+        header={{ title: 'Payout account', subtitle: 'Where your settlements are paid', showBack: true }}
+        contentContainerStyle={s.shellContent}
       >
-        {/* DEV TESTING STRIP FOR EDGE STATES */}
-        {__DEV__ && (
-        <View style={styles.devStrip}>
-          <Text style={styles.devTitle}>TEST BANK SECURITY EDGE STATES:</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.devPillRow}>
-            <TouchableOpacity
-              style={[styles.devPill, isLoading && styles.devPillActive]}
-              onPress={() => setIsLoading(!isLoading)}
-            >
-              <Text style={styles.devPillText}>Loading</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, isCoolingPeriodActive && styles.devPillActive]}
-              onPress={() => setIsCoolingPeriodActive(!isCoolingPeriodActive)}
-            >
-              <Text style={styles.devPillText}>Cooling Active</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, isOffline && styles.devPillActive]}
-              onPress={() => setIsOffline(!isOffline)}
-            >
-              <Text style={styles.devPillText}>Offline</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, isPermissionDenied && styles.devPillActive]}
-              onPress={() => setIsPermissionDenied(!isPermissionDenied)}
-            >
-              <Text style={styles.devPillText}>Permission Denied</Text>
-            </TouchableOpacity>
-          </ScrollView>
+        <View style={[s.page, { padding: isWide ? 24 : 16 }]}>
+          {showingSample && (
+            <View style={s.sampleBanner}>
+              <Ionicons name="flask-outline" size={15} color="#B45309" />
+              <Text style={s.sampleBannerText}>Sample data. These account details are not from your store.</Text>
+            </View>
+          )}
+
+          <View style={s.card}>
+            <View style={s.cardHead}>
+              <Text style={s.cardTitle}>Bank account</Text>
+              {account && (
+                <View style={[s.statusPill, { backgroundColor: STATUS_STYLE[account.status].bg }]}>
+                  <Text style={[s.statusPillText, { color: STATUS_STYLE[account.status].fg }]}>{account.status}</Text>
+                </View>
+              )}
+            </View>
+
+            {status === 'loading' && (
+              <View style={s.centerBox}>
+                <ActivityIndicator color={Colors.primary} />
+                <Text style={s.mutedText}>Loading account details</Text>
+              </View>
+            )}
+
+            {status === 'error' && (
+              <>
+                <Text style={s.mutedText}>We could not load your payout account. Check your connection and try again.</Text>
+                <Pressable onPress={() => setAttempt((n) => n + 1)} style={({ pressed }) => [s.primaryBtn, pressed && s.pressed]} accessibilityRole="button">
+                  <Text style={s.primaryBtnText}>Try again</Text>
+                </Pressable>
+              </>
+            )}
+
+            {status === 'ready' && !account && (
+              <View style={s.emptyBox}>
+                <View style={s.emptyIcon}>
+                  <Ionicons name="card-outline" size={22} color={Colors.primary} />
+                </View>
+                <Text style={s.cardTitle}>Account details are not available yet</Text>
+                <Text style={[s.mutedText, s.textCenter]}>
+                  Your payout account will show here once account lookup is connected. Nothing on this screen has changed your account.
+                </Text>
+              </View>
+            )}
+
+            {status === 'ready' && account && (
+              <>
+                <View style={s.detailGrid}>
+                  <Detail label="Account holder" value={account.holderName} />
+                  <Detail label="Bank" value={account.bankName} />
+                  <Detail label="Account number" value={`••••${account.accountLast4}`} mono />
+                  <Detail label="IFSC" value={account.ifsc} mono />
+                  <Detail label="Branch" value={account.branch} wide />
+                  <Detail label="UPI ID" value={account.upiIdMasked} mono wide />
+                </View>
+                <Text style={s.mutedText}>Last changed {account.lastChangedAt}</Text>
+                <View style={s.actionRow}>
+                  <Pressable onPress={() => openSheet('BANK')} style={({ pressed }) => [s.primaryBtn, s.actionBtn, pressed && s.pressed]} accessibilityRole="button">
+                    <Text style={s.primaryBtnText}>Change bank account</Text>
+                  </Pressable>
+                  <Pressable onPress={() => openSheet('UPI')} style={({ pressed }) => [s.secondaryBtn, s.actionBtn, pressed && s.pressed]} accessibilityRole="button">
+                    <Text style={s.secondaryBtnText}>Change UPI ID</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </View>
+
+          <View style={s.card}>
+            <Text style={s.cardTitle}>How payout changes work</Text>
+            <View style={s.bullet}>
+              <Ionicons name="shield-checkmark-outline" size={18} color={Colors.primary} />
+              <Text style={s.bulletText}>Every change needs a one-time code sent to your registered mobile number.</Text>
+            </View>
+            <View style={s.bullet}>
+              <Ionicons name="time-outline" size={18} color={Colors.primary} />
+              <Text style={s.bulletText}>Payouts can be held for up to 24 hours after a change, so the new account can be checked.</Text>
+            </View>
+            <View style={s.bullet}>
+              <Ionicons name="person-outline" size={18} color={Colors.primary} />
+              <Text style={s.bulletText}>The account holder name must match your registered business name.</Text>
+            </View>
+          </View>
+
+          <View style={s.card}>
+            <Text style={s.cardTitle}>Did not make this change?</Text>
+            <Text style={s.mutedText}>Contact support straight away so the account can be reviewed.</Text>
+            <Pressable onPress={() => router.push('/(vendor)/support')} style={({ pressed }) => [s.secondaryBtn, pressed && s.pressed]} accessibilityRole="button">
+              <Text style={s.secondaryBtnText}>Contact support</Text>
+            </Pressable>
+          </View>
         </View>
-        )}
+      </ScreenShell>
 
-        {/* ── 1. PRIMARY VERIFIED BANK ACCOUNT CARD ─────────────────────────── */}
-        {isLoading ? (
-          <View style={[styles.card, { padding: 30, alignItems: 'center' }]}>
-            <ActivityIndicator size="large" color={COLOR_ROYAL_BLUE} />
-            <Text style={{ color: COLOR_SLATE, marginTop: 10 }}>Loading payout details...</Text>
-          </View>
-        ) : isPermissionDenied ? (
-          <View style={styles.deniedCard}>
-            <Text style={styles.deniedCardTitle}>Access Restricted</Text>
-            <Text style={styles.deniedCardSub}>
-              You do not have permission to view or edit bank accounts. Contact your Store Admin.
-            </Text>
-          </View>
-        ) : (
-          <>
-            <View style={styles.card}>
-              <View style={styles.cardTopRow}>
-                <View style={styles.bankLogoWrap}>
-                  <Text style={styles.bankLogoText}>HDFC</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.bankTitleText}>HDFC Bank</Text>
-                    <View style={styles.statusVerifiedPill}>
-                      <Text style={styles.statusVerifiedText}>✓ Verified</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.bankSubText}>Primary Settlement Account • Savings</Text>
-                </View>
+      <MobileBottomNav currentTab="earnings" />
 
-                {defaultChannel === 'BANK' && (
-                  <View style={styles.defaultChannelTag}>
-                    <Text style={styles.defaultChannelTagText}>DEFAULT</Text>
+      <Modal visible={sheetOpen} transparent animationType="slide" onRequestClose={() => setSheetOpen(false)}>
+        <Pressable style={s.backdrop} onPress={() => setSheetOpen(false)} accessibilityLabel="Close" />
+        <View style={s.sheet}>
+          <View style={s.sheetHead}>
+            <View style={{ flex: 1 }}>
+              <Text style={s.sheetTitle}>{changeType === 'BANK' ? 'Change bank account' : 'Change UPI ID'}</Text>
+              <Text style={s.mutedText}>Step {step} of 3</Text>
+            </View>
+            <Pressable onPress={() => setSheetOpen(false)} style={s.closeBtn} accessibilityRole="button" accessibilityLabel="Close">
+              <Ionicons name="close" size={22} color={Colors.textPrimary} />
+            </Pressable>
+          </View>
+
+          <View style={s.steps} accessible accessibilityLabel={`Step ${step} of 3`}>
+            {[1, 2, 3].map((n) => (
+              <View key={n} style={[s.stepBar, n <= step && s.stepBarOn]} />
+            ))}
+          </View>
+
+          <ScrollView contentContainerStyle={{ gap: 14, paddingBottom: 8 }} keyboardShouldPersistTaps="handled">
+            {step === 1 && (
+              <>
+                <Text style={s.stepTitle}>Confirm it is you</Text>
+                {!VERIFICATION_CONNECTED && (
+                  <View style={s.notice}>
+                    <Ionicons name="information-circle-outline" size={18} color="#92400E" />
+                    <Text style={s.noticeText}>
+                      Code verification is not connected in this build yet, so payout details cannot be changed.
+                    </Text>
                   </View>
                 )}
-              </View>
-
-              <View style={styles.detailsGrid}>
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>ACCOUNT HOLDER</Text>
-                  <Text style={styles.detailVal}>Priya Beauty Retail Pvt Ltd</Text>
-                </View>
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>ACCOUNT NUMBER</Text>
-                  <Text style={styles.detailValMasked}>••••••4589</Text>
-                </View>
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>IFSC CODE</Text>
-                  <Text style={styles.detailValCode}>HDFC0001234</Text>
-                </View>
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>BRANCH</Text>
-                  <Text style={styles.detailVal}>Benz Circle, Vijayawada</Text>
-                </View>
-              </View>
-
-              <Text style={styles.verifiedMetaText}>Penny-Drop Verified on 15 Aug 2026 via RBI NPCI</Text>
-
-              <TouchableOpacity
-                style={styles.changeActionBtn}
-                onPress={() => handleStartEditFlow('BANK')}
-              >
-                <Text style={styles.changeActionBtnText}>Change Bank Details →</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* ── 2. MASKED UPI PAYOUT CARD ──────────────────────────────────── */}
-            <View style={styles.card}>
-              <View style={styles.cardTopRow}>
-                <View style={[styles.bankLogoWrap, { backgroundColor: '#FEF3C7', borderColor: '#FDE68A' }]}>
-                  <Text style={[styles.bankLogoText, { color: COLOR_AMBER }]}>UPI</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.bankTitleText}>UPI Payout Destination</Text>
-                    <View style={styles.statusVerifiedPill}>
-                      <Text style={styles.statusVerifiedText}>✓ Verified</Text>
-                    </View>
-                  </View>
-                  <Text style={styles.bankSubText}>VPA Handle: glow••••@hdfcbank</Text>
-                </View>
-
-                {defaultChannel === 'UPI' && (
-                  <View style={styles.defaultChannelTag}>
-                    <Text style={styles.defaultChannelTagText}>DEFAULT</Text>
-                  </View>
-                )}
-              </View>
-
-              <View style={styles.upiActionRow}>
-                <TouchableOpacity
-                  style={styles.switchChannelBtn}
-                  onPress={() => {
-                    soundService.playSuccessDing();
-                    setDefaultChannel(defaultChannel === 'BANK' ? 'UPI' : 'BANK');
-                  }}
-                >
-                  <Text style={styles.switchChannelBtnText}>
-                    {defaultChannel === 'BANK' ? 'Set UPI as Default' : 'Set Bank as Default'}
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.editUpiBtn}
-                  onPress={() => handleStartEditFlow('UPI')}
-                >
-                  <Text style={styles.editUpiBtnText}>Edit UPI Handle</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {/* ── 3. RECENT SECURITY ACTIVITY LOG ────────────────────────────── */}
-            <View style={styles.card}>
-              <Text style={styles.cardTitle}>RECENT SECURITY & ACCOUNT ACTIVITY</Text>
-              <View style={styles.activityRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.activityTitle}>Bank Account Penny-Drop Verification</Text>
-                  <Text style={styles.activityMeta}>15 Aug 2026, 04:30 PM • HDFC ••••••4589</Text>
-                </View>
-                <View style={styles.activityBadge}>
-                  <Text style={styles.activityBadgeText}>VERIFIED</Text>
-                </View>
-              </View>
-
-              <TouchableOpacity
-                style={styles.suspiciousHelpBtn}
-                onPress={() =>
-                  Alert.alert(
-                    'Security Lockout',
-                    'If you do not recognize an account modification, tap Lock Account to freeze daily payouts immediately.'
-                  )
-                }
-              >
-                <Text style={styles.suspiciousHelpText}>🚨 Unrecognized update? Lock Account Immediately</Text>
-              </TouchableOpacity>
-            </View>
-          </>
-        )}
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
-
-      {/* ── GUIDED 3-STEP SECURE CHANGE MODAL WIZARD ───────────────────────── */}
-      <Modal visible={isEditModalOpen} transparent animationType="slide">
-        <SafeAreaView style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
-            {/* Modal Header & Progress */}
-            <View style={styles.modalHeader}>
-              <TouchableOpacity onPress={() => setIsEditModalOpen(false)}>
-                <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-              </TouchableOpacity>
-              <Text style={styles.modalTitle}>Update {editType === 'BANK' ? 'Bank Account' : 'UPI VPA'}</Text>
-              <Text style={styles.modalStepBadge}>Step {editStep} of 3</Text>
-            </View>
-
-            {/* Stepper Dots */}
-            <View style={styles.stepperBar}>
-              <View style={[styles.stepDot, editStep >= 1 && styles.stepDotActive]}>
-                <Text style={[styles.stepDotText, editStep >= 1 && styles.stepDotTextActive]}>1</Text>
-              </View>
-              <View style={[styles.stepLine, editStep >= 2 && styles.stepLineActive]} />
-              <View style={[styles.stepDot, editStep >= 2 && styles.stepDotActive]}>
-                <Text style={[styles.stepDotText, editStep >= 2 && styles.stepDotTextActive]}>2</Text>
-              </View>
-              <View style={[styles.stepLine, editStep >= 3 && styles.stepLineActive]} />
-              <View style={[styles.stepDot, editStep >= 3 && styles.stepDotActive]}>
-                <Text style={[styles.stepDotText, editStep >= 3 && styles.stepDotTextActive]}>3</Text>
-              </View>
-            </View>
-
-            <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ paddingVertical: 10 }}>
-              {/* STEP 1: VERIFY IDENTITY WITH OTP */}
-              {editStep === 1 && (
-                <View>
-                  <Text style={styles.stepHeading}>Step 1: Verify Identity via SMS OTP</Text>
-                  <Text style={styles.stepSub}>
-                    Enter 6-digit security code sent to registered mobile +91 98765***** to authorize payout modification.
-                  </Text>
-
+                <Field label="6-digit code">
                   <TextInput
-                    style={styles.otpInput}
-                    placeholder="Enter OTP (e.g. 4892)"
-                    value={otpValue}
-                    onChangeText={setOtpValue}
+                    value={otp}
+                    onChangeText={(t) => setOtp(t.replace(/\D/g, '').slice(0, 6))}
                     keyboardType="number-pad"
                     maxLength={6}
-                    editable={!isLockedOut}
+                    placeholder="6-digit code"
+                    placeholderTextColor={Colors.textSubtle}
+                    autoComplete="one-time-code"
+                    textContentType="oneTimeCode"
+                    accessibilityLabel="6-digit code"
+                    style={[s.input, s.codeInput]}
                   />
+                </Field>
+                <Pressable
+                  onPress={() => {
+                    if (VERIFICATION_CONNECTED) setStep(2);
+                  }}
+                  disabled={!VERIFICATION_CONNECTED || otp.length !== 6}
+                  style={({ pressed }) => [s.primaryBtn, (!VERIFICATION_CONNECTED || otp.length !== 6) && s.disabledBtn, pressed && s.pressed]}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: !VERIFICATION_CONNECTED || otp.length !== 6 }}
+                >
+                  <Text style={s.primaryBtnText}>Verify code</Text>
+                </Pressable>
+                {__DEV__ && (
+                  <Pressable onPress={goToDetails} style={({ pressed }) => [s.devSkip, pressed && s.pressed]} accessibilityRole="button">
+                    <Text style={s.devSkipText}>Skip verification (development builds only)</Text>
+                  </Pressable>
+                )}
+              </>
+            )}
 
-                  {otpError ? <Text style={styles.otpErrorText}>{otpError}</Text> : null}
+            {step === 2 && changeType === 'BANK' && (
+              <>
+                <Text style={s.stepTitle}>Enter the new bank details</Text>
+                <Field label="Account holder name" error={errors.holder}>
+                  <TextInput value={holder} onChangeText={setHolder} style={s.input} autoCapitalize="words" accessibilityLabel="Account holder name" />
+                </Field>
+                <Field label="Bank name" error={errors.bankName}>
+                  <TextInput value={bankName} onChangeText={setBankName} style={s.input} accessibilityLabel="Bank name" />
+                </Field>
+                <Field label="Account number" error={errors.accountNo}>
+                  <TextInput
+                    value={accountNo}
+                    onChangeText={(t) => setAccountNo(t.replace(/\D/g, ''))}
+                    keyboardType="number-pad"
+                    maxLength={18}
+                    style={s.input}
+                    accessibilityLabel="Account number"
+                  />
+                </Field>
+                <Field label="Re-enter account number" error={errors.confirmNo} helper="Enter the same number again to confirm it.">
+                  <TextInput
+                    value={confirmNo}
+                    onChangeText={(t) => setConfirmNo(t.replace(/\D/g, ''))}
+                    keyboardType="number-pad"
+                    maxLength={18}
+                    style={s.input}
+                    accessibilityLabel="Re-enter account number"
+                  />
+                </Field>
+                <Field label="IFSC code" error={errors.ifsc} helper="11 characters: 4 letters, a 0, then 6 letters or digits">
+                  <TextInput
+                    value={ifsc}
+                    onChangeText={(t) => setIfsc(t.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11))}
+                    autoCapitalize="characters"
+                    maxLength={11}
+                    style={[s.input, s.mono]}
+                    accessibilityLabel="IFSC code"
+                  />
+                </Field>
+                <PrimaryAction label="Review change" onPress={goToReview} />
+              </>
+            )}
 
-                  <View style={styles.timerRow}>
-                    <Text style={styles.timerText}>
-                      {resendTimer > 0 ? `Resend code in ${resendTimer}s` : 'Did not receive SMS?'}
-                    </Text>
-                    {resendTimer === 0 && !isLockedOut && (
-                      <TouchableOpacity onPress={() => setResendTimer(30)}>
-                        <Text style={styles.resendBtnText}>Resend OTP</Text>
-                      </TouchableOpacity>
+            {step === 2 && changeType === 'UPI' && (
+              <>
+                <Text style={s.stepTitle}>Enter the new UPI ID</Text>
+                <Field label="UPI ID" error={errors.upi} helper="For example yourname@bank">
+                  <TextInput
+                    value={upi}
+                    onChangeText={setUpi}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={[s.input, s.mono]}
+                    accessibilityLabel="UPI ID"
+                  />
+                </Field>
+                <PrimaryAction label="Review change" onPress={goToReview} />
+              </>
+            )}
+
+            {step === 3 && (
+              <>
+                <Text style={s.stepTitle}>Review the change</Text>
+                <View style={s.compare}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={s.compareHead}>Current</Text>
+                    <Text style={s.compareText}>{account ? account.bankName : 'Not available'}</Text>
+                    <Text style={s.compareText}>{account ? `••••${account.accountLast4}` : '—'}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[s.compareHead, { color: Colors.primary }]}>New</Text>
+                    {changeType === 'BANK' ? (
+                      <>
+                        <Text style={s.compareTextStrong}>{bankName.trim()}</Text>
+                        <Text style={s.compareTextStrong}>{maskedNew}</Text>
+                        <Text style={[s.compareTextStrong, s.mono]}>{ifsc}</Text>
+                      </>
+                    ) : (
+                      <Text style={[s.compareTextStrong, s.mono]}>{upi.trim()}</Text>
                     )}
                   </View>
-
-                  <TouchableOpacity
-                    style={styles.testOtpChip}
-                    onPress={() => setOtpValue('4892')}
-                    disabled={isLockedOut}
-                  >
-                    <Text style={styles.testOtpText}>💡 Test OTP: Tap to autofill 4892</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.modalPrimaryBtn, isLockedOut && styles.btnDisabled]}
-                    onPress={handleVerifyOtp}
-                    disabled={isLockedOut}
-                  >
-                    <Text style={styles.modalPrimaryBtnText}>Verify Identity & Continue</Text>
-                  </TouchableOpacity>
                 </View>
-              )}
 
-              {/* STEP 2: ENTER NEW DETAILS */}
-              {editStep === 2 && (
-                <View style={{ gap: 12 }}>
-                  <Text style={styles.stepHeading}>Step 2: Enter New Payout Details</Text>
-                  <Text style={styles.stepSub}>
-                    Ensure beneficiary name strictly matches registered merchant GSTIN & PAN details.
+                <Field label="Reason for change (optional)">
+                  <TextInput
+                    value={reason}
+                    onChangeText={setReason}
+                    placeholder="For example, moving to a new current account"
+                    placeholderTextColor={Colors.textSubtle}
+                    style={s.input}
+                    accessibilityLabel="Reason for change, optional"
+                  />
+                </Field>
+
+                <Pressable
+                  onPress={() => setAgreed((v) => !v)}
+                  style={s.checkRow}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: agreed }}
+                >
+                  <View style={[s.checkBox, agreed && s.checkBoxOn]}>
+                    {agreed && <Ionicons name="checkmark" size={14} color="#FFFFFF" />}
+                  </View>
+                  <Text style={s.checkText}>
+                    I confirm this account belongs to my registered business.
                   </Text>
+                </Pressable>
+                {errors.agreed ? <Text style={s.errorText}>{errors.agreed}</Text> : null}
 
-                  {editType === 'BANK' ? (
-                    <>
-                      <View>
-                        <Text style={styles.fieldLabel}>BENEFICIARY HOLDER NAME</Text>
-                        <TextInput
-                          style={styles.inputField}
-                          value={beneficiaryName}
-                          onChangeText={setBeneficiaryName}
-                        />
-                      </View>
+                {submitMsg ? (
+                  <View style={s.notice}>
+                    <Ionicons name="information-circle-outline" size={18} color="#92400E" />
+                    <Text style={s.noticeText}>{submitMsg}</Text>
+                  </View>
+                ) : null}
 
-                      <View>
-                        <Text style={styles.fieldLabel}>BANK NAME</Text>
-                        <TextInput
-                          style={styles.inputField}
-                          value={bankName}
-                          onChangeText={setBankName}
-                        />
-                      </View>
-
-                      <View>
-                        <Text style={styles.fieldLabel}>NEW ACCOUNT NUMBER</Text>
-                        <TextInput
-                          style={styles.inputField}
-                          placeholder="Enter full account number"
-                          value={accountNumber}
-                          onChangeText={setAccountNumber}
-                          keyboardType="number-pad"
-                          secureTextEntry
-                        />
-                      </View>
-
-                      <View>
-                        <Text style={styles.fieldLabel}>CONFIRM ACCOUNT NUMBER (PASTE BLOCKED)</Text>
-                        <TextInput
-                          style={styles.inputField}
-                          placeholder="Re-type account number"
-                          value={confirmAccountNumber}
-                          onChangeText={setConfirmAccountNumber}
-                          keyboardType="number-pad"
-                          secureTextEntry
-                        />
-                        <Text style={styles.fieldHint}>🔒 Clipboard paste is disabled on confirm field to prevent errors.</Text>
-                      </View>
-
-                      <View>
-                        <Text style={styles.fieldLabel}>IFSC CODE (11 CHARACTERS)</Text>
-                        <TextInput
-                          style={styles.inputField}
-                          placeholder="HDFC0001234"
-                          value={ifscCode}
-                          onChangeText={handleIfscLookup}
-                          autoCapitalize="characters"
-                          maxLength={11}
-                        />
-                        {isResolvingIfsc ? (
-                          <ActivityIndicator size="small" color={COLOR_ROYAL_BLUE} style={{ marginTop: 4 }} />
-                        ) : resolvedBranch ? (
-                          <Text style={styles.resolvedBranchText}>✓ Branch: {resolvedBranch}</Text>
-                        ) : null}
-                      </View>
-                    </>
-                  ) : (
-                    <View>
-                      <Text style={styles.fieldLabel}>NEW UPI VPA HANDLE</Text>
-                      <TextInput
-                        style={styles.inputField}
-                        placeholder="name@bank (e.g. glowvai@okhdfcbank)"
-                        value={upiHandle}
-                        onChangeText={setUpiHandle}
-                        autoCapitalize="none"
-                      />
-                      <TouchableOpacity style={styles.verifyVpaBtn} onPress={handleVerifyUpiHandle}>
-                        <Text style={styles.verifyVpaBtnText}>
-                          {isVerifyingUpi ? 'Verifying VPA…' : 'Verify UPI VPA Handle'}
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-
-                  <TouchableOpacity style={styles.modalPrimaryBtn} onPress={handleProceedToStep3}>
-                    <Text style={styles.modalPrimaryBtnText}>Proceed to Review</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-
-              {/* STEP 3: REVIEW & SUBMIT */}
-              {editStep === 3 && (
-                <View>
-                  <Text style={styles.stepHeading}>Step 3: Review & Confirm Details</Text>
-                  <Text style={styles.stepSub}>
-                    Compare current versus new payout account details before final submission.
-                  </Text>
-
-                  {changeSubmitted ? (
-                    <View style={styles.successWrap}>
-                      <Ionicons name="checkmark-circle-outline" size={36} style={{ color: '#475569' }} />
-                      <Text style={styles.successTitle}>Update Submitted!</Text>
-                      <Text style={styles.successSub}>
-                        Your payout account change request ID CHG-2026-9912 is under 24-hour verification cooling hold.
-                      </Text>
-                      <TouchableOpacity
-                        style={styles.modalPrimaryBtn}
-                        onPress={() => setIsEditModalOpen(false)}
-                      >
-                        <Text style={styles.modalPrimaryBtnText}>Done</Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : (
-                    <>
-                      <View style={styles.compareGrid}>
-                        <View style={styles.compareCol}>
-                          <Text style={styles.compareTitle}>CURRENT ACCOUNT</Text>
-                          <Text style={styles.compareVal}>HDFC Bank</Text>
-                          <Text style={styles.compareVal}>••••••4589</Text>
-                          <Text style={styles.compareVal}>HDFC0001234</Text>
-                        </View>
-                        <View style={styles.compareDivider} />
-                        <View style={styles.compareCol}>
-                          <Text style={styles.compareTitleNew}>PROPOSED NEW</Text>
-                          <Text style={styles.compareValNew}>{bankName}</Text>
-                          <Text style={styles.compareValNew}>
-                            {accountNumber ? `••••••${accountNumber.slice(-4)}` : '••••••4589'}
-                          </Text>
-                          <Text style={styles.compareValNew}>{ifscCode}</Text>
-                        </View>
-                      </View>
-
-                      <View style={{ marginVertical: 10 }}>
-                        <Text style={styles.fieldLabel}>REASON FOR CHANGE (OPTIONAL AUDIT NOTE)</Text>
-                        <TextInput
-                          style={styles.inputField}
-                          placeholder="e.g. Migration to primary current account"
-                          value={changeReason}
-                          onChangeText={setChangeReason}
-                        />
-                      </View>
-
-                      <TouchableOpacity
-                        style={styles.checkboxRow}
-                        onPress={() => setIsConfirmedCheckbox(!isConfirmedCheckbox)}
-                      >
-                        <View style={[styles.checkboxBox, isConfirmedCheckbox && styles.checkboxBoxChecked]}>
-                          {isConfirmedCheckbox && <Ionicons name="checkmark" size={12} style={{ color: '#fff' }} />}
-                        </View>
-                        <Text style={styles.checkboxText}>
-                          I confirm these bank details belong to the registered merchant entity. GlowVAI is not responsible for funds sent to incorrectly provided accounts.
-                        </Text>
-                      </TouchableOpacity>
-
-                      <View style={styles.coolingNoticeBox}>
-                        <Text style={styles.coolingNoticeText}>
-                          ⚠️ Policy Warning: Payouts may be held for up to 24 hours after this change.
-                        </Text>
-                      </View>
-
-                      <TouchableOpacity
-                        style={styles.modalPrimaryBtn}
-                        onPress={handleSubmitAccountChange}
-                        disabled={isSubmitting}
-                      >
-                        {isSubmitting ? (
-                          <ActivityIndicator size="small" color="#ffffff" />
-                        ) : (
-                          <Text style={styles.modalPrimaryBtnText}>Submit Account Change</Text>
-                        )}
-                      </TouchableOpacity>
-                    </>
-                  )}
-                </View>
-              )}
-            </ScrollView>
-          </View>
-        </SafeAreaView>
+                <PrimaryAction label="Submit change" onPress={submitChange} />
+                <Pressable onPress={() => setStep(2)} style={({ pressed }) => [s.textBtn, pressed && s.pressed]} accessibilityRole="button">
+                  <Text style={s.textBtnText}>Edit details</Text>
+                </Pressable>
+              </>
+            )}
+          </ScrollView>
+        </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 12,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    gap: 12,
-  },
-  backBtn: {
-    padding: 6,
-  },
-  backBtnText: {
-    fontSize: 22,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  headerTitleWrap: {
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  headerSubTitle: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  secPill: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  secPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_EMERALD,
-  },
+function Detail({ label, value, mono, wide }: { label: string; value: string; mono?: boolean; wide?: boolean }) {
+  return (
+    <View style={[s.detailItem, wide && s.detailWide]}>
+      <Text style={s.detailLabel}>{label}</Text>
+      <Text style={[s.detailValue, mono && s.mono]} selectable>{value}</Text>
+    </View>
+  );
+}
 
-  offlineBanner: {
-    backgroundColor: COLOR_AMBER,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-  },
-  offlineBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-    textAlign: 'center',
-  },
-  coolingBanner: {
-    backgroundColor: '#FEF3C7',
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#FDE68A',
-  },
-  coolingBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#92400E',
-    textAlign: 'center',
-  },
-  deniedBanner: {
-    backgroundColor: '#FEF2F2',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#FCA5A5',
-  },
-  deniedBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_DANGER,
-    textAlign: 'center',
-  },
+function Field({ label, error, helper, children }: { label: string; error?: string; helper?: string; children: React.ReactNode }) {
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={s.fieldLabel}>{label}</Text>
+      {children}
+      {error ? <Text style={s.errorText}>{error}</Text> : helper ? <Text style={s.helperText}>{helper}</Text> : null}
+    </View>
+  );
+}
 
-  scrollArea: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-    gap: 16,
-  },
+function PrimaryAction({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={({ pressed }) => [s.primaryBtn, pressed && s.pressed]} accessibilityRole="button">
+      <Text style={s.primaryBtnText}>{label}</Text>
+    </Pressable>
+  );
+}
 
-  devStrip: {
-    backgroundColor: '#F1F5F9',
-    padding: 8,
-    borderRadius: 10,
+export default BankEditScreen;
+
+const s = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: Colors.surface },
+  shellContent: { paddingBottom: 32 },
+  page: { gap: 12, maxWidth: 1200, width: '100%', alignSelf: 'center' },
+  pressed: { opacity: 0.85 },
+  mono: { fontFamily: FontFamily.mono },
+  textCenter: { textAlign: 'center' },
+
+  sampleBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, padding: 10,
+    borderRadius: 10, backgroundColor: Colors.warningLight, borderWidth: 1, borderColor: Colors.warningBorder,
   },
-  devTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  devPillRow: {
-    gap: 6,
-  },
-  devPill: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-  },
-  devPillActive: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    borderColor: COLOR_ROYAL_BLUE,
-  },
-  devPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#334155',
-  },
+  sampleBannerText: { ...TypeScale.label, color: '#92400E', flex: 1 },
 
   card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
+    backgroundColor: Colors.background, borderRadius: 14, borderWidth: 1, borderColor: Colors.border,
+    padding: 16, gap: 10,
   },
-  cardTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-    letterSpacing: 0.5,
-    marginBottom: 12,
+  cardHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  cardTitle: { fontFamily: FontFamily.bold, fontSize: 16, lineHeight: 22, color: Colors.textPrimary, flexShrink: 1 },
+  mutedText: { ...TypeScale.caption, color: Colors.textSubtle, fontSize: 13, lineHeight: 18 },
+  centerBox: { alignItems: 'center', gap: 8, paddingVertical: 20 },
+  emptyBox: { alignItems: 'center', gap: 8, paddingVertical: 16 },
+  emptyIcon: {
+    width: 44, height: 44, borderRadius: 14, backgroundColor: Colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center', marginBottom: 4,
   },
-  cardTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
-  },
-  bankLogoWrap: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#EFF6FF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-  },
-  bankLogoText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-  bankTitleText: {
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  bankSubText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  statusVerifiedPill: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  statusVerifiedText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_EMERALD,
-  },
-  defaultChannelTag: {
-    backgroundColor: '#0F172A',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  defaultChannelTagText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
+  statusPill: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },
+  statusPillText: { fontFamily: FontFamily.semibold, fontSize: 12 },
 
-  detailsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#F1F5F9',
-  },
-  detailItem: {
-    width: '47%',
-  },
-  detailLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#94A3B8',
-    letterSpacing: 0.5,
-  },
-  detailVal: {
-    fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-    marginTop: 2,
-  },
-  detailValMasked: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-    letterSpacing: 1,
-    marginTop: 2,
-  },
-  detailValCode: {
-    fontSize: 12.5,
-    
-    fontFamily: 'JetBrainsMono_500Medium',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-    marginTop: 2,
-  },
-  verifiedMetaText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 10,
-  },
+  detailGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 14 },
+  detailItem: { flexBasis: '46%', flexGrow: 1 },
+  detailWide: { flexBasis: '100%' },
+  detailLabel: { ...TypeScale.label, color: Colors.textSubtle },
+  detailValue: { fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: Colors.textPrimary, marginTop: 2 },
 
-  changeActionBtn: {
-    backgroundColor: '#EFF6FF',
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: COLOR_ROYAL_BLUE,
-  },
-  changeActionBtnText: {
-    fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
+  actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 4 },
+  actionBtn: { flexGrow: 1, flexBasis: 160, marginTop: 0 },
 
-  upiActionRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 10,
-  },
-  switchChannelBtn: {
-    flex: 1,
-    backgroundColor: '#F1F5F9',
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  switchChannelBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#334155',
-  },
-  editUpiBtn: {
-    flex: 1,
-    backgroundColor: '#EFF6FF',
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLOR_ROYAL_BLUE,
-  },
-  editUpiBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
+  bullet: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  bulletText: { flex: 1, ...TypeScale.caption, fontSize: 13, lineHeight: 19, color: Colors.textSecondary },
 
-  activityRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+  primaryBtn: {
+    marginTop: 4, minHeight: 48, borderRadius: 10, backgroundColor: Colors.primary,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16,
   },
-  activityTitle: {
-    fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
+  primaryBtnText: { fontFamily: FontFamily.bold, fontSize: 14, color: '#FFFFFF' },
+  disabledBtn: { backgroundColor: Colors.inputBorder },
+  secondaryBtn: {
+    marginTop: 4, minHeight: 48, borderRadius: 10, borderWidth: 1, borderColor: Colors.inputBorder,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16, backgroundColor: Colors.background,
   },
-  activityMeta: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  activityBadge: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  activityBadgeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_EMERALD,
-  },
-  suspiciousHelpBtn: {
-    marginTop: 10,
-  },
-  suspiciousHelpText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_DANGER,
-  },
+  secondaryBtnText: { fontFamily: FontFamily.bold, fontSize: 14, color: Colors.textPrimary },
+  textBtn: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  textBtnText: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.primary },
+  devSkip: { minHeight: 44, alignItems: 'center', justifyContent: 'center' },
+  devSkipText: { fontFamily: FontFamily.semibold, fontSize: 13, color: Colors.textSubtle, textDecorationLine: 'underline' },
 
-  deniedCard: {
-    backgroundColor: '#FEF2F2',
-    padding: 20,
-    borderRadius: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
+  backdrop: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.4)' },
+  sheet: {
+    backgroundColor: Colors.background, borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    padding: 20, paddingBottom: 28, maxHeight: '88%', gap: 12,
+    width: '100%', maxWidth: 640, alignSelf: 'center',
   },
-  deniedCardTitle: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_DANGER,
-  },
-  deniedCardSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#7F1D1D',
-    marginTop: 4,
-    textAlign: 'center',
-  },
+  sheetHead: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  sheetTitle: { fontFamily: FontFamily.bold, fontSize: 18, lineHeight: 24, color: Colors.textPrimary },
+  closeBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginTop: -10, marginRight: -10 },
+  steps: { flexDirection: 'row', gap: 6 },
+  stepBar: { flex: 1, height: 4, borderRadius: 2, backgroundColor: Colors.border },
+  stepBarOn: { backgroundColor: Colors.primary },
+  stepTitle: { fontFamily: FontFamily.bold, fontSize: 15, color: Colors.textPrimary },
 
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
+  notice: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 12, borderRadius: 10,
+    backgroundColor: Colors.warningLight, borderWidth: 1, borderColor: Colors.warningBorder,
   },
-  modalSheet: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 18,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  modalStepBadge: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-  modalCloseText: {
-    fontSize: 18,
-    color: '#64748B',
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
+  noticeText: { flex: 1, ...TypeScale.caption, fontSize: 13, lineHeight: 19, color: '#92400E' },
 
-  stepperBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    marginBottom: 10,
+  fieldLabel: { ...TypeScale.label, color: Colors.textPrimary },
+  helperText: { ...TypeScale.caption, color: Colors.textSubtle },
+  errorText: { ...TypeScale.caption, fontSize: 13, color: Colors.danger },
+  input: {
+    minHeight: 48, borderRadius: 10, borderWidth: 1, borderColor: Colors.inputBorder,
+    paddingHorizontal: 14, fontFamily: FontFamily.regular, fontSize: 16, color: Colors.textPrimary,
+    backgroundColor: Colors.background,
   },
-  stepDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: '#E2E8F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepDotActive: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-  },
-  stepDotText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  stepDotTextActive: {
-    color: '#FFFFFF',
-  },
-  stepLine: {
-    width: 30,
-    height: 2,
-    backgroundColor: '#E2E8F0',
-  },
-  stepLineActive: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-  },
+  codeInput: { fontFamily: FontFamily.bold, fontSize: 20, letterSpacing: 6, textAlign: 'center' },
 
-  stepHeading: {
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 4,
+  compare: {
+    flexDirection: 'row', gap: 12, padding: 14, borderRadius: 12,
+    backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.border,
   },
-  stepSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    lineHeight: 16,
-    marginBottom: 14,
-  },
+  compareHead: { ...TypeScale.label, color: Colors.textSubtle, marginBottom: 4 },
+  compareText: { fontFamily: FontFamily.regular, fontSize: 13, color: Colors.textSecondary, marginBottom: 2 },
+  compareTextStrong: { fontFamily: FontFamily.semibold, fontSize: 13, color: Colors.textPrimary, marginBottom: 2 },
 
-  otpInput: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: COLOR_ROYAL_BLUE,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    fontSize: 18,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    letterSpacing: 6,
-    textAlign: 'center',
-    color: '#0F172A',
+  checkRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, minHeight: 44 },
+  checkBox: {
+    width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: Colors.inputBorder,
+    alignItems: 'center', justifyContent: 'center', marginTop: 1,
   },
-  otpErrorText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_DANGER,
-    marginTop: 6,
-    textAlign: 'center',
-  },
-  timerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 8,
-  },
-  timerText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-  },
-  resendBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-  testOtpChip: {
-    backgroundColor: '#FEF3C7',
-    padding: 8,
-    borderRadius: 8,
-    marginTop: 10,
-    alignItems: 'center',
-  },
-  testOtpText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#92400E',
-  },
-
-  fieldLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  inputField: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: '#0F172A',
-  },
-  fieldHint: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#94A3B8',
-    marginTop: 3,
-  },
-  resolvedBranchText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_EMERALD,
-    marginTop: 4,
-  },
-  verifyVpaBtn: {
-    backgroundColor: '#EFF6FF',
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  verifyVpaBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-
-  compareGrid: {
-    flexDirection: 'row',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 12,
-  },
-  compareCol: {
-    flex: 1,
-  },
-  compareDivider: {
-    width: 1,
-    backgroundColor: '#E2E8F0',
-    marginHorizontal: 10,
-  },
-  compareTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  compareTitleNew: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-    marginBottom: 4,
-  },
-  compareVal: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#475569',
-    marginBottom: 2,
-  },
-  compareValNew: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-    marginBottom: 2,
-  },
-
-  checkboxRow: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'flex-start',
-    marginVertical: 10,
-  },
-  checkboxBox: {
-    width: 18,
-    height: 18,
-    borderRadius: 4,
-    borderWidth: 1.5,
-    borderColor: '#CBD5E1',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  checkboxBoxChecked: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    borderColor: COLOR_ROYAL_BLUE,
-  },
-  checkboxText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#334155',
-    lineHeight: 15,
-    flex: 1,
-  },
-  coolingNoticeBox: {
-    backgroundColor: '#FEF3C7',
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 14,
-  },
-  coolingNoticeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#92400E',
-    lineHeight: 14,
-  },
-
-  successWrap: {
-    alignItems: 'center',
-    paddingVertical: 20,
-  },
-  successTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: COLOR_EMERALD,
-    marginTop: 8,
-  },
-  successSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#475569',
-    textAlign: 'center',
-    marginTop: 4,
-    marginBottom: 16,
-  },
-
-  modalPrimaryBtn: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    borderRadius: 12,
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  modalPrimaryBtnText: {
-    color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    fontSize: 13,
-  },
-  btnDisabled: {
-    backgroundColor: '#CBD5E1',
-  },
+  checkBoxOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  checkText: { flex: 1, ...TypeScale.caption, fontSize: 14, lineHeight: 20, color: Colors.textPrimary },
 });
-
-export default withComingSoon(BankEditScreen, 'Payout account');

@@ -175,29 +175,11 @@ interface VendorStore {
 
 const useVendorStore = create<VendorStore>((set, get) => ({
   // Vendor
-  vendor: {
-    vendorId: 'VND-001',
-    name: 'Dark Store Merchant',
-    storeId: 'DS-VIJ-01',
-    phone: '8977855998',
-    shopName: 'GlowVAI Dark Store Hub #1',
-    locality: 'Benz Circle Hub, Vijayawada',
-    city: 'Vijayawada',
-    isOnline: true,
-  },
+  vendor: null,
   setVendor: (vendor) => set((s) => ({ vendor: { ...(s.vendor || {}), ...vendor } })),
   setOnlineStatus: (isOnline) =>
     set((s) => ({
-      vendor: s.vendor ? { ...s.vendor, isOnline } : {
-        vendorId: 'VND-001',
-        name: 'Dark Store Merchant',
-        storeId: 'DS-VIJ-01',
-        phone: '8977855998',
-        shopName: 'GlowVAI Dark Store Hub #1',
-        locality: 'Benz Circle Hub, Vijayawada',
-        city: 'Vijayawada',
-        isOnline,
-      },
+      vendor: s.vendor ? { ...s.vendor, isOnline } : null,
     })),
 
   // Orders

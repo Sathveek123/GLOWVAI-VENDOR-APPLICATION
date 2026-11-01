@@ -1,255 +1,167 @@
 /**
- * SCREEN 14: Catalog Matrix & Live Stock Steppers
- * Desktop 1440x1024 High-Density Beauty Inventory Workstation
+ * Catalog: the store's products, live stock steppers and LIVE/HIDDEN toggles.
+ * Data: inventoryApi (live). Production shows the honest empty or error state.
+ * Sample products appear only in development builds, labelled "Sample data".
  * File: mobile/app/(vendor)/catalog.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import Wordmark from '../../src/components/Wordmark';
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
-  SafeAreaView,
-  ScrollView,
-  TouchableOpacity,
+  Pressable,
   TextInput,
-  RefreshControl,
+  ScrollView,
   Modal,
-  Platform,
+  RefreshControl,
   ActivityIndicator,
-  useWindowDimensions,
-  Alert,
+  StyleSheet,
+  type DimensionValue,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
-import useVendorStore from '../../src/store/useVendorStore';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import ScreenShell from '../../src/components/ScreenShell';
+import MobileBottomNav from '../../src/components/MobileBottomNav';
 import { useVendorSession } from '../../src/services/session';
 import { inventoryApi } from '../../src/services/api';
+import useVendorStore from '../../src/store/useVendorStore';
 import type { InventoryItem } from '../../src/store/useVendorStore';
-import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
-import MobileBottomNav from '../../src/components/MobileBottomNav';
-import AppHeader from '../../src/components/AppHeader';
+import {
+  Banner,
+  Button,
+  TextField,
+  S,
+  R,
+  SellerColors as C,
+  useLayout,
+  useDocumentTitle,
+} from '../../src/features/onboarding/kit';
+import { FontFamily } from '../../src/theme/typography';
 
+const CATEGORIES = ['All', 'Skincare', 'Makeup', 'Hair care', 'Fragrance', 'Bath & Body', 'Tools & Brushes'];
 
-const CATEGORIES = [
-  'All',
-  'Skincare',
-  'Makeup',
-  'Hair care',
-  'Fragrance',
-  'Bath & Body',
-  'Tools & Brushes',
+const SORTS = [
+  { key: 'stock', label: 'Lowest stock' },
+  { key: 'updated', label: 'Recently updated' },
+  { key: 'expiry', label: 'Expiring first' },
+] as const;
+type SortKey = (typeof SORTS)[number]['key'];
+
+type MetricKey = 'all' | 'low' | 'out' | 'expiring' | 'hidden';
+
+const LOW_STOCK_BELOW = 5;
+const EXPIRY_WINDOW_DAYS = 45;
+const NET_AFTER_FEE = 0.88; // GlowVAI keeps a 12% fee on each sale
+const CSV_HEADER = 'SKU,Product Name,Category,MRP,SellingPrice,Stock,Bin';
+
+// Development-only sample products. Shown only when __DEV__ and the live catalog is empty or unreachable.
+const SAMPLE_CATALOG: InventoryItem[] = [
+  { productId: 'P-101', name: 'Minimalist 10% Niacinamide Face Serum 30ml', category: 'Skincare', sku: 'SKU-MIN-101', mrp: 599, sellingPrice: 549, stock: 24, bin: 'Shelf A-01-05', gstPercent: 18, images: [], active: true, brand: 'Minimalist', description: 'Niacinamide 10% + Zinc 1%', expiryDate: '2027-04-30', updatedAt: Date.now() - 3600000 },
+  { productId: 'P-102', name: 'Cetaphil Gentle Skin Cleanser 125ml', category: 'Skincare', sku: 'SKU-CET-102', mrp: 399, sellingPrice: 369, stock: 4, bin: 'Shelf A-01-08', gstPercent: 18, images: [], active: true, brand: 'Cetaphil', description: 'Hydrating cleanser for sensitive skin', expiryDate: '2026-11-15', updatedAt: Date.now() - 7200000 },
+  { productId: 'P-103', name: 'Maybelline Fit Me Matte Foundation 128', category: 'Makeup', sku: 'SKU-MAY-103', mrp: 549, sellingPrice: 499, stock: 0, bin: 'Shelf B-02-01', gstPercent: 18, images: [], active: false, brand: 'Maybelline', description: 'Matte liquid foundation 30ml', expiryDate: '2026-09-01', updatedAt: Date.now() - 86400000 },
+  { productId: 'P-104', name: 'Dot & Key Watermelon Sunscreen SPF 50 50g', category: 'Skincare', sku: 'SKU-DOT-104', mrp: 495, sellingPrice: 445, stock: 18, bin: 'Shelf A-03-02', gstPercent: 18, images: [], active: true, brand: 'Dot & Key', description: 'Water-light sunscreen', expiryDate: '2027-02-28', updatedAt: Date.now() - 1800000 },
+  { productId: 'P-105', name: 'L’Oréal Paris Hyaluronic Moisture Shampoo 250ml', category: 'Hair care', sku: 'SKU-LOR-105', mrp: 349, sellingPrice: 315, stock: 3, bin: 'Shelf C-01-04', gstPercent: 18, images: [], active: true, brand: 'L’Oréal Paris', description: '72hr moisture fill shampoo', expiryDate: '2026-12-10', updatedAt: Date.now() - 5000000 },
+  { productId: 'P-106', name: 'Plum BodyLovin’ Vanilla Vibes EDP 50ml', category: 'Fragrance', sku: 'SKU-PLU-106', mrp: 899, sellingPrice: 799, stock: 12, bin: 'Shelf D-01-02', gstPercent: 18, images: [], active: true, brand: 'Plum', description: 'Vanilla long-lasting fragrance', expiryDate: '2028-01-01', updatedAt: Date.now() - 1200000 },
 ];
 
-const SORT_OPTIONS = [
-  { key: 'stock_asc', label: 'Stock: Low to High' },
-  { key: 'best_sellers', label: 'Best Sellers' },
-  { key: 'recently_updated', label: 'Recently Updated' },
-  { key: 'price_desc', label: 'Price: High to Low' },
-  { key: 'expiry_risk', label: 'Expiry Risk' },
-];
+function isLow(item: InventoryItem) {
+  return item.stock > 0 && item.stock < LOW_STOCK_BELOW;
+}
 
-const INITIAL_CATALOG: InventoryItem[] = [
-  {
-    productId: 'P-101',
-    name: 'Minimalist 10% Niacinamide Face Serum 30ml',
-    category: 'Skincare',
-    sku: 'SKU-MIN-101',
-    mrp: 599,
-    sellingPrice: 549,
-    stock: 24,
-    bin: 'Shelf A-01-05',
-    gstPercent: 18,
-    images: [],
-    active: true,
-    brand: 'Minimalist',
-    description: 'Niacinamide 10% + Zinc 1% for blemish treatment',
-    expiryDate: '2027-04-30',
-    updatedAt: Date.now() - 3600000,
-  },
-  {
-    productId: 'P-102',
-    name: 'Cetaphil Gentle Skin Cleanser 125ml',
-    category: 'Skincare',
-    sku: 'SKU-CET-102',
-    mrp: 399,
-    sellingPrice: 369,
-    stock: 4,
-    bin: 'Shelf A-01-08',
-    gstPercent: 18,
-    images: [],
-    active: true,
-    brand: 'Cetaphil',
-    description: 'Hydrating cleanser for sensitive skin',
-    expiryDate: '2026-11-15',
-    updatedAt: Date.now() - 7200000,
-  },
-  {
-    productId: 'P-103',
-    name: 'Maybelline Fit Me Matte Foundation (128 Warm Nude)',
-    category: 'Makeup',
-    sku: 'SKU-MAY-103',
-    mrp: 549,
-    sellingPrice: 499,
-    stock: 0,
-    bin: 'Shelf B-02-01',
-    gstPercent: 18,
-    images: [],
-    active: false,
-    brand: 'Maybelline',
-    description: 'Matte + Poreless liquid foundation 30ml',
-    expiryDate: '2026-09-01',
-    updatedAt: Date.now() - 86400000,
-  },
-  {
-    productId: 'P-104',
-    name: 'Dot & Key Watermelon Sunscreen SPF 50 50g',
-    category: 'Skincare',
-    sku: 'SKU-DOT-104',
-    mrp: 495,
-    sellingPrice: 445,
-    stock: 18,
-    bin: 'Shelf A-03-02',
-    gstPercent: 18,
-    images: [],
-    active: true,
-    brand: 'Dot & Key',
-    description: 'Cooling hyaluronic acid water-light sunscreen 50g',
-    expiryDate: '2027-02-28',
-    updatedAt: Date.now() - 1800000,
-  },
-  {
-    productId: 'P-105',
-    name: 'L’Oréal Paris Hyaluronic Moisture Shampoo 250ml',
-    category: 'Hair care',
-    sku: 'SKU-LOR-105',
-    mrp: 349,
-    sellingPrice: 315,
-    stock: 3,
-    bin: 'Shelf C-01-04',
-    gstPercent: 18,
-    images: [],
-    active: true,
-    brand: 'L’Oréal Paris',
-    description: '72hr moisture fill shampoo for dry hair',
-    expiryDate: '2026-12-10',
-    updatedAt: Date.now() - 5000000,
-  },
-  {
-    productId: 'P-106',
-    name: 'Plum BodyLovin’ Vanilla Vibes Eau De Parfum 50ml',
-    category: 'Fragrance',
-    sku: 'SKU-PLU-106',
-    mrp: 899,
-    sellingPrice: 799,
-    stock: 12,
-    bin: 'Shelf D-01-02',
-    gstPercent: 18,
-    images: [],
-    active: true,
-    brand: 'Plum',
-    description: 'Warm & sweet vanilla long-lasting fragrance',
-    expiryDate: '2028-01-01',
-    updatedAt: Date.now() - 1200000,
-  },
-  {
-    productId: 'P-107',
-    name: 'Real Techniques Everyday Essentials Brush Set',
-    category: 'Tools & Brushes',
-    sku: 'SKU-RT-107',
-    mrp: 1499,
-    sellingPrice: 1299,
-    stock: 2,
-    bin: 'Shelf E-03-01',
-    gstPercent: 18,
-    images: [],
-    active: true,
-    brand: 'Real Techniques',
-    description: '4 synthetic makeup brushes + miracle complexion sponge',
-    expiryDate: '2029-06-30',
-    updatedAt: Date.now() - 900000,
-  },
-  {
-    productId: 'P-108',
-    name: 'Nivea Soft Refreshing Moisturizing Cream 200ml',
-    category: 'Bath & Body',
-    sku: 'SKU-NIV-108',
-    mrp: 325,
-    sellingPrice: 295,
-    stock: 30,
-    bin: 'Shelf F-01-06',
-    gstPercent: 18,
-    images: [],
-    active: true,
-    brand: 'Nivea',
-    description: 'Light moisturizer with Vitamin E & Jojoba Oil',
-    expiryDate: '2027-08-15',
-    updatedAt: Date.now() - 15000000,
-  },
-];
+function isOut(item: InventoryItem) {
+  return item.stock === 0;
+}
 
-const SAMPLE_CSV = `SKU,Product Name,Category,MRP,SellingPrice,Stock,Bin
-SKU-GLOW-201,Minimalist 2% Salicylic Acid Face Wash 100ml,Skincare,299,269,40,Shelf A-01-09
-SKU-GLOW-202,Nykaa Matte to Last Liquid Lipstick (Chai),Makeup,675,599,15,Shelf B-02-04
-SKU-GLOW-203,Biotique Botanical Bio Kelp Protein Shampoo 340ml,Hair care,399,329,22,Shelf C-01-09
-SKU-GLOW-204,Bella Vita Organic Luxury Woman Perfume Gift Set,Fragrance,599,499,8,Shelf D-01-08`;
+/** Whole days until the expiry date, or null when the date is missing or invalid. */
+function daysUntil(date?: string): number | null {
+  if (!date) return null;
+  const t = new Date(date).getTime();
+  if (isNaN(t)) return null;
+  return Math.ceil((t - Date.now()) / 86400000);
+}
+
+function isExpiring(item: InventoryItem) {
+  const days = daysUntil(item.expiryDate);
+  return days !== null && days <= EXPIRY_WINDOW_DAYS;
+}
+
+function formatRupees(amount: number) {
+  return `₹${Math.round(amount).toLocaleString('en-IN')}`;
+}
+
+function approvalText(item: InventoryItem) {
+  if (item.listing?.live) return 'On the GlowVAI shop';
+  if (item.approvalStatus === 'REJECTED') return `Not approved: ${item.rejectionReason || 'contact support'}`;
+  if (item.approvalStatus === 'PENDING') return 'Waiting for GlowVAI approval';
+  const blockers = item.listing?.blockers || [];
+  return blockers.length ? `Not on the shop yet: ${blockers.join(', ')}` : 'Not on the shop yet';
+}
 
 export default function CatalogScreen() {
-  // The signed-in vendor (the backend also takes it from the session token).
-  const vendorSession = useVendorSession();
-  const STORE_ID = vendorSession.storeId || '';
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { isPhone, canSplit } = useLayout();
+  useDocumentTitle('Catalog');
+
+  // The signed-in vendor's store (the backend also takes it from the session token).
+  const vendorSession = useVendorSession();
+  const storeId = vendorSession.storeId || '';
   const { inventory, setInventory, updateInventoryItem } = useVendorStore();
-  const { width } = useWindowDimensions();
-  const isExpanded = width >= 1024;
+  const items = useMemo(() => (Array.isArray(inventory) ? inventory : []), [inventory]);
 
-  const [loading, setLoading] = useState(true);
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [loadError, setLoadError] = useState('');
+  const [isSample, setIsSample] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+
   const [search, setSearch] = useState('');
-  const [selectedCat, setSelectedCat] = useState('All');
-  const [metricFilter, setMetricFilter] = useState<'all' | 'low' | 'out' | 'inactive'>('all');
-  const [selectedSort, setSelectedSort] = useState('stock_asc');
-  const [showSortDropdown, setShowSortDropdown] = useState(false);
+  const [category, setCategory] = useState('All');
+  const [metric, setMetric] = useState<MetricKey>('all');
+  const [sort, setSort] = useState<SortKey>('stock');
 
-  // System Edge States
-  const [isOffline, setIsOffline] = useState(false);
-  const [hasSyncConflict, setHasSyncConflict] = useState(false);
-  const [updatingItems, setUpdatingItems] = useState<{ [key: string]: boolean }>({});
-  const [toastMessage, setToastMessage] = useState<{ text: string; undoAction?: () => void } | null>(null);
+  const [busyIds, setBusyIds] = useState<Record<string, boolean>>({});
+  const [toast, setToast] = useState<{ text: string; onUndo?: () => void } | null>(null);
 
-  // Bulk CSV Modal
-  const [csvModalOpen, setCsvModalOpen] = useState(false);
+  const [csvOpen, setCsvOpen] = useState(false);
   const [csvText, setCsvText] = useState('');
+  const [csvError, setCsvError] = useState('');
   const [importing, setImporting] = useState(false);
 
-  // Detail Drawer State
-  const [selectedItemDetail, setSelectedItemDetail] = useState<InventoryItem | null>(null);
-
   const loadCatalog = useCallback(async () => {
-    setLoading(true);
     try {
-      const res = await inventoryApi.getAll(STORE_ID);
-      if (res?.items && Array.isArray(res.items) && res.items.length > 0) {
-        setInventory(res.items);
-      } else if (inventory.length === 0) {
-        setInventory(INITIAL_CATALOG);
+      const res: any = await inventoryApi.getAll(storeId);
+      const live: InventoryItem[] = Array.isArray(res?.items) ? res.items : [];
+      if (live.length === 0 && __DEV__) {
+        setInventory(SAMPLE_CATALOG);
+        setIsSample(true);
+      } else {
+        setInventory(live);
+        setIsSample(false);
       }
-    } catch (_) {
-      if (inventory.length === 0) {
-        setInventory(INITIAL_CATALOG);
+      setLoadError('');
+      setLoadState('ready');
+    } catch (err: any) {
+      if (__DEV__) {
+        setInventory(SAMPLE_CATALOG);
+        setIsSample(true);
+        setLoadState('ready');
+      } else {
+        setInventory([]);
+        setLoadError(err?.message || 'Check your connection and try again.');
+        setLoadState('error');
       }
-    } finally {
-      setTimeout(() => setLoading(false), 400);
     }
-  }, [inventory.length, setInventory]);
+  }, [storeId, setInventory]);
 
   useEffect(() => {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = 'Catalog Matrix & Live Stock | GlowVAI Vendor Console';
-    }
     loadCatalog();
-  }, []);
+  }, [loadCatalog]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -257,1486 +169,759 @@ export default function CatalogScreen() {
     setRefreshing(false);
   };
 
-  useEffect(() => {
-    if (toastMessage) {
-      const timer = setTimeout(() => setToastMessage(null), 4500);
-      return () => clearTimeout(timer);
-    }
-  }, [toastMessage]);
+  const setBusy = (productId: string, value: boolean) => {
+    setBusyIds(prev => ({ ...prev, [productId]: value }));
+  };
 
-  // Metric Counts
-  const totalCount = inventory.length;
-  const lowStockCount = useMemo(() => inventory.filter(i => i.stock > 0 && i.stock < 5).length, [inventory]);
-  const outOfStockCount = useMemo(() => inventory.filter(i => i.stock === 0).length, [inventory]);
-  const inactiveCount = useMemo(() => inventory.filter(i => !i.active).length, [inventory]);
+  const counts: Record<MetricKey, number> = useMemo(
+    () => ({
+      all: items.length,
+      low: items.filter(isLow).length,
+      out: items.filter(isOut).length,
+      expiring: items.filter(isExpiring).length,
+      hidden: items.filter(i => !i.active).length,
+    }),
+    [items],
+  );
 
-  // Filtering & Sorting
-  const filteredProducts = useMemo(() => {
-    return inventory
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return items
       .filter(item => {
-        const query = search.trim().toLowerCase();
-        const matchSearch =
-          query === '' ||
-          item.name.toLowerCase().includes(query) ||
-          item.sku.toLowerCase().includes(query) ||
-          (item.brand && item.brand.toLowerCase().includes(query)) ||
-          (item.bin && item.bin.toLowerCase().includes(query));
-
-        const matchCat = selectedCat === 'All' || item.category === selectedCat;
-
-        let matchMetric = true;
-        if (metricFilter === 'low') matchMetric = item.stock > 0 && item.stock < 5;
-        if (metricFilter === 'out') matchMetric = item.stock === 0;
-        if (metricFilter === 'inactive') matchMetric = !item.active;
-
-        return matchSearch && matchCat && matchMetric;
+        if (category !== 'All' && item.category !== category) return false;
+        if (metric === 'low' && !isLow(item)) return false;
+        if (metric === 'out' && !isOut(item)) return false;
+        if (metric === 'expiring' && !isExpiring(item)) return false;
+        if (metric === 'hidden' && item.active) return false;
+        if (!q) return true;
+        return [item.name, item.sku, item.brand, item.bin].some(v => (v || '').toLowerCase().includes(q));
       })
+      .slice()
       .sort((a, b) => {
-        if (selectedSort === 'stock_asc') return a.stock - b.stock;
-        if (selectedSort === 'price_desc') return b.mrp - a.mrp;
-        if (selectedSort === 'recently_updated') return b.updatedAt - a.updatedAt;
-        if (selectedSort === 'expiry_risk') {
-          const dateA = a.expiryDate ? new Date(a.expiryDate).getTime() : 9999999999999;
-          const dateB = b.expiryDate ? new Date(b.expiryDate).getTime() : 9999999999999;
-          return dateA - dateB;
-        }
-        return b.stock - a.stock;
+        if (sort === 'stock') return a.stock - b.stock;
+        if (sort === 'updated') return b.updatedAt - a.updatedAt;
+        return (daysUntil(a.expiryDate) ?? 1e9) - (daysUntil(b.expiryDate) ?? 1e9);
       });
-  }, [inventory, search, selectedCat, metricFilter, selectedSort]);
+  }, [items, search, category, metric, sort]);
 
-  // Handle Quick Stock Adjust with Throttling, Optimistic Rollback & Undo
-  const handleAdjustStock = async (productId: string, delta: number) => {
-    if (updatingItems[productId]) return;
+  const showToast = (text: string, onUndo?: () => void) => setToast({ text, onUndo });
 
-    const targetItem = inventory.find(i => i.productId === productId);
-    if (!targetItem) return;
+  // Stock change: optimistic, rolled back if the server refuses it. Undo sends the opposite change.
+  const adjustStock = async (item: InventoryItem, delta: number, undoable: boolean) => {
+    if (busyIds[item.productId]) return;
+    const before = item.stock;
+    const next = Math.max(0, before + delta);
+    const applied = next - before;
+    if (applied === 0) return;
 
-    const previousStock = targetItem.stock;
-    const previousActive = targetItem.active;
-    const newStock = Math.max(0, previousStock + delta);
-    const newActive = newStock > 0 ? previousActive : false;
-
-    setUpdatingItems(prev => ({ ...prev, [productId]: true }));
-    updateInventoryItem(productId, { stock: newStock, active: newActive, updatedAt: Date.now() });
-
-    try {
-      if (isOffline) {
-        setToastMessage({
-          text: `📶 Offline Mode: Stock set to ${newStock} (Queued locally)`,
-        });
-      } else {
-        await inventoryApi.adjustStock(productId, delta, 'Vendor manual adjustment');
-        setToastMessage({
-          text: `✓ Stock for "${targetItem.name.slice(0, 22)}…" set to ${newStock}`,
-          undoAction: () => {
-            updateInventoryItem(productId, { stock: previousStock, active: previousActive });
-            setToastMessage({ text: `Reverted stock back to ${previousStock}` });
-          },
-        });
-      }
-    } catch (err: any) {
-      updateInventoryItem(productId, { stock: previousStock, active: previousActive });
-      setToastMessage({ text: `❌ Update failed: ${err.message || 'Server error'}. Stock reverted.` });
-    } finally {
-      setTimeout(() => {
-        setUpdatingItems(prev => ({ ...prev, [productId]: false }));
-      }, 300);
-    }
-  };
-
-  // Toggle Active/Inactive Status
-  const handleToggleActive = async (productId: string, currentActive: boolean) => {
-    const targetItem = inventory.find(i => i.productId === productId);
-    if (!targetItem) return;
-
-    const newActive = !currentActive;
-    updateInventoryItem(productId, { active: newActive, updatedAt: Date.now() });
-
-    try {
-      await inventoryApi.update(productId, { active: newActive });
-      setToastMessage({
-        text: `SKU is now ${newActive ? 'LIVE on customer app' : 'HIDDEN from app'}`,
-        undoAction: () => {
-          updateInventoryItem(productId, { active: currentActive });
-        },
-      });
-    } catch (err: any) {
-      updateInventoryItem(productId, { active: currentActive });
-      setToastMessage({ text: `Failed to toggle status: ${err.message}` });
-    }
-  };
-
-  const handleProcessCsv = async () => {
-    if (!csvText.trim()) {
-      setToastMessage({ text: 'Please paste CSV lines to import' });
+    updateInventoryItem(item.productId, { stock: next, updatedAt: Date.now() });
+    if (isSample) {
+      showToast('Sample data: this change is not saved.');
       return;
     }
+
+    setBusy(item.productId, true);
+    try {
+      await inventoryApi.adjustStock(item.productId, applied, 'Vendor manual adjustment');
+      showToast(
+        `${item.name}: stock is now ${next}`,
+        undoable ? () => { void adjustStock({ ...item, stock: next }, -applied, false); } : undefined,
+      );
+    } catch (err: any) {
+      updateInventoryItem(item.productId, { stock: before });
+      showToast(`Stock not saved: ${err?.message || 'server error'}. Reverted.`);
+    } finally {
+      setBusy(item.productId, false);
+    }
+  };
+
+  const toggleLive = async (item: InventoryItem) => {
+    const next = !item.active;
+    updateInventoryItem(item.productId, { active: next, updatedAt: Date.now() });
+    if (isSample) {
+      showToast('Sample data: this change is not saved.');
+      return;
+    }
+    try {
+      await inventoryApi.update(item.productId, { active: next });
+      showToast(next ? `${item.name} is visible to customers` : `${item.name} is hidden from customers`);
+    } catch (err: any) {
+      updateInventoryItem(item.productId, { active: item.active });
+      showToast(`Could not change visibility: ${err?.message || 'server error'}`);
+    }
+  };
+
+  const closeCsv = () => {
+    setCsvOpen(false);
+    setCsvError('');
+  };
+
+  const importCsv = async () => {
+    if (!csvText.trim()) {
+      setCsvError('Paste at least one product row.');
+      return;
+    }
+    setCsvError('');
     setImporting(true);
     try {
-      const res = await inventoryApi.bulkUpload([], csvText, STORE_ID);
-      setToastMessage({ text: `🚀 Synced ${res.count || 'all'} beauty SKUs into catalog` });
-      setCsvModalOpen(false);
+      const res: any = await inventoryApi.bulkUpload([], csvText, storeId);
+      setCsvOpen(false);
       setCsvText('');
+      showToast(res?.count ? `Imported ${res.count} products` : 'Import complete');
       await loadCatalog();
     } catch (err: any) {
-      setToastMessage({ text: `CSV Import Error: ${err.message || 'Invalid format'}` });
+      setCsvError(err?.message || 'Import failed. Check the format and try again.');
     } finally {
       setImporting(false);
     }
   };
 
+  const hasFilters = search.trim() !== '' || category !== 'All' || metric !== 'all';
+  const clearFilters = () => {
+    setSearch('');
+    setCategory('All');
+    setMetric('all');
+  };
+
+  const pad = isPhone ? S.lg : S.xl;
+  const cardWidth: DimensionValue = !isPhone && canSplit ? '48.5%' : '100%';
+  const toastBottom = (isPhone ? 84 : 24) + Math.max(insets.bottom, 0);
+
+  const metricTiles: { key: MetricKey; label: string; tone: string }[] = [
+    { key: 'all', label: 'All products', tone: C.textPrimary },
+    { key: 'low', label: `Low stock (under ${LOW_STOCK_BELOW})`, tone: '#B45309' },
+    { key: 'out', label: 'Out of stock', tone: C.errorText },
+    { key: 'expiring', label: `Expiring in ${EXPIRY_WINDOW_DAYS} days`, tone: '#B45309' },
+    { key: 'hidden', label: 'Hidden from customers', tone: C.textSubtle },
+  ];
+
   return (
-    <SafeAreaView style={s.root}>
-      <View style={s.desktopLayout}>
+    <View style={s.screen}>
+      <ScreenShell
+        header={{
+          title: 'Catalog',
+          subtitle: loadState === 'ready' ? `${items.length} ${items.length === 1 ? 'product' : 'products'}` : undefined,
+          showBell: true,
+          rightActions: (
+            <Pressable
+              onPress={() => router.push('/(vendor)/add-sku')}
+              accessibilityRole="button"
+              accessibilityLabel="Add product"
+              style={({ pressed }) => [s.addBtn, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name="add" size={18} color="#FFFFFF" />
+              <Text style={s.addBtnText}>Add</Text>
+            </Pressable>
+          ),
+        }}
+        backgroundColor={C.page}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={C.primary} />}
+        testID="catalog-screen"
+      >
+        <View style={[s.body, { paddingHorizontal: pad }]}>
+          {isSample ? (
+            <Banner
+              tone="warning"
+              title="Sample data"
+              message="These products are for layout review only. They are not from your store, and changes are not saved."
+            />
+          ) : null}
 
-        {/* ── Desktop Left Navigation Rail ───────────────────────────────────────── */}
-        {isExpanded && (
-          <View style={s.navRail}>
-            <View style={s.railBrandGroup}>
-              <View style={s.railBrandLogo}>
-                <Ionicons name="sparkles" size={18} color="#FFFFFF" style={s.railBrandLogoIcon} />
-              </View>
-              <View>
-                <Wordmark size={17} />
-                <Text style={s.railBrandSub}>Vendor Console</Text>
-              </View>
-            </View>
+          {loadState === 'error' ? (
+            <Banner tone="error" title="We could not load your catalog" message={loadError}>
+              <Button label="Try again" variant="secondary" compact onPress={loadCatalog} style={s.bannerBtn} />
+            </Banner>
+          ) : null}
 
-            <View style={s.railNavGroup}>
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.replace('/(vendor)/home')} activeOpacity={0.8}>
-                <Ionicons name="home-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Home</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/orders')} activeOpacity={0.8}>
-                <Ionicons name="clipboard-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Orders</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[s.railNavItem, s.railNavItemActive]} activeOpacity={0.8}>
-                <Ionicons name="cube-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={[s.railNavLabel, s.railNavLabelActive]}>Catalog</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/earnings')} activeOpacity={0.8}>
-                <Ionicons name="wallet-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Earnings</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <Ionicons name="settings-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Settings</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={s.railFooter}>
-              <TouchableOpacity style={s.storeSelectorPill} activeOpacity={0.8}>
-                <Text style={s.storeSelectorText} numberOfLines={1}>📍 Benz Circle Store ▼</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railHelpBtn} activeOpacity={0.8}>
-                <Text style={s.railHelpText}>Help & Support 💬</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railProfileCard} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <View style={s.railAvatar}>
-                  <Text style={s.railAvatarText}>S</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.railProfileName} numberOfLines={1}>Store account</Text>
-                  <Text style={s.railProfileRole}>Store Admin</Text>
-                </View>
-              </TouchableOpacity>
-            </View>
+          {/* Stock and visibility summary. Tapping a tile filters the list. */}
+          <View style={s.metrics}>
+            {metricTiles.map(m => {
+              const active = metric === m.key;
+              const value = loadState === 'loading' ? '–' : String(counts[m.key]);
+              return (
+                <Pressable
+                  key={m.key}
+                  onPress={() => setMetric(active && m.key !== 'all' ? 'all' : m.key)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                  accessibilityLabel={`${m.label}: ${value}`}
+                  style={({ pressed }) => [s.tile, isPhone ? s.tilePhone : s.tileWide, active && s.tileActive, pressed && { opacity: 0.9 }]}
+                >
+                  <Text style={[s.tileValue, { color: m.tone }]}>{value}</Text>
+                  <Text style={[s.tileLabel, active && { color: C.primary }]} numberOfLines={2}>{m.label}</Text>
+                </Pressable>
+              );
+            })}
           </View>
-        )}
 
-        {/* ── Main Content Console ────────────────────────────────────────────── */}
-        <View style={s.mainConsole}>
-
-          {/* Top Header */}
-          <AppHeader
-            title="Products"
-            subtitle={`Live Sync • ${totalCount} SKUs • Store ID: ${STORE_ID}`}
-            showBell={true}
-            rightActions={
-              <TouchableOpacity
-                style={s.addSkuHeaderBtn}
-                onPress={() => router.push('/(vendor)/add-sku')}
-                activeOpacity={0.8}
-              >
-                <Text style={s.addSkuHeaderBtnText}>+ Add SKU</Text>
-              </TouchableOpacity>
-            }
-          />
-
-          {/* Console Scroll Body */}
-          <ScrollView style={s.scrollBody} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false}>
-            
-            {/* System Banners */}
-            {isOffline && (
-              <View style={s.systemBannerOffline}>
-                <Text style={s.systemBannerText}>📶 Offline Mode — Stock updates queued locally</Text>
-                <TouchableOpacity onPress={() => setIsOffline(false)}>
-                  <Text style={s.bannerDismiss}>Reconnect</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {hasSyncConflict && (
-              <View style={s.systemBannerConflict}>
-                <Text style={s.systemBannerText}>⚠️ Sync Conflict — 2 SKUs updated in Central Admin</Text>
-                <TouchableOpacity onPress={() => setHasSyncConflict(false)}>
-                  <Text style={s.bannerDismiss}>Resolve Sync</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* ── CLICKABLE METRICS STRIP (5 Filter Cards) ───────────────────── */}
-            <View style={s.metricsStripRow}>
-              <TouchableOpacity
-                style={[s.metricCard, metricFilter === 'all' && s.metricCardActive]}
-                onPress={() => setMetricFilter('all')}
-                activeOpacity={0.7}
-              >
-                <Text style={s.metricCountText}>{totalCount}</Text>
-                <Text style={s.metricLabelText}>Total SKUs</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.metricCard, metricFilter === 'low' && s.metricCardActive, { borderColor: Colors.warning }]}
-                onPress={() => setMetricFilter('low')}
-                activeOpacity={0.7}
-              >
-                <Text style={[s.metricCountText, { color: Colors.warning }]}>{lowStockCount}</Text>
-                <Text style={s.metricLabelText}>Low Stock (&lt;5)</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.metricCard, metricFilter === 'out' && s.metricCardActive, { borderColor: Colors.danger }]}
-                onPress={() => setMetricFilter('out')}
-                activeOpacity={0.7}
-              >
-                <Text style={[s.metricCountText, { color: Colors.danger }]}>{outOfStockCount}</Text>
-                <Text style={s.metricLabelText}>Out of Stock</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.metricCard, metricFilter === 'inactive' && s.metricCardActive]}
-                onPress={() => setMetricFilter('inactive')}
-                activeOpacity={0.7}
-              >
-                <Text style={[s.metricCountText, { color: Colors.textMuted }]}>{inactiveCount}</Text>
-                <Text style={s.metricLabelText}>Inactive</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={s.metricCard}
-                onPress={() => router.push('/(vendor)/expiry')}
-                activeOpacity={0.7}
-              >
-                <Text style={[s.metricCountText, { color: Colors.warning }]}>2</Text>
-                <Text style={s.metricLabelText}>Expiring Soon</Text>
-              </TouchableOpacity>
+          {/* Search, category and sort controls */}
+          <View style={s.toolbar}>
+            <View style={s.searchBox}>
+              <Ionicons name="search-outline" size={18} color={C.textSubtle} />
+              <TextInput
+                value={search}
+                onChangeText={setSearch}
+                placeholder="Search name, brand, SKU or shelf"
+                placeholderTextColor={C.textSubtle}
+                style={s.searchInput}
+                accessibilityLabel="Search products"
+                returnKeyType="search"
+                autoCorrect={false}
+              />
+              {search ? (
+                <Pressable onPress={() => setSearch('')} accessibilityRole="button" accessibilityLabel="Clear search" hitSlop={8} style={s.clearBtn}>
+                  <Ionicons name="close-circle" size={18} color={C.textSubtle} />
+                </Pressable>
+              ) : null}
             </View>
 
-            {/* ── SEARCH & CATEGORY FILTER BAR ──────────────────────────────── */}
-            <View style={s.toolbarCard}>
-              <View style={s.searchInputWrap}>
-                <Ionicons name="search-outline" size={18} color="#475569" style={s.searchIcon} />
-                <TextInput
-                  style={s.searchInput}
-                  placeholder="Search product name, brand, SKU, or shelf location…"
-                  placeholderTextColor={Colors.textMuted}
-                  value={search}
-                  onChangeText={setSearch}
-                />
-                {search.length > 0 && (
-                  <TouchableOpacity onPress={() => setSearch('')}>
-                    <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-                  </TouchableOpacity>
-                )}
-              </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow}>
+              {CATEGORIES.map(cat => (
+                <Chip key={cat} label={cat} active={category === cat} onPress={() => setCategory(cat)} />
+              ))}
+            </ScrollView>
 
-              {/* Category Pills Row */}
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.catPillScroll}>
-                {CATEGORIES.map(cat => {
-                  const active = selectedCat === cat;
-                  return (
-                    <TouchableOpacity
-                      key={cat}
-                      onPress={() => setSelectedCat(cat)}
-                      style={[s.catPill, active && s.catPillActive]}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={[s.catPillText, active && s.catPillTextActive]}>{cat}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
+            <View style={s.sortRow}>
+              <Text style={s.sortLabel}>Sort</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.chipRow}>
+                {SORTS.map(o => (
+                  <Chip key={o.key} label={o.label} active={sort === o.key} onPress={() => setSort(o.key)} />
+                ))}
               </ScrollView>
             </View>
 
-            {/* Main Content Layout with Side Drawer when item clicked */}
-            <View style={s.queueLayoutRow}>
-              
-              {/* Product Table List */}
-              <View style={{ flex: 1 }}>
-                {loading ? (
-                  <View style={s.skeletonList}>
-                    {[1, 2, 3].map(i => (
-                      <View key={i} style={s.skeletonCard} />
-                    ))}
-                  </View>
-                ) : filteredProducts.length === 0 ? (
-                  <View style={s.emptyStateBox}>
-                    <Ionicons name="cube-outline" size={18} color="#475569" style={s.emptyIcon} />
-                    <Text style={s.emptyTitle}>No matching catalog products</Text>
-                    <Text style={s.emptySub}>
-                      {search.length > 0
-                        ? `No products found matching "${search}". Try resetting search filter.`
-                        : 'No items found under the selected category or filter.'}
-                    </Text>
-                    <TouchableOpacity
-                      style={s.clearFiltersBtn}
-                      onPress={() => {
-                        setSearch('');
-                        setSelectedCat('All');
-                        setMetricFilter('all');
-                      }}
-                    >
-                      <Text style={s.clearFiltersBtnText}>Reset All Filters</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <View style={s.productList}>
-                    {filteredProducts.map(item => {
-                      const isLow = item.stock > 0 && item.stock < 5;
-                      const isOut = item.stock === 0;
-                      const isUpdating = !!updatingItems[item.productId];
-                      const isSelected = selectedItemDetail?.productId === item.productId;
-
-                      return (
-                        <View
-                          key={item.productId}
-                          style={[
-                            s.productCard,
-                            isLow && s.productCardLow,
-                            isOut && s.productCardOut,
-                            !item.active && s.productCardInactive,
-                            isSelected && s.productCardSelected,
-                          ]}
-                        >
-                          <TouchableOpacity
-                            style={s.cardHeaderRow}
-                            onPress={() => setSelectedItemDetail(item)}
-                            activeOpacity={0.85}
-                          >
-                            <View style={s.thumbBox}>
-                              <Ionicons name="cube-outline" size={18} color="#475569" style={s.thumbEmoji} />
-                            </View>
-
-                            <View style={{ flex: 1 }}>
-                              <View style={s.badgeMetaRow}>
-                                <Text style={s.brandLabelText}>{item.brand || 'GlowVAI'}</Text>
-                                <Text style={s.skuCodeText}>{item.sku}</Text>
-                                <View style={s.binChip}>
-                                  <Text style={s.binChipText}>📍 {item.bin || 'Shelf A-01'}</Text>
-                                </View>
-                              </View>
-
-                              <Text style={s.productTitleText} numberOfLines={2}>{item.name}</Text>
-                              {item.description && (
-                                <Text style={s.productVariantText} numberOfLines={1}>{item.description}</Text>
-                              )}
-                              {item.approvalStatus ? (
-                                <Text style={s.productVariantText} numberOfLines={2}>
-                                  {item.listing?.live
-                                    ? 'On the GlowVAI shop'
-                                    : item.approvalStatus === 'REJECTED'
-                                      ? `Not approved: ${item.rejectionReason || 'see support'}`
-                                      : item.approvalStatus === 'PENDING'
-                                        ? 'Waiting for GlowVAI approval'
-                                        : `Not on the shop: ${(item.listing?.blockers || []).join(', ')}`}
-                                </Text>
-                              ) : null}
-                            </View>
-
-                            {/* Live Toggle Pill */}
-                            <TouchableOpacity
-                              style={[s.statusToggleBtn, item.active ? s.statusToggleBtnLive : s.statusToggleBtnOff]}
-                              onPress={() => handleToggleActive(item.productId, item.active)}
-                              activeOpacity={0.8}
-                            >
-                              <Text style={[s.statusToggleText, item.active ? s.statusToggleTextLive : s.statusToggleTextOff]}>
-                                {item.active ? 'LIVE' : 'OFF'}
-                              </Text>
-                            </TouchableOpacity>
-                          </TouchableOpacity>
-
-                          {/* Zero Stock Explanation Banner */}
-                          {isOut && (
-                            <View style={s.outOfStockNotice}>
-                              <Text style={s.outOfStockNoticeText}>
-                                🚫 Out of Stock — Item automatically hidden from customer search & ordering.
-                              </Text>
-                            </View>
-                          )}
-
-                          {/* Card Footer: Pricing & Prominent Live Stepper */}
-                          <View style={s.cardFooterRow}>
-                            <View style={s.priceBlock}>
-                              <Text style={s.mrpText}>MRP ₹{item.mrp}</Text>
-                              <View style={s.payoutRow}>
-                                <Text style={s.sellingPriceText}>₹{item.sellingPrice || item.mrp}</Text>
-                                <View style={s.netPayoutBadge}>
-                                  <Text style={s.netPayoutBadgeText}>Net Payout (88%): ₹{Math.round((item.sellingPrice || item.mrp) * 0.88)}</Text>
-                                </View>
-                              </View>
-                            </View>
-
-                            {/* Prominent Live Stock Stepper Control */}
-                            <View style={s.stepperWrap}>
-                              <TouchableOpacity
-                                style={[s.stepTouchBtn, item.stock === 0 && s.stepTouchBtnDisabled]}
-                                onPress={() => handleAdjustStock(item.productId, -1)}
-                                disabled={item.stock === 0 || isUpdating}
-                                activeOpacity={0.7}
-                              >
-                                <Text style={s.stepTouchText}>−</Text>
-                              </TouchableOpacity>
-
-                              <View style={s.stockDisplayBox}>
-                                {isUpdating ? (
-                                  <ActivityIndicator size="small" color={Colors.primary} />
-                                ) : (
-                                  <>
-                                    <Text style={[
-                                      s.stockNumberText,
-                                      isLow && { color: Colors.warning },
-                                      isOut && { color: Colors.danger },
-                                    ]}>
-                                      {item.stock}
-                                    </Text>
-                                    <Text style={s.stockUnitLabel}>in stock</Text>
-                                  </>
-                                )}
-                              </View>
-
-                              <TouchableOpacity
-                                style={s.stepTouchBtn}
-                                onPress={() => handleAdjustStock(item.productId, 1)}
-                                disabled={isUpdating}
-                                activeOpacity={0.7}
-                              >
-                                <Text style={s.stepTouchText}>+</Text>
-                              </TouchableOpacity>
-                            </View>
-                          </View>
-                        </View>
-                      );
-                    })}
-                  </View>
-                )}
-              </View>
-
-              {/* Right Side SKU Inspection Drawer */}
-              {isExpanded && selectedItemDetail && (
-                <View style={s.previewDrawer}>
-                  <View style={s.drawerHeader}>
-                    <View>
-                      <Text style={s.drawerTitle}>{selectedItemDetail.name}</Text>
-                      <Text style={s.drawerSub}>SKU: {selectedItemDetail.sku}</Text>
-                    </View>
-                    <TouchableOpacity style={s.drawerCloseBtn} onPress={() => setSelectedItemDetail(null)}>
-                      <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-                    </TouchableOpacity>
-                  </View>
-
-                  <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                    <View style={s.drawerSectionCard}>
-                      <Text style={s.drawerSectionLabel}>LOCATION & BATCH DETAILS</Text>
-                      <Text style={s.drawerValueText}>📍 Warehouse Bin: <Text style={{ fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: Colors.primary }}>{selectedItemDetail.bin || 'Shelf A-01-05'}</Text></Text>
-                      <Text style={s.drawerValueText}>⏳ Batch Expiry Date: <Text style={{ fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' }}>{selectedItemDetail.expiryDate || '2027-04-30'}</Text></Text>
-                      <Text style={s.drawerValueText}>🏷️ Brand: {selectedItemDetail.brand || 'Minimalist'}</Text>
-                    </View>
-
-                    <View style={s.drawerSectionCard}>
-                      <Text style={s.drawerSectionLabel}>PRICING & REVENUE SPLIT</Text>
-                      <View style={s.drawerFeeRow}>
-                        <Text style={s.drawerFeeLabel}>MRP</Text>
-                        <Text style={s.drawerFeeVal}>₹{selectedItemDetail.mrp}</Text>
-                      </View>
-                      <View style={s.drawerFeeRow}>
-                        <Text style={s.drawerFeeLabel}>Selling Price</Text>
-                        <Text style={s.drawerFeeVal}>₹{selectedItemDetail.sellingPrice || selectedItemDetail.mrp}</Text>
-                      </View>
-                      <View style={[s.drawerFeeRow, s.drawerPayoutRow]}>
-                        <Text style={s.drawerPayoutLabel}>Vendor Net Payout (88%)</Text>
-                        <Text style={s.drawerPayoutVal}>₹{Math.round((selectedItemDetail.sellingPrice || selectedItemDetail.mrp) * 0.88)}</Text>
-                      </View>
-                    </View>
-
-                    <TouchableOpacity
-                      style={s.drawerEditBtn}
-                      onPress={() => router.push({ pathname: '/(vendor)/add-sku', params: { sku: selectedItemDetail.sku } })}
-                    >
-                      <Text style={s.drawerEditBtnText}>✏️ Edit SKU Specifications</Text>
-                    </TouchableOpacity>
-                  </ScrollView>
-                </View>
-              )}
-
-            </View>
-
-            <View style={{ height: 40 }} />
-          </ScrollView>
-        </View>
-      </View>
-
-      {/* Floating Action / Toast Banner */}
-      {toastMessage && (
-        <View style={s.toastBanner}>
-          <Text style={s.toastText}>{toastMessage.text}</Text>
-          {toastMessage.undoAction && (
-            <TouchableOpacity onPress={toastMessage.undoAction} style={s.toastUndoBtn}>
-              <Text style={s.toastUndoText}>Undo</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      )}
-
-      {/* Bulk CSV Importer Modal */}
-      <Modal
-        visible={csvModalOpen}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setCsvModalOpen(false)}
-      >
-        <View style={s.modalOverlay}>
-          <View style={s.modalBox}>
-            <View style={s.modalHeader}>
-              <View>
-                <Text style={s.modalTitle}>⚡ CSV Bulk Inventory Sync</Text>
-                <Text style={s.modalSub}>Batch update SKUs, stock levels, and shelf locations</Text>
-              </View>
-              <TouchableOpacity onPress={() => setCsvModalOpen(false)} style={s.closeBtn}>
-                <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-              </TouchableOpacity>
-            </View>
-
-            <TouchableOpacity
-              style={s.loadSampleBtn}
-              onPress={() => setCsvText(SAMPLE_CSV)}
-              activeOpacity={0.7}
+            <Pressable
+              onPress={() => router.push('/(vendor)/expiry')}
+              accessibilityRole="link"
+              accessibilityLabel="Open expiry and batch tracker"
+              style={({ pressed }) => [s.linkRow, pressed && { opacity: 0.7 }]}
             >
-              <Text style={s.loadSampleText}>📋 Load Sample Beauty CSV Data</Text>
-            </TouchableOpacity>
+              <Ionicons name="time-outline" size={16} color={C.primary} />
+              <Text style={s.linkText}>Expiry and batch tracker</Text>
+              <Ionicons name="chevron-forward" size={16} color={C.primary} />
+            </Pressable>
+          </View>
 
-            <TextInput
-              style={s.modalCsvInput}
-              placeholder="SKU,Product Name,Category,MRP,SellingPrice,Stock,Bin..."
-              placeholderTextColor={Colors.textMuted}
+          {/* Product list */}
+          {loadState === 'loading' ? (
+            <View style={s.list}>
+              {[0, 1, 2].map(i => (
+                <View key={i} style={[s.skeleton, { width: cardWidth }]} />
+              ))}
+            </View>
+          ) : loadState === 'error' ? null : items.length === 0 ? (
+            <EmptyCard
+              icon="cube-outline"
+              title="No products yet"
+              message="Add a product SKU one at a time, or import a CSV file. Products appear on the GlowVAI shop after GlowVAI approves them."
+              primary={{ label: 'Add product', onPress: () => router.push('/(vendor)/add-sku') }}
+              secondary={{ label: 'Import CSV', onPress: () => setCsvOpen(true) }}
+            />
+          ) : visible.length === 0 ? (
+            <EmptyCard
+              icon="search-outline"
+              title="No products match these filters"
+              message="Try another search, category or stock filter."
+              primary={{ label: 'Clear filters', onPress: clearFilters }}
+            />
+          ) : (
+            <View style={s.list}>
+              {visible.map(item => (
+                <ProductCard
+                  key={item.productId}
+                  item={item}
+                  width={cardWidth}
+                  busy={!!busyIds[item.productId]}
+                  onOpen={() => router.push({ pathname: '/(vendor)/add-sku', params: { productId: item.productId } })}
+                  onToggleLive={() => toggleLive(item)}
+                  onStock={delta => adjustStock(item, delta, true)}
+                />
+              ))}
+            </View>
+          )}
+
+          {loadState === 'ready' && items.length > 0 ? (
+            <View style={s.bulkRow}>
+              <Button label="Import products from CSV" variant="secondary" onPress={() => setCsvOpen(true)} />
+            </View>
+          ) : null}
+
+          {hasFilters && items.length > 0 && visible.length > 0 ? (
+            <Text style={s.resultNote}>Showing {visible.length} of {items.length}</Text>
+          ) : null}
+        </View>
+      </ScreenShell>
+
+      {toast ? (
+        <View style={s.toastWrap} pointerEvents="box-none">
+          <View style={[s.toast, { bottom: toastBottom }]}>
+            <Text style={s.toastText}>{toast.text}</Text>
+            {toast.onUndo ? (
+              <Pressable onPress={() => { toast.onUndo?.(); setToast(null); }} accessibilityRole="button" accessibilityLabel="Undo" style={s.toastUndo}>
+                <Text style={s.toastUndoText}>Undo</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+
+      <Modal visible={csvOpen} transparent animationType="fade" onRequestClose={closeCsv}>
+        <View style={s.overlay}>
+          <View style={[s.sheet, { padding: pad }]}>
+            <View style={s.sheetHead}>
+              <View style={{ flex: 1 }}>
+                <Text accessibilityRole="header" style={s.sheetTitle}>Import products from CSV</Text>
+                <Text style={s.sheetSub}>Paste one product per line. The first line must be the header row.</Text>
+              </View>
+              <Pressable onPress={closeCsv} accessibilityRole="button" accessibilityLabel="Close" hitSlop={8} style={s.closeBtn}>
+                <Ionicons name="close" size={20} color={C.textSecondary} />
+              </Pressable>
+            </View>
+
+            <Pressable
+              onPress={() => setCsvText(current => (current.trim() ? current : CSV_HEADER))}
+              accessibilityRole="button"
+              accessibilityLabel="Insert the header row"
+              style={({ pressed }) => [s.headerInsert, pressed && { opacity: 0.7 }]}
+            >
+              <Ionicons name="document-text-outline" size={16} color={C.primary} />
+              <Text style={s.linkText}>Insert the header row</Text>
+            </Pressable>
+
+            <TextField
+              label="CSV rows"
               value={csvText}
-              onChangeText={setCsvText}
+              onChangeText={text => {
+                setCsvText(text);
+                if (csvError) setCsvError('');
+              }}
+              placeholder={CSV_HEADER}
+              placeholderTextColor={C.textSubtle}
               multiline
-              numberOfLines={6}
+              autoCapitalize="none"
+              autoCorrect={false}
+              error={csvError || undefined}
+              inputStyle={s.csvInput}
+              last
             />
 
-            <View style={s.modalActionsRow}>
-              <TouchableOpacity style={s.modalCancelBtn} onPress={() => setCsvModalOpen(false)}>
-                <Text style={s.modalCancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.modalSubmitBtn} onPress={handleProcessCsv} disabled={importing}>
-                {importing ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <Text style={s.modalSubmitBtnText}>🚀 Sync Live Catalog</Text>
-                )}
-              </TouchableOpacity>
+            <View style={s.sheetActions}>
+              <Button label="Cancel" variant="secondary" onPress={closeCsv} style={s.flex1} />
+              <Button
+                label="Import"
+                onPress={importCsv}
+                loading={importing}
+                disabled={!csvText.trim()}
+                style={s.flex1}
+              />
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* Mobile Bottom Navigation Bar */}
       <MobileBottomNav currentTab="catalog" />
-    </SafeAreaView>
+    </View>
+  );
+}
+
+function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityState={{ selected: active }}
+      accessibilityLabel={label}
+      style={({ pressed }) => [s.chip, active && s.chipActive, pressed && { opacity: 0.8 }]}
+    >
+      <Text style={[s.chipText, active && s.chipTextActive]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function ProductCard({
+  item,
+  width,
+  busy,
+  onOpen,
+  onToggleLive,
+  onStock,
+}: {
+  item: InventoryItem;
+  width: DimensionValue;
+  busy: boolean;
+  onOpen: () => void;
+  onToggleLive: () => void;
+  onStock: (delta: number) => void;
+}) {
+  const price = item.sellingPrice || item.mrp;
+  const out = isOut(item);
+  const low = isLow(item);
+  const expiring = isExpiring(item);
+  const stockTone = out ? C.errorText : low ? '#B45309' : C.textPrimary;
+  const stockLabel = out ? 'Out of stock' : low ? 'Low stock' : 'In stock';
+
+  return (
+    <Pressable
+      onPress={onOpen}
+      accessibilityRole="button"
+      accessibilityLabel={`Edit ${item.name}`}
+      style={({ pressed }) => [s.card, { width }, !item.active && s.cardHidden, pressed && { opacity: 0.94 }]}
+    >
+      <View style={s.cardTop}>
+        <View style={s.thumb}>
+          <Ionicons name="cube-outline" size={20} color={C.textSubtle} />
+        </View>
+
+        <View style={s.cardInfo}>
+          <View style={s.metaRow}>
+            <Text style={s.brand} numberOfLines={1}>{item.brand || 'Brand not set'}</Text>
+            <Text style={s.sku} numberOfLines={1}>{item.sku}</Text>
+          </View>
+          <Text style={s.name} numberOfLines={2}>{item.name}</Text>
+          <View style={s.metaRow}>
+            <Text style={s.category} numberOfLines={1}>{item.category}</Text>
+            {item.bin ? (
+              <View style={s.binChip}>
+                <Ionicons name="location-outline" size={12} color={C.primary} />
+                <Text style={s.binText} numberOfLines={1}>{item.bin}</Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+
+        <Pressable
+          onPress={onToggleLive}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: item.active }}
+          accessibilityLabel={`${item.name} visible to customers`}
+          hitSlop={4}
+          style={[s.liveToggle, item.active ? s.liveOn : s.liveOff]}
+        >
+          <Text style={[s.liveText, item.active ? s.liveTextOn : s.liveTextOff]}>{item.active ? 'Live' : 'Hidden'}</Text>
+        </Pressable>
+      </View>
+
+      <View style={s.priceRow}>
+        <Text style={s.price}>{formatRupees(price)}</Text>
+        {item.mrp > price ? <Text style={s.mrp}>{formatRupees(item.mrp)}</Text> : null}
+        <Text style={s.payout}>Net {formatRupees(price * NET_AFTER_FEE)} after 12% fee</Text>
+      </View>
+
+      {item.approvalStatus ? (
+        <Text style={[s.approval, item.approvalStatus === 'REJECTED' && { color: C.errorText }]}>{approvalText(item)}</Text>
+      ) : null}
+
+      <View style={s.cardFooter}>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={[s.stockLabel, { color: stockTone }]}>{stockLabel}</Text>
+          {expiring && item.expiryDate ? <Text style={s.expiryNote}>Expires {item.expiryDate}</Text> : null}
+        </View>
+
+        <View style={s.stepper}>
+          <StepButton icon="remove" label="Decrease stock" disabled={out || busy} onPress={() => onStock(-1)} />
+          <View style={s.stepValue}>
+            {busy ? (
+              <ActivityIndicator size="small" color={C.primary} />
+            ) : (
+              <Text style={[s.stepNum, { color: stockTone }]}>{item.stock}</Text>
+            )}
+          </View>
+          <StepButton icon="add" label="Increase stock" disabled={busy} onPress={() => onStock(1)} />
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+function StepButton({
+  icon,
+  label,
+  disabled,
+  onPress,
+}: {
+  icon: 'add' | 'remove';
+  label: string;
+  disabled: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      style={({ pressed }) => [s.stepBtn, disabled && { opacity: 0.4 }, pressed && !disabled && { backgroundColor: C.surface }]}
+    >
+      <Ionicons name={icon} size={20} color={C.textPrimary} />
+    </Pressable>
+  );
+}
+
+function EmptyCard({
+  icon,
+  title,
+  message,
+  primary,
+  secondary,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  message: string;
+  primary: { label: string; onPress: () => void };
+  secondary?: { label: string; onPress: () => void };
+}) {
+  return (
+    <View style={s.empty}>
+      <View style={s.emptyIcon}>
+        <Ionicons name={icon} size={24} color={C.primary} />
+      </View>
+      <Text accessibilityRole="header" style={s.emptyTitle}>{title}</Text>
+      <Text style={s.emptyMessage}>{message}</Text>
+      <View style={s.emptyActions}>
+        <Button label={primary.label} onPress={primary.onPress} compact style={s.emptyBtn} />
+        {secondary ? <Button label={secondary.label} variant="secondary" onPress={secondary.onPress} compact style={s.emptyBtn} /> : null}
+      </View>
+    </View>
   );
 }
 
 const s = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: Colors.surface, // Warm off-white #F8FAFC
-  },
-  desktopLayout: {
-    flex: 1,
-    flexDirection: 'row',
-  },
+  screen: { flex: 1, backgroundColor: C.page },
+  body: { paddingTop: S.lg, paddingBottom: S.xxl, gap: S.md },
+  flex1: { flex: 1 },
 
-  /* Navigation Rail */
-  navRail: {
-    width: 240,
-    backgroundColor: Colors.card,
-    borderRightWidth: 1,
-    borderRightColor: Colors.border,
-    padding: Spacing.lg,
-    justifyContent: 'space-between',
-  },
-  railBrandGroup: {
+  addBtn: {
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.xl,
+    gap: 4,
+    paddingHorizontal: S.md,
+    borderRadius: R.input,
+    backgroundColor: C.primary,
   },
-  railBrandLogo: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
+  addBtnText: { fontFamily: FontFamily.bold, fontSize: 14, color: '#FFFFFF' },
+
+  bannerBtn: { alignSelf: 'flex-start', marginTop: S.sm },
+
+  metrics: { flexDirection: 'row', flexWrap: 'wrap', gap: S.sm },
+  tile: {
+    minHeight: 76,
+    backgroundColor: C.background,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: R.card,
+    padding: S.md,
     justifyContent: 'center',
   },
-  railBrandLogoIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-    color: '#FFFFFF',
-  },
-  railBrandTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  railBrandSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  railNavGroup: {
-    gap: 6,
-    flex: 1,
-  },
-  railNavItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: BorderRadii.input,
-  },
-  railNavItemActive: {
-    backgroundColor: Colors.primaryLight,
-  },
-  railNavIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-  },
-  railNavLabel: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  railNavLabelActive: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  railFooter: {
-    gap: Spacing.sm,
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  storeSelectorPill: {
-    backgroundColor: Colors.surface,
+  tilePhone: { flexBasis: '48%', flexGrow: 1 },
+  tileWide: { flexBasis: 0, flexGrow: 1 },
+  tileActive: { borderColor: C.primary, backgroundColor: C.primaryLight },
+  tileValue: { fontFamily: FontFamily.bold, fontSize: 22, lineHeight: 28, color: C.textPrimary },
+  tileLabel: { fontFamily: FontFamily.medium, fontSize: 12, lineHeight: 16, color: C.textSecondary, marginTop: 2 },
+
+  toolbar: {
+    backgroundColor: C.background,
     borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    padding: 8,
+    borderColor: C.border,
+    borderRadius: R.card,
+    padding: S.md,
+    gap: S.sm,
   },
-  storeSelectorText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  railHelpBtn: {
-    paddingVertical: 4,
-  },
-  railHelpText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  railProfileCard: {
+  searchBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
-    paddingTop: 6,
-  },
-  railAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  railAvatarText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  railProfileName: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  railProfileRole: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-
-  /* Main Console Area */
-  mainConsole: {
-    flex: 1,
-  },
-  topHeader: {
-    backgroundColor: Colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  pageTitle: {
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    letterSpacing: -0.4,
-  },
-  syncPill: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: BorderRadii.pill,
-  },
-  syncPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-  },
-  storeSubTitle: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  headerActionsRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  bulkCsvBtn: {
-    backgroundColor: '#0F172A',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.input,
-  },
-  bulkCsvBtnText: {
-    color: '#C084FC',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  addSkuHeaderBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.input,
-  },
-  addSkuHeaderBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-
-  /* Body Scroll Area */
-  scrollBody: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: Spacing.xl,
-  },
-  container1200: {
-    width: '100%',
-    maxWidth: 1200,
-    alignSelf: 'center',
-  },
-
-  /* System Banners */
-  systemBannerOffline: {
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.input,
-    marginBottom: Spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  systemBannerConflict: {
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.input,
-    marginBottom: Spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  systemBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  bannerDismiss: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-
-  /* Metrics Strip */
-  metricsStripRow: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  metricCard: {
-    flex: 1,
-    backgroundColor: Colors.card,
+    gap: S.sm,
+    minHeight: 46,
+    paddingLeft: S.md,
+    paddingRight: S.xs,
     borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.card,
-    padding: Spacing.md,
-    alignItems: 'center',
-  },
-  metricCardActive: {
-    backgroundColor: Colors.primaryLight,
-    borderColor: Colors.primaryBorder,
-  },
-  metricCountText: {
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  metricLabelText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    marginTop: 2,
-  },
-
-  /* Toolbar Card */
-  toolbarCard: {
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  searchInputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    paddingHorizontal: Spacing.md,
-    height: 40,
-    marginBottom: Spacing.md,
-  },
-  searchIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 14,
-    marginRight: 6,
+    borderColor: C.inputBorder,
+    borderRadius: R.input,
+    backgroundColor: C.background,
   },
   searchInput: {
     flex: 1,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: Colors.textPrimary,
+    minWidth: 0,
+    fontFamily: FontFamily.regular,
+    fontSize: 15,
+    color: C.textPrimary,
+    paddingVertical: 10,
   },
-  clearSearchText: {
-    fontSize: 14,
-    color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  catPillScroll: {
-    gap: Spacing.xs,
-  },
-  catPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.pill,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  catPillActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  catPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  catPillTextActive: {
-    color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
+  clearBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
 
-  /* Queue Layout Row */
-  queueLayoutRow: {
-    flexDirection: 'row',
-    gap: Spacing.lg,
-  },
-  productList: {
-    gap: Spacing.md,
-  },
-  productCard: {
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
+  chipRow: { gap: S.sm, alignItems: 'center', paddingVertical: 2 },
+  chip: {
+    minHeight: 44,
+    paddingHorizontal: S.md,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.lg,
+    borderColor: C.border,
+    backgroundColor: C.background,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  productCardLow: {
-    borderColor: Colors.warningBorder,
-    backgroundColor: Colors.warningLight,
+  chipActive: { backgroundColor: C.primary, borderColor: C.primary },
+  chipText: { fontFamily: FontFamily.semibold, fontSize: 14, color: C.textSecondary },
+  chipTextActive: { color: '#FFFFFF' },
+
+  sortRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm },
+  sortLabel: { fontFamily: FontFamily.semibold, fontSize: 12, color: C.textSubtle, textTransform: 'uppercase', letterSpacing: 0.4 },
+
+  linkRow: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44, alignSelf: 'flex-start' },
+  linkText: { fontFamily: FontFamily.semibold, fontSize: 14, color: C.primary },
+
+  list: { flexDirection: 'row', flexWrap: 'wrap', gap: S.md },
+  skeleton: { height: 140, backgroundColor: C.background, borderRadius: R.card, borderWidth: 1, borderColor: C.border },
+
+  card: {
+    backgroundColor: C.background,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: R.card,
+    padding: S.lg,
+    gap: S.sm,
   },
-  productCardOut: {
-    borderColor: Colors.dangerBorder,
-    backgroundColor: Colors.dangerLight,
-  },
-  productCardInactive: {
-    opacity: 0.75,
-  },
-  productCardSelected: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryLight,
-  },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    alignItems: 'flex-start',
-    marginBottom: Spacing.md,
-  },
-  thumbBox: {
+  cardHidden: { backgroundColor: C.surface },
+  cardTop: { flexDirection: 'row', alignItems: 'flex-start', gap: S.md },
+  thumb: {
     width: 44,
     height: 44,
-    borderRadius: BorderRadii.card,
-    backgroundColor: Colors.surface,
+    borderRadius: 10,
+    backgroundColor: C.page,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: C.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  thumbEmoji: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 22,
-  },
-  badgeMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    marginBottom: 2,
-  },
-  brandLabelText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    textTransform: 'uppercase',
-  },
-  skuCodeText: {
-    fontFamily: 'JetBrainsMono_500Medium',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    
-  },
+  cardInfo: { flex: 1, minWidth: 0, gap: 2 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm, flexWrap: 'wrap' },
+  brand: { fontFamily: FontFamily.semibold, fontSize: 12, color: C.textSubtle, textTransform: 'uppercase', letterSpacing: 0.3, flexShrink: 1 },
+  sku: { fontFamily: FontFamily.mono, fontSize: 12, color: C.textSecondary },
+  name: { fontFamily: FontFamily.semibold, fontSize: 15, lineHeight: 21, color: C.textPrimary },
+  category: { fontFamily: FontFamily.regular, fontSize: 13, color: C.textSecondary },
   binChip: {
-    backgroundColor: Colors.surface,
-    paddingHorizontal: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
     paddingVertical: 2,
-    borderRadius: BorderRadii.pill,
+    borderRadius: 999,
+    backgroundColor: C.primaryLight,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: C.primaryBorder,
   },
-  binChipText: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  productTitleText: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  productVariantText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  statusToggleBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
+  binText: { fontFamily: FontFamily.mono, fontSize: 12, color: C.primary },
+
+  liveToggle: {
+    minHeight: 44,
+    minWidth: 72,
+    paddingHorizontal: S.md,
+    borderRadius: 22,
     borderWidth: 1,
-  },
-  statusToggleBtnLive: {
-    backgroundColor: '#DCFCE7',
-    borderColor: Colors.successBorder,
-  },
-  statusToggleBtnOff: {
-    backgroundColor: Colors.surface,
-    borderColor: Colors.border,
-  },
-  statusToggleText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  statusToggleTextLive: {
-    color: Colors.success,
-  },
-  statusToggleTextOff: {
-    color: Colors.textMuted,
-  },
-  outOfStockNotice: {
-    backgroundColor: Colors.dangerLight,
-    borderWidth: 1,
-    borderColor: Colors.dangerBorder,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.xs,
-    marginBottom: Spacing.md,
-  },
-  outOfStockNoticeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.danger,
-    textAlign: 'center',
-  },
-  cardFooterRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    paddingTop: Spacing.sm,
+    justifyContent: 'center',
+  },
+  liveOn: { backgroundColor: '#F0FDF4', borderColor: '#BBF7D0' },
+  liveOff: { backgroundColor: C.background, borderColor: C.border },
+  liveText: { fontFamily: FontFamily.semibold, fontSize: 13 },
+  liveTextOn: { color: '#15803D' },
+  liveTextOff: { color: C.textSubtle },
+
+  priceRow: { flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap', gap: S.sm },
+  price: { fontFamily: FontFamily.bold, fontSize: 17, color: C.textPrimary },
+  mrp: { fontFamily: FontFamily.regular, fontSize: 13, color: C.textSubtle, textDecorationLine: 'line-through' },
+  payout: { fontFamily: FontFamily.medium, fontSize: 13, color: '#15803D' },
+  approval: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: C.textSecondary },
+
+  cardFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.md,
+    paddingTop: S.sm,
     borderTopWidth: 1,
-    borderTopColor: Colors.border,
+    borderTopColor: C.border,
   },
-  priceBlock: {
-    flex: 1,
-  },
-  mrpText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    textDecorationLine: 'line-through',
-  },
-  payoutRow: {
+  stockLabel: { fontFamily: FontFamily.semibold, fontSize: 13 },
+  expiryNote: { fontFamily: FontFamily.regular, fontSize: 12, color: '#B45309', marginTop: 2 },
+  stepper: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  sellingPriceText: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  netPayoutBadge: {
-    backgroundColor: Colors.successLight,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: BorderRadii.pill,
-  },
-  netPayoutBadgeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-  },
-
-  /* Stepper */
-  stepperWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.surface,
     borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.card,
-    padding: 4,
+    borderColor: C.border,
+    borderRadius: R.input,
+    backgroundColor: C.surface,
+    padding: 2,
   },
-  stepTouchBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: Colors.border,
+  stepBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: C.background,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepTouchBtnDisabled: {
-    opacity: 0.4,
-  },
-  stepTouchText: {
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  stockDisplayBox: {
-    alignItems: 'center',
-    minWidth: 48,
-  },
-  stockNumberText: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  stockUnitLabel: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
+  stepValue: { minWidth: 52, height: 44, alignItems: 'center', justifyContent: 'center' },
+  stepNum: { fontFamily: FontFamily.bold, fontSize: 17, color: C.textPrimary },
 
-  /* Right Side Preview Drawer */
-  previewDrawer: {
-    width: 360,
-    backgroundColor: Colors.card,
-    borderLeftWidth: 1,
-    borderLeftColor: Colors.border,
-    padding: Spacing.lg,
-  },
-  drawerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingBottom: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    marginBottom: Spacing.md,
-  },
-  drawerTitle: {
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  drawerSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  drawerCloseBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  empty: {
+    backgroundColor: C.background,
     borderWidth: 1,
-    borderColor: Colors.border,
+    borderColor: C.border,
+    borderRadius: R.card,
+    padding: S.xl,
     alignItems: 'center',
-    justifyContent: 'center',
-  },
-  drawerCloseText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  drawerSectionCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadii.input,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
-  },
-  drawerSectionLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
-    marginBottom: 6,
-  },
-  drawerValueText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginBottom: 4,
-  },
-  drawerFeeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 3,
-  },
-  drawerFeeLabel: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  drawerFeeVal: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  drawerPayoutRow: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    paddingTop: 6,
-    marginTop: 4,
-  },
-  drawerPayoutLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-  },
-  drawerPayoutVal: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-  },
-  drawerEditBtn: {
-    backgroundColor: Colors.primary,
-    height: 40,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: Spacing.md,
-  },
-  drawerEditBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-
-  /* Empty State & Skeletons */
-  emptyStateBox: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xxl,
   },
   emptyIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 40,
-    marginBottom: Spacing.sm,
+    width: 52,
+    height: 52,
+    borderRadius: 16,
+    backgroundColor: C.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: S.md,
   },
-  emptyTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  emptySub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-    marginTop: 4,
-    marginBottom: Spacing.lg,
-  },
-  clearFiltersBtn: {
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.pill,
-  },
-  clearFiltersBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  skeletonList: {
-    gap: Spacing.md,
-  },
-  skeletonCard: {
-    height: 80,
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
+  emptyTitle: { fontFamily: FontFamily.bold, fontSize: 18, color: C.textPrimary, textAlign: 'center' },
+  emptyMessage: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 21, color: C.textSecondary, textAlign: 'center', marginTop: S.xs, maxWidth: 480 },
+  emptyActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: S.sm, marginTop: S.lg },
+  emptyBtn: { minWidth: 160 },
 
-  /* Toast Banner */
-  toastBanner: {
+  bulkRow: { alignItems: 'flex-start' },
+  resultNote: { fontFamily: FontFamily.regular, fontSize: 13, color: C.textSubtle, textAlign: 'center' },
+
+  toastWrap: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'flex-end' },
+  toast: {
     position: 'absolute',
-    bottom: 24,
-    left: Spacing.xl,
-    right: Spacing.xl,
+    left: S.lg,
+    right: S.lg,
+    maxWidth: 560,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: S.md,
     backgroundColor: '#0F172A',
-    borderRadius: BorderRadii.input,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    borderRadius: R.input,
+    paddingLeft: S.lg,
+    paddingRight: S.sm,
+    paddingVertical: S.sm,
   },
-  toastText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  toastUndoBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-  },
-  toastUndoText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
+  toastText: { flex: 1, fontFamily: FontFamily.medium, fontSize: 14, lineHeight: 20, color: '#FFFFFF' },
+  toastUndo: { minHeight: 44, paddingHorizontal: S.md, justifyContent: 'center' },
+  toastUndoText: { fontFamily: FontFamily.bold, fontSize: 14, color: '#93C5FD' },
 
-  /* Modal */
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.65)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: Spacing.lg,
-  },
-  modalBox: {
-    width: '100%',
-    maxWidth: 520,
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    padding: Spacing.xl,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: Spacing.md,
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  modalSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  closeBtn: {
-    padding: 4,
-  },
-  closeBtnText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-    color: Colors.textMuted,
-  },
-  loadSampleBtn: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.md,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    marginBottom: Spacing.md,
-  },
-  loadSampleText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  modalCsvInput: {
-    height: 120,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textPrimary,
-    marginBottom: Spacing.lg,
-    backgroundColor: Colors.surface,
-  },
-  modalActionsRow: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-  },
-  modalCancelBtn: {
-    flex: 1,
-    height: 44,
-    borderRadius: BorderRadii.input,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalCancelBtnText: {
+  overlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.5)', alignItems: 'center', justifyContent: 'center', padding: S.lg },
+  sheet: { width: '100%', maxWidth: 560, backgroundColor: C.background, borderRadius: R.card },
+  sheetHead: { flexDirection: 'row', alignItems: 'flex-start', gap: S.md, marginBottom: S.md },
+  sheetTitle: { fontFamily: FontFamily.bold, fontSize: 18, lineHeight: 24, color: C.textPrimary },
+  sheetSub: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 20, color: C.textSecondary, marginTop: 2 },
+  closeBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', marginRight: -S.sm, marginTop: -S.xs },
+  headerInsert: { flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 44, alignSelf: 'flex-start' },
+  csvInput: {
+    minHeight: 160,
+    textAlignVertical: 'top',
+    fontFamily: FontFamily.mono,
     fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
+    lineHeight: 19,
   },
-  modalSubmitBtn: {
-    flex: 1,
-    height: 44,
-    borderRadius: BorderRadii.input,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalSubmitBtnText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
+  sheetActions: { flexDirection: 'row', gap: S.md, marginTop: S.lg },
 });

@@ -1,12 +1,12 @@
 /**
- * SCREEN 20: Vendor-Customer Order Chat
- * Desktop 1440x1024 3-Column Operational Conversation Workstation
+ * Vendor-customer order chat.
+ * Phone: conversation list, then a full-width thread with back.
+ * Desktop (1024px and up): rail, conversation list, thread and order context side by side.
+ * Sample chats exist only in development builds and are labelled as sample data.
  * File: mobile/app/(vendor)/messages.tsx
  */
-import { withComingSoon } from '../../src/components/ComingSoon';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import Wordmark from '../../src/components/Wordmark';
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -15,13 +15,15 @@ import {
   SafeAreaView,
   ScrollView,
   TouchableOpacity,
-  ActivityIndicator,
+  KeyboardAvoidingView,
   Platform,
   useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
-import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
+import { FontFamily } from '../../src/theme/typography';
+import Wordmark from '../../src/components/Wordmark';
+import AppHeader from '../../src/components/AppHeader';
 
 export interface OrderConversationSummary {
   orderId: string;
@@ -38,7 +40,7 @@ export interface ChatMessage {
   sender: 'customer' | 'vendor' | 'system';
   text: string;
   timestamp: string;
-  status?: 'sending' | 'sent' | 'delivered' | 'failed';
+  status?: 'sending' | 'delivered';
   substitution?: {
     originalProduct: string;
     suggestedProduct: string;
@@ -47,7 +49,10 @@ export interface ChatMessage {
   };
 }
 
-const CONVERSATIONS_LIST: OrderConversationSummary[] = [
+// No messages API exists in src/services/api.ts yet, so composing stays off outside development builds.
+const MESSAGING_LIVE = false;
+
+const SAMPLE_CONVERSATIONS: OrderConversationSummary[] = [
   {
     orderId: 'GV-9912',
     customerFirstName: 'Priya S.',
@@ -77,39 +82,41 @@ const CONVERSATIONS_LIST: OrderConversationSummary[] = [
   },
 ];
 
-const INITIAL_MESSAGES: ChatMessage[] = [
-  {
-    id: 'm1',
-    sender: 'system',
-    text: 'Order #GV-9912 created at 01:30 PM. Order-scoped privacy is active.',
-    timestamp: '01:30 PM',
-  },
-  {
-    id: 'm2',
-    sender: 'customer',
-    text: 'Hi! Can you please check if the Maybelline foundation shade 120 is available?',
-    timestamp: '01:32 PM',
-  },
-  {
-    id: 'm3',
-    sender: 'vendor',
-    text: 'Hello Priya! Shade 120 Classic Ivory is out of stock. We have suggested Shade 115 Light Ivory as a replacement.',
-    timestamp: '01:34 PM',
-    status: 'delivered',
-    substitution: {
-      originalProduct: 'Maybelline Fit Me (Shade 120 Classic Ivory)',
-      suggestedProduct: 'Maybelline Fit Me (Shade 115 Light Ivory)',
-      priceDiff: 'Same Price (₹0 diff)',
-      approvalStatus: 'APPROVED',
+const SAMPLE_MESSAGES: Record<string, ChatMessage[]> = {
+  'GV-9912': [
+    {
+      id: 'm1',
+      sender: 'system',
+      text: 'Order #GV-9912 created at 01:30 PM. Order-scoped privacy is active.',
+      timestamp: '01:30 PM',
     },
-  },
-  {
-    id: 'm4',
-    sender: 'customer',
-    text: 'Shade 115 works for me! Please update the order.',
-    timestamp: '01:36 PM',
-  },
-];
+    {
+      id: 'm2',
+      sender: 'customer',
+      text: 'Hi! Can you please check if the Maybelline foundation shade 120 is available?',
+      timestamp: '01:32 PM',
+    },
+    {
+      id: 'm3',
+      sender: 'vendor',
+      text: 'Hello Priya! Shade 120 is out of stock. We have suggested Shade 115 as a replacement.',
+      timestamp: '01:34 PM',
+      status: 'delivered',
+      substitution: {
+        originalProduct: 'Maybelline Fit Me (Shade 120)',
+        suggestedProduct: 'Maybelline Fit Me (Shade 115)',
+        priceDiff: 'Same price',
+        approvalStatus: 'APPROVED',
+      },
+    },
+    {
+      id: 'm4',
+      sender: 'customer',
+      text: 'Shade 115 works for me! Please update the order.',
+      timestamp: '01:36 PM',
+    },
+  ],
+};
 
 const QUICK_REPLIES = [
   'Your replacement is ready for approval',
@@ -118,53 +125,73 @@ const QUICK_REPLIES = [
   'Please confirm the shade substitution in your app',
 ];
 
+const RAIL_ITEMS: { label: string; icon: keyof typeof Ionicons.glyphMap; route: string }[] = [
+  { label: 'Home', icon: 'home-outline', route: '/(vendor)/home' },
+  { label: 'Orders', icon: 'clipboard-outline', route: '/(vendor)/orders' },
+  { label: 'Catalog', icon: 'cube-outline', route: '/(vendor)/catalog' },
+  { label: 'Returns', icon: 'return-up-back-outline', route: '/(vendor)/returns' },
+  { label: 'Reviews', icon: 'star-outline', route: '/(vendor)/reviews' },
+  { label: 'Messages', icon: 'chatbubble-outline', route: '/(vendor)/messages' },
+  { label: 'Settings', icon: 'settings-outline', route: '/(vendor)/profile' },
+];
+
+// Contact guard: phone numbers, emails, URLs and UPI handles are blocked in order chats.
+const contactGuardRegex = /(\+?\d{10,12}|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b|\bupi\b|http|www\.)/i;
+
+function statusTagColors(status: OrderConversationSummary['orderStatus']) {
+  switch (status) {
+    case 'Packing':
+      return { bg: Colors.primaryLight, fg: Colors.primary };
+    case 'Handover Ready':
+      return { bg: Colors.warningLight, fg: Colors.warning };
+    case 'Delivered':
+      return { bg: Colors.successLight, fg: Colors.success };
+    default:
+      return { bg: Colors.dangerLight, fg: Colors.danger };
+  }
+}
+
 function MessagesScreen() {
   const router = useRouter();
-  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const { width } = useWindowDimensions();
   const isExpanded = width >= 1024;
 
-  const [conversations] = useState<OrderConversationSummary[]>(CONVERSATIONS_LIST);
-  const [selectedOrderId, setSelectedOrderId] = useState<string>('GV-9912');
+  // Production has no live conversations yet, so the list stays empty and the honest empty state shows.
+  const conversations = useMemo<OrderConversationSummary[]>(
+    () => (__DEV__ ? SAMPLE_CONVERSATIONS : []),
+    []
+  );
+  const [localMessages, setLocalMessages] = useState<Record<string, ChatMessage[]>>(
+    () => (__DEV__ ? SAMPLE_MESSAGES : {})
+  );
+
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [searchConv, setSearchConv] = useState('');
-
-  const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
   const [inputText, setInputText] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
-
-  // Contact Guard Validation Error State
   const [blockedContentMsg, setBlockedContentMsg] = useState('');
-
-  // System Edge States
-  const [customerOffline, setCustomerOffline] = useState(false);
-  const [chatExpired, setChatExpired] = useState(false);
-  const [orderCancelled, setOrderCancelled] = useState(false);
-  const [supportEscalated, setSupportEscalated] = useState(false);
-  const [failedMessageDemo, setFailedMessageDemo] = useState(false);
-  const [permissionDeniedDemo, setPermissionDeniedDemo] = useState(false);
-
-  // Toast
-  const [toastMessage, setToastMessage] = useState<{ text: string } | null>(null);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = 'Vendor-Customer Order Chat | GlowVAI Console';
+      document.title = 'Order Chats | GlowVAI Vendor';
     }
   }, []);
 
-  useEffect(() => {
-    if (toastMessage) {
-      const timer = setTimeout(() => setToastMessage(null), 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [toastMessage]);
+  // On desktop the first conversation is open by default; on phone the list shows first.
+  const activeId = selectedOrderId ?? (isExpanded ? conversations[0]?.orderId ?? null : null);
+  const activeConversation = conversations.find(c => c.orderId === activeId) || null;
+  const activeMessages = activeId ? localMessages[activeId] || [] : [];
+  const isClosed = activeConversation?.orderStatus === 'Delivered' || activeConversation?.orderStatus === 'Cancelled';
+  const canCompose = __DEV__ && !MESSAGING_LIVE && !!activeConversation && !isClosed;
+  const phoneThread = !isExpanded && selectedOrderId !== null && activeConversation !== null;
 
-  const activeConversation = useMemo(() => {
-    return conversations.find(c => c.orderId === selectedOrderId) || conversations[0];
-  }, [conversations, selectedOrderId]);
-
-  // Contact / Link Guard Regex (prohibits phone numbers, emails, URLs, UPI handles)
-  const contactGuardRegex = /(\+?\d{10,12}|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b|\bupi\b|http|www\.)/i;
+  const filteredConversations = useMemo(() => {
+    const q = searchConv.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter(
+      c => c.orderId.toLowerCase().includes(q) || c.customerFirstName.toLowerCase().includes(q)
+    );
+  }, [conversations, searchConv]);
 
   const validateComposerContent = (text: string) => {
     if (contactGuardRegex.test(text)) {
@@ -175,57 +202,35 @@ function MessagesScreen() {
     return true;
   };
 
-  const handleSendMessage = (textToSend?: string) => {
-    if (permissionDeniedDemo) {
-      setBlockedContentMsg('🔒 Permission Error: Store Operator role does not have messaging privileges.');
-      return;
-    }
-
-    const text = textToSend || inputText;
-    if (!text.trim()) return;
-
-    if (!validateComposerContent(text)) return;
-
-    if (chatExpired) {
-      setToastMessage({ text: '🔒 Chat closed: Order #' + selectedOrderId + ' is archived.' });
-      return;
-    }
-    if (orderCancelled) {
-      setToastMessage({ text: '⛔ Chat disabled: Order #' + selectedOrderId + ' was cancelled.' });
-      return;
-    }
-
-    const newMsg: ChatMessage = {
-      id: `m-${Date.now()}`,
-      sender: 'vendor',
-      text: text.trim(),
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      status: 'sending',
-    };
-
-    setMessages(prev => [...prev, newMsg]);
-    if (!textToSend) setInputText('');
-
-    // Simulate Network Send
-    setTimeout(() => {
-      if (failedMessageDemo) {
-        setMessages(prev =>
-          prev.map(m => (m.id === newMsg.id ? { ...m, status: 'failed' } : m))
-        );
-      } else {
-        setMessages(prev =>
-          prev.map(m => (m.id === newMsg.id ? { ...m, status: 'delivered' } : m))
-        );
-      }
-      scrollViewRef.current?.scrollToEnd({ animated: true });
-    }, 400);
+  const updateActiveMessages = (orderId: string, update: (prev: ChatMessage[]) => ChatMessage[]) => {
+    setLocalMessages(prev => ({ ...prev, [orderId]: update(prev[orderId] || []) }));
   };
 
-  const handleRetryMessage = (id: string) => {
-    setMessages(prev =>
-      prev.map(m => (m.id === id ? { ...m, status: 'delivered' } : m))
-    );
-    setToastMessage({ text: '✓ Message re-sent successfully' });
+  const handleSend = () => {
+    const text = inputText.trim();
+    if (!text || !activeId || !canCompose) return;
+    if (!validateComposerContent(text)) return;
+
+    const id = `m-${Date.now()}`;
+    const orderId = activeId;
+    updateActiveMessages(orderId, prev => [
+      ...prev,
+      {
+        id,
+        sender: 'vendor',
+        text,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        status: 'sending',
+      },
+    ]);
+    setInputText('');
+
+    // Local-only in development: marks the message delivered after a short delay.
+    setTimeout(() => {
+      updateActiveMessages(orderId, prev =>
+        prev.map(m => (m.id === id ? { ...m, status: 'delivered' } : m))
+      );
+    }, 400);
   };
 
   const handleSelectQuickReply = (reply: string) => {
@@ -233,470 +238,382 @@ function MessagesScreen() {
     validateComposerContent(reply);
   };
 
-  return (
-    <SafeAreaView style={s.root}>
-      <View style={s.desktopLayout}>
+  const openConversation = (orderId: string) => {
+    setSelectedOrderId(orderId);
+    setBlockedContentMsg('');
+    setInputText('');
+  };
 
-        {/* ── Left Navigation Rail ─────────────────────────────────────────────── */}
-        {isExpanded && (
-          <View style={s.navRail}>
-            <View style={s.railBrandGroup}>
-              <View style={s.railBrandLogo}>
-                <Ionicons name="sparkles" size={18} color="#FFFFFF" style={s.railBrandLogoIcon} />
-              </View>
-              <View>
-                <Wordmark size={17} />
-                <Text style={s.railBrandSub}>Vendor Console</Text>
-              </View>
+  // ── Conversation list ───────────────────────────────────────────────────────
+  const conversationList = (
+    <View style={[s.convListCol, isExpanded ? s.convListColDesktop : s.convListColPhone]}>
+      <View style={s.convHeaderBox}>
+        <View style={s.convHeaderTop}>
+          <Text style={s.convHeaderTitle}>Order chats</Text>
+          {__DEV__ && conversations.length > 0 && (
+            <View style={s.sampleChip}>
+              <Text style={s.sampleChipText}>Sample data</Text>
             </View>
-
-            <View style={s.railNavGroup}>
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.replace('/(vendor)/home')} activeOpacity={0.8}>
-                <Ionicons name="home-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Home</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/orders')} activeOpacity={0.8}>
-                <Ionicons name="clipboard-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Orders</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/catalog')} activeOpacity={0.8}>
-                <Ionicons name="cube-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Catalog</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/returns')} activeOpacity={0.8}>
-                <Text style={s.railNavIcon}>↩️</Text>
-                <Text style={s.railNavLabel}>Returns</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/reviews')} activeOpacity={0.8}>
-                <Text style={s.railNavIcon}>⭐</Text>
-                <Text style={s.railNavLabel}>Reviews</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[s.railNavItem, s.railNavItemActive]} activeOpacity={0.8}>
-                <Ionicons name="chatbubble-outline" size={18} style={{ color: '#475569' }} />
-                <Text style={[s.railNavLabel, s.railNavLabelActive]}>Messages</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <Ionicons name="settings-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Settings</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={s.railFooter}>
-              <TouchableOpacity style={s.storeSelectorPill} activeOpacity={0.8}>
-                <Text style={s.storeSelectorText} numberOfLines={1}>📍 Benz Circle Store ▼</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railHelpBtn} activeOpacity={0.8}>
-                <Text style={s.railHelpText}>Help & Support 💬</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+          )}
+        </View>
+        <Text style={s.convHeaderSub}>Chats are scoped to each order</Text>
+        {conversations.length > 0 && (
+          <TextInput
+            style={s.convSearchInput}
+            placeholder="Search order # or customer"
+            placeholderTextColor={Colors.textSubtle}
+            value={searchConv}
+            onChangeText={setSearchConv}
+            accessibilityLabel="Search order chats"
+          />
         )}
+      </View>
 
-        {/* ── Main Content Console (3-Column Layout) ────────────────────────── */}
-        <View style={s.mainConsole}>
-
-          {/* System Edge State Simulator */}
-          {__DEV__ && (
-          <View style={s.simStripCard}>
-            <Text style={s.simTitle}>TEST CHAT EDGE STATES:</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.simScrollContainer}>
-              <TouchableOpacity
-                style={[s.simChip, isTyping && s.simChipActive]}
-                onPress={() => setIsTyping(!isTyping)}
-              >
-                <Text style={[s.simChipText, isTyping && s.simChipTextActive]}>{isTyping ? 'Stop Typing' : 'Customer Typing'}</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, customerOffline && s.simChipActive]}
-                onPress={() => setCustomerOffline(!customerOffline)}
-              >
-                <Text style={[s.simChipText, customerOffline && s.simChipTextActive]}>Customer Offline</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, chatExpired && s.simChipActive]}
-                onPress={() => setChatExpired(!chatExpired)}
-              >
-                <Text style={[s.simChipText, chatExpired && s.simChipTextActive]}>Chat Expired</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, orderCancelled && s.simChipActive]}
-                onPress={() => setOrderCancelled(!orderCancelled)}
-              >
-                <Text style={[s.simChipText, orderCancelled && s.simChipTextActive]}>Order Cancelled</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, failedMessageDemo && s.simChipActive]}
-                onPress={() => setFailedMessageDemo(!failedMessageDemo)}
-              >
-                <Text style={[s.simChipText, failedMessageDemo && s.simChipTextActive]}>Simulate Send Failure</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, permissionDeniedDemo && s.simChipActive]}
-                onPress={() => setPermissionDeniedDemo(!permissionDeniedDemo)}
-              >
-                <Text style={[s.simChipText, permissionDeniedDemo && s.simChipTextActive]}>Permission Denied</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={s.simChip}
-                onPress={() => handleSendMessage('Test blocked phone: 9876543210')}
-              >
-                <Text style={s.simChipText}>Test Block Contact</Text>
-              </TouchableOpacity>
-            </ScrollView>
+      <ScrollView style={s.flex1} showsVerticalScrollIndicator={false}>
+        {conversations.length === 0 ? (
+          <View style={s.emptyWrap}>
+            <View style={s.emptyIconBox}>
+              <Ionicons name="chatbubbles-outline" size={24} color={Colors.primary} />
+            </View>
+            <Text style={s.emptyTitle}>No order chats yet</Text>
+            <Text style={s.emptyBody}>
+              Customer chats appear here once an order is accepted. Each chat stays limited to its order.
+            </Text>
+            <TouchableOpacity style={s.emptyBtn} onPress={() => router.push('/(vendor)/orders' as any)} activeOpacity={0.8}>
+              <Text style={s.emptyBtnText}>View orders</Text>
+            </TouchableOpacity>
           </View>
+        ) : filteredConversations.length === 0 ? (
+          <View style={s.noMatchWrap}>
+            <Text style={s.noMatchText}>No chats match “{searchConv.trim()}”.</Text>
+          </View>
+        ) : (
+          filteredConversations.map(c => {
+            const isSelected = c.orderId === activeId;
+            const tag = statusTagColors(c.orderStatus);
+            return (
+              <TouchableOpacity
+                key={c.orderId}
+                style={[s.convItemCard, isSelected && s.convItemCardSelected]}
+                onPress={() => openConversation(c.orderId)}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel={`Open chat for order ${c.orderId}`}
+              >
+                <View style={s.convItemTopRow}>
+                  <Text style={[s.convOrderIdText, isSelected && { color: Colors.primary }]}>#{c.orderId}</Text>
+                  <Text style={s.convTimeText}>{c.lastMessageTime}</Text>
+                </View>
+                <View style={s.convMetaRow}>
+                  <Text style={s.convCustomerName} numberOfLines={1}>
+                    {c.customerFirstName} • {c.locality}
+                  </Text>
+                  <View style={[s.convStatusTag, { backgroundColor: tag.bg }]}>
+                    <Text style={[s.convStatusTagText, { color: tag.fg }]}>{c.orderStatus}</Text>
+                  </View>
+                </View>
+                <Text style={s.convPreviewText} numberOfLines={1}>{c.lastMessage}</Text>
+                {c.unreadCount > 0 && (
+                  <View style={s.unreadBadgeChip}>
+                    <Text style={s.unreadBadgeChipText}>{c.unreadCount} new</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            );
+          })
+        )}
+      </ScrollView>
+    </View>
+  );
+
+  // ── Thread ──────────────────────────────────────────────────────────────────
+  const threadCol = (
+    <View style={s.chatThreadCol}>
+      {isExpanded && activeConversation && (
+        <View style={s.chatHeaderBar}>
+          <View style={s.flex1}>
+            <View style={s.titleRow}>
+              <Text style={s.chatTitleText}>Order #{activeConversation.orderId}</Text>
+              <View style={s.statusTag}>
+                <Text style={s.statusTagText}>{activeConversation.orderStatus}</Text>
+              </View>
+            </View>
+            <Text style={s.chatSubText}>{activeConversation.customerFirstName} • {activeConversation.locality}</Text>
+          </View>
+          <TouchableOpacity
+            style={s.supportBtn}
+            onPress={() => router.push('/(vendor)/support' as any)}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Get support help"
+          >
+            <Text style={s.supportBtnText}>Get support help</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {activeConversation ? (
+        <>
+          <View style={s.privacyBanner}>
+            <Ionicons name="lock-closed-outline" size={16} color={Colors.textSecondary} />
+            <Text style={s.privacyBannerText}>
+              Order-scoped privacy is on. Phone numbers, emails, links and UPI handles are blocked.
+            </Text>
+          </View>
+
+          {isClosed && (
+            <View style={activeConversation.orderStatus === 'Cancelled' ? s.cancelledBanner : s.archivedBanner}>
+              <Text style={activeConversation.orderStatus === 'Cancelled' ? s.cancelledBannerText : s.archivedBannerText}>
+                {activeConversation.orderStatus === 'Cancelled'
+                  ? `Chat disabled. Order #${activeConversation.orderId} was cancelled.`
+                  : `Chat archived. Order #${activeConversation.orderId} was delivered. Read-only.`}
+              </Text>
+            </View>
           )}
 
-          {/* 3-Column Body Composition */}
-          <View style={s.threeColBody}>
-
-            {/* ── LEFT COLUMN: Active Order Conversations (~320px) ─────────────── */}
-            <View style={s.convListCol}>
-              <View style={s.convHeaderBox}>
-                <Text style={s.convHeaderTitle}>Active Order Chats</Text>
-                <Text style={s.convHeaderSub}>Order-Scoped Operational Messages</Text>
-                <TextInput
-                  style={s.convSearchInput}
-                  placeholder="Filter order # or customer..."
-                  placeholderTextColor={Colors.textMuted}
-                  value={searchConv}
-                  onChangeText={setSearchConv}
-                />
-              </View>
-
-              <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-                {conversations.map(c => {
-                  const isSelected = c.orderId === selectedOrderId;
+          <ScrollView
+            ref={scrollRef}
+            style={s.messageAreaScroll}
+            contentContainerStyle={s.messageAreaContent}
+            showsVerticalScrollIndicator={false}
+            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: false })}
+          >
+            {activeMessages.length === 0 ? (
+              <Text style={s.threadEmptyText}>No messages in this chat yet.</Text>
+            ) : (
+              activeMessages.map(msg => {
+                if (msg.sender === 'system') {
                   return (
-                    <TouchableOpacity
-                      key={c.orderId}
-                      style={[s.convItemCard, isSelected && s.convItemCardSelected]}
-                      onPress={() => setSelectedOrderId(c.orderId)}
-                      activeOpacity={0.8}
-                    >
-                      <View style={s.convItemTopRow}>
-                        <Text style={[s.convOrderIdText, isSelected && { color: Colors.primary }]}>#{c.orderId}</Text>
-                        <Text style={s.convTimeText}>{c.lastMessageTime}</Text>
-                      </View>
+                    <View key={msg.id} style={s.systemMessageBubble}>
+                      <Text style={s.systemMessageText}>{msg.text}</Text>
+                    </View>
+                  );
+                }
 
-                      <View style={s.convMetaRow}>
-                        <Text style={s.convCustomerName}>{c.customerFirstName} • {c.locality}</Text>
-                        <View style={[
-                          s.convStatusTag,
-                          c.orderStatus === 'Packing' && { backgroundColor: Colors.primaryLight },
-                          c.orderStatus === 'Handover Ready' && { backgroundColor: Colors.warningLight },
-                          c.orderStatus === 'Delivered' && { backgroundColor: '#DCFCE7' },
-                        ]}>
-                          <Text style={[
-                            s.convStatusTagText,
-                            c.orderStatus === 'Packing' && { color: Colors.primary },
-                            c.orderStatus === 'Handover Ready' && { color: Colors.warning },
-                            c.orderStatus === 'Delivered' && { color: Colors.success },
-                          ]}>
-                            {c.orderStatus}
-                          </Text>
-                        </View>
-                      </View>
+                const isVendor = msg.sender === 'vendor';
+                return (
+                  <View key={msg.id} style={[s.messageRow, isVendor ? s.messageRowVendor : s.messageRowCustomer]}>
+                    <View style={[s.messageBubble, isVendor ? s.messageBubbleVendor : s.messageBubbleCustomer]}>
+                      <Text style={[s.messageText, isVendor ? s.messageTextVendor : s.messageTextCustomer]}>{msg.text}</Text>
 
-                      <Text style={s.convPreviewText} numberOfLines={1}>"{c.lastMessage}"</Text>
-
-                      {c.unreadCount > 0 && (
-                        <View style={s.unreadBadgeChip}>
-                          <Text style={s.unreadBadgeChipText}>{c.unreadCount} NEW</Text>
+                      {msg.substitution && (
+                        <View style={s.substitutionCard}>
+                          <View style={s.subHeaderRow}>
+                            <Text style={s.subCardTitle}>SUBSTITUTION</Text>
+                            <View style={[s.subApprovalBadge, msg.substitution.approvalStatus !== 'APPROVED' && { backgroundColor: Colors.warningLight }]}>
+                              <Text style={[s.subApprovalBadgeText, msg.substitution.approvalStatus !== 'APPROVED' && { color: Colors.warning }]}>
+                                {msg.substitution.approvalStatus === 'APPROVED' ? 'Customer approved' : 'Awaiting approval'}
+                              </Text>
+                            </View>
+                          </View>
+                          <Text style={s.subOriginalText}>{msg.substitution.originalProduct}</Text>
+                          <Text style={s.subSuggestedText}>{msg.substitution.suggestedProduct}</Text>
+                          <Text style={s.subPriceText}>{msg.substitution.priceDiff}</Text>
                         </View>
                       )}
-                    </TouchableOpacity>
-                  );
-                })}
+
+                      <View style={s.metaRow}>
+                        <Text style={[s.timestampText, isVendor && s.timestampTextVendor]}>{msg.timestamp}</Text>
+                        {isVendor && msg.status && (
+                          <Ionicons
+                            name={msg.status === 'sending' ? 'time-outline' : 'checkmark-done-outline'}
+                            size={14}
+                            color="#FFFFFF"
+                          />
+                        )}
+                      </View>
+                    </View>
+                  </View>
+                );
+              })
+            )}
+          </ScrollView>
+
+          {canCompose && (
+            <View style={s.quickRepliesBar}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.quickRepliesScroll}>
+                {QUICK_REPLIES.map(reply => (
+                  <TouchableOpacity
+                    key={reply}
+                    style={s.quickReplyChip}
+                    onPress={() => handleSelectQuickReply(reply)}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={s.quickReplyChipText}>{reply}</Text>
+                  </TouchableOpacity>
+                ))}
               </ScrollView>
             </View>
+          )}
 
-            {/* ── CENTER COLUMN: Active Chat Thread Workspace (~580px) ──────────── */}
-            <View style={s.chatThreadCol}>
-
-              {/* Top Chat Bar */}
-              <View style={s.chatHeaderBar}>
-                <View style={{ flex: 1 }}>
-                  <View style={s.titleRow}>
-                    <Text style={s.chatTitleText}>Order #{activeConversation.orderId}</Text>
-                    <View style={s.statusTag}>
-                      <Text style={s.statusTagText}>{activeConversation.orderStatus.toUpperCase()}</Text>
-                    </View>
-                  </View>
-                  <Text style={s.chatSubText}>Customer: {activeConversation.customerFirstName} • {activeConversation.locality} (Privacy Safe)</Text>
-                </View>
-
-                <TouchableOpacity
-                  style={s.supportEscalateBtn}
-                  onPress={() => setSupportEscalated(!supportEscalated)}
-                >
-                  <Text style={s.supportEscalateBtnText}>{supportEscalated ? '🛡️ Support Escalated' : 'Escalate to Support'}</Text>
-                </TouchableOpacity>
+          <View style={s.composerCard}>
+            {blockedContentMsg !== '' && (
+              <View style={s.blockedContentBanner}>
+                <Text style={s.blockedContentBannerText}>{blockedContentMsg}</Text>
               </View>
+            )}
 
-              {/* Visible Privacy Banner */}
-              <View style={s.privacyBanner}>
-                <Ionicons name="lock-closed-outline" size={18} style={{ color: '#475569' }} />
-                <Text style={s.privacyBannerText}>
-                  Order-scoped privacy is active. Phone numbers, emails, links, and UPI handles are blocked automatically.
-                </Text>
-              </View>
-
-              {/* System Banners */}
-              {customerOffline && (
-                <View style={s.offlineBanner}>
-                  <Text style={s.offlineBannerText}>📶 Customer is offline. Messages queued via GlowVAI App Push Notification.</Text>
-                </View>
-              )}
-
-              {chatExpired && (
-                <View style={s.expiredBanner}>
-                  <Text style={s.expiredBannerText}>🔒 Chat archived — Order #{activeConversation.orderId} delivered. Chat read-only.</Text>
-                </View>
-              )}
-
-              {orderCancelled && (
-                <View style={s.cancelledBanner}>
-                  <Text style={s.cancelledBannerText}>⛔ Chat disabled — Order #{activeConversation.orderId} was cancelled by customer.</Text>
-                </View>
-              )}
-
-              {supportEscalated && (
-                <View style={s.escalatedBanner}>
-                  <Text style={s.escalatedBannerText}>🛡️ GlowVAI Support Audit has joined this order thread.</Text>
-                </View>
-              )}
-
-              {/* Scrollable Message Area */}
-              <ScrollView
-                ref={scrollViewRef}
-                style={s.messageAreaScroll}
-                contentContainerStyle={s.messageAreaContent}
-                showsVerticalScrollIndicator={false}
-              >
-                <View style={s.unreadDivider}>
-                  <View style={s.unreadDividerLine} />
-                  <Text style={s.unreadDividerText}>── ORDER CONVERSATION THREAD ──</Text>
-                  <View style={s.unreadDividerLine} />
-                </View>
-
-                {messages.map(msg => {
-                  if (msg.sender === 'system') {
-                    return (
-                      <View key={msg.id} style={s.systemMessageBubble}>
-                        <Text style={s.systemMessageText}>{msg.text}</Text>
-                      </View>
-                    );
-                  }
-
-                  const isVendor = msg.sender === 'vendor';
-
-                  return (
-                    <View
-                      key={msg.id}
-                      style={[
-                        s.messageRow,
-                        isVendor ? s.messageRowVendor : s.messageRowCustomer,
-                      ]}
-                    >
-                      <View
-                        style={[
-                          s.messageBubble,
-                          isVendor ? s.messageBubbleVendor : s.messageBubbleCustomer,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            s.messageText,
-                            isVendor ? s.messageTextVendor : s.messageTextCustomer,
-                          ]}
-                        >
-                          {msg.text}
-                        </Text>
-
-                        {/* Structured Substitution Card */}
-                        {msg.substitution && (
-                          <View style={s.substitutionCard}>
-                            <View style={s.subHeaderRow}>
-                              <Text style={s.subCardTitle}>SUBSTITUTION PROPOSAL</Text>
-                              <View style={[
-                                s.subApprovalBadge,
-                                msg.substitution.approvalStatus === 'APPROVED' && { backgroundColor: '#DCFCE7' },
-                              ]}>
-                                <Text style={[
-                                  s.subApprovalBadgeText,
-                                  msg.substitution.approvalStatus === 'APPROVED' && { color: Colors.success },
-                                ]}>
-                                  {msg.substitution.approvalStatus === 'APPROVED' ? '✓ Customer Approved' : '⌛ Pending Approval'}
-                                </Text>
-                              </View>
-                            </View>
-
-                            <Text style={s.subOriginalText}>Original: {msg.substitution.originalProduct}</Text>
-                            <Text style={s.subSuggestedText}>Suggested: {msg.substitution.suggestedProduct}</Text>
-                            <Text style={s.subPriceText}>Price Diff: {msg.substitution.priceDiff}</Text>
-                          </View>
-                        )}
-
-                        <View style={s.metaRow}>
-                          <Text style={[s.timestampText, isVendor && s.timestampTextVendor]}>
-                            {msg.timestamp}
-                          </Text>
-                          {isVendor && msg.status && (
-                            <Text style={s.statusCheckText}>
-                              {msg.status === 'sending' ? '⏳' : msg.status === 'failed' ? '❌' : '✓✓'}
-                            </Text>
-                          )}
-                        </View>
-
-                        {msg.status === 'failed' && (
-                          <TouchableOpacity
-                            style={s.retryBtn}
-                            onPress={() => handleRetryMessage(msg.id)}
-                          >
-                            <Text style={s.retryBtnText}>Tap to Retry Send</Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    </View>
-                  );
-                })}
-
-                {isTyping && (
-                  <View style={s.typingIndicatorRow}>
-                    <View style={s.typingBubble}>
-                      <Text style={s.typingText}>{activeConversation.customerFirstName} is typing…</Text>
-                    </View>
-                  </View>
-                )}
-              </ScrollView>
-
-              {/* Quick Replies Strip */}
-              <View style={s.quickRepliesBar}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.quickRepliesScroll}>
-                  {QUICK_REPLIES.map((reply, idx) => (
-                    <TouchableOpacity
-                      key={idx}
-                      style={s.quickReplyChip}
-                      onPress={() => handleSelectQuickReply(reply)}
-                    >
-                      <Text style={s.quickReplyChipText}>⚡ {reply}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-
-              {/* Composer */}
-              <View style={s.composerCard}>
-                {blockedContentMsg !== '' && (
-                  <View style={s.blockedContentBanner}>
-                    <Text style={s.blockedContentBannerText}>🛑 {blockedContentMsg}</Text>
-                  </View>
-                )}
-
+            {canCompose ? (
+              <>
                 <View style={s.inputRow}>
                   <TextInput
                     style={[s.composerInput, blockedContentMsg !== '' && s.composerInputError]}
-                    placeholder={chatExpired || orderCancelled ? 'Chat closed for this order' : 'Write an order message…'}
-                    placeholderTextColor={Colors.textMuted}
+                    placeholder="Write an order message"
+                    placeholderTextColor={Colors.textSubtle}
                     value={inputText}
                     onChangeText={text => {
                       setInputText(text);
                       validateComposerContent(text);
                     }}
-                    editable={!chatExpired && !orderCancelled}
                     maxLength={300}
                     multiline
+                    accessibilityLabel="Order message"
                   />
-
                   <TouchableOpacity
-                    style={[
-                      s.sendBtn,
-                      (!inputText.trim() || blockedContentMsg !== '' || chatExpired || orderCancelled) && s.sendBtnDisabled,
-                    ]}
-                    onPress={() => handleSendMessage()}
-                    disabled={!inputText.trim() || blockedContentMsg !== '' || chatExpired || orderCancelled}
+                    style={[s.sendBtn, (!inputText.trim() || blockedContentMsg !== '') && s.sendBtnDisabled]}
+                    onPress={handleSend}
+                    disabled={!inputText.trim() || blockedContentMsg !== ''}
                     activeOpacity={0.8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Send message"
                   >
-                    <Text style={s.sendBtnText}>Send →</Text>
+                    <Text style={s.sendBtnText}>Send</Text>
                   </TouchableOpacity>
                 </View>
-
                 <View style={s.characterGuidanceRow}>
-                  <Text style={s.characterGuidanceText}>{inputText.length} / 300 characters</Text>
-                  <Text style={s.privacyHintText}>Order-scoped & encrypted</Text>
+                  <Text style={s.characterGuidanceText}>{inputText.length} / 300</Text>
+                  <Text style={s.characterGuidanceText}>Order-scoped</Text>
                 </View>
-              </View>
-
-            </View>
-
-            {/* ── RIGHT COLUMN: Order Context Panel (~340px) ────────────────────── */}
-            {isExpanded && (
-              <View style={s.orderContextCol}>
-                <View style={s.contextHeaderCard}>
-                  <Text style={s.contextHeaderTitle}>ORDER CONTEXT (#GV-9912)</Text>
-                  <Text style={s.contextCustomerName}>Priya S. • Benz Circle Area</Text>
-                  <Text style={s.contextTotalAmount}>Total Order: ₹1,224 (2 items)</Text>
-                </View>
-
-                {/* Preparation Stage */}
-                <View style={s.stageCard}>
-                  <Text style={s.stageCardTitle}>PREPARATION STAGE</Text>
-                  <View style={s.stagePillActive}>
-                    <Text style={s.stagePillActiveText}>📦 2 of 2 Items Verified in Pouch</Text>
-                  </View>
-                  <Text style={s.stageHint}>Rider assignment: SLA ETA 8 mins</Text>
-                </View>
-
-                {/* Structured Substitution Summary */}
-                <View style={s.substitutionContextCard}>
-                  <Text style={s.subContextTitle}>ACTIVE SUBSTITUTION</Text>
-                  <Text style={s.subContextOriginal}>Original: Maybelline Fit Me (120 Ivory)</Text>
-                  <Text style={s.subContextNew}>Suggested: Maybelline Fit Me (115 Ivory)</Text>
-
-                  <View style={s.subStatusBadgeRow}>
-                    <Text style={s.subStatusBadgeText}>✓ Customer Approved (01:36 PM)</Text>
-                  </View>
-                </View>
-
-                {/* Actions */}
-                <View style={s.contextActionsGroup}>
-                  <TouchableOpacity
-                    style={s.openOrderDetailsBtn}
-                    onPress={() => router.push('/(vendor)/order-detail')}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={s.openOrderDetailsBtnText}>Open Order Details Workspace →</Text>
-                  </TouchableOpacity>
-
-                  <CustomerAppRedirectButton storeName="Your store" />
-                </View>
+              </>
+            ) : (
+              <View style={s.notConnectedBox}>
+                <Text style={s.notConnectedTitle}>
+                  {isClosed ? 'This chat is closed' : 'Messaging is not connected yet'}
+                </Text>
+                <Text style={s.notConnectedBody}>
+                  {isClosed
+                    ? 'Messages can no longer be sent for this order.'
+                    : 'Customer messages and replies will appear here once the order chat service is live.'}
+                </Text>
               </View>
             )}
-
           </View>
-        </View>
-
-      </View>
-
-      {/* Floating Toast */}
-      {toastMessage && (
-        <View style={s.toastBanner}>
-          <Text style={s.toastText}>{toastMessage.text}</Text>
+        </>
+      ) : (
+        <View style={s.noSelectionWrap}>
+          <Ionicons name="chatbubble-outline" size={28} color={Colors.textSubtle} />
+          <Text style={s.noSelectionText}>
+            {conversations.length === 0
+              ? 'Order chats will show here once customers message about an order.'
+              : 'Select an order chat to read the conversation.'}
+          </Text>
         </View>
       )}
+    </View>
+  );
+
+  // ── Order context (desktop) ───────────────────────────────────────────────
+  const lastSubstitution = [...activeMessages].reverse().find(m => m.substitution)?.substitution;
+  const contextCol = activeConversation ? (
+    <View style={s.orderContextCol}>
+      <View style={s.contextCard}>
+        <Text style={s.contextLabel}>ORDER</Text>
+        <Text style={s.contextTitle}>#{activeConversation.orderId}</Text>
+        <Text style={s.contextBody}>{activeConversation.customerFirstName} • {activeConversation.locality}</Text>
+        <View style={[s.statusPill, { backgroundColor: statusTagColors(activeConversation.orderStatus).bg }]}>
+          <Text style={[s.statusPillText, { color: statusTagColors(activeConversation.orderStatus).fg }]}>
+            {activeConversation.orderStatus}
+          </Text>
+        </View>
+      </View>
+
+      {lastSubstitution && (
+        <View style={s.contextCard}>
+          <Text style={s.contextLabel}>ACTIVE SUBSTITUTION</Text>
+          <Text style={s.subOriginalText}>{lastSubstitution.originalProduct}</Text>
+          <Text style={s.subSuggestedText}>{lastSubstitution.suggestedProduct}</Text>
+          <Text style={s.contextBody}>
+            {lastSubstitution.approvalStatus === 'APPROVED' ? 'Customer approved' : 'Awaiting customer approval'}
+          </Text>
+        </View>
+      )}
+
+      <TouchableOpacity
+        style={s.primaryBtn}
+        onPress={() => router.push({ pathname: '/(vendor)/order-detail', params: { orderId: activeConversation.orderId } } as any)}
+        activeOpacity={0.8}
+        accessibilityRole="button"
+      >
+        <Text style={s.primaryBtnText}>Open order details</Text>
+      </TouchableOpacity>
+    </View>
+  ) : null;
+
+  return (
+    <SafeAreaView style={s.root}>
+      {!isExpanded && (
+        <AppHeader
+          title={phoneThread && activeConversation ? `Order #${activeConversation.orderId}` : 'Order chats'}
+          subtitle={phoneThread && activeConversation ? `${activeConversation.customerFirstName} • ${activeConversation.locality}` : undefined}
+          showBack
+          onBack={phoneThread ? () => setSelectedOrderId(null) : undefined}
+        />
+      )}
+
+      <KeyboardAvoidingView
+        style={s.flex1}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <View style={s.desktopLayout}>
+          {isExpanded && (
+            <View style={s.navRail}>
+              <View>
+                <View style={s.railBrandGroup}>
+                  <View style={s.railBrandLogo}>
+                    <Ionicons name="sparkles" size={18} color="#FFFFFF" />
+                  </View>
+                  <View>
+                    <Wordmark size={17} />
+                    <Text style={s.railBrandSub}>Vendor Console</Text>
+                  </View>
+                </View>
+
+                {RAIL_ITEMS.map(item => {
+                  const active = item.route === '/(vendor)/messages';
+                  return (
+                    <TouchableOpacity
+                      key={item.label}
+                      style={[s.railNavItem, active && s.railNavItemActive]}
+                      onPress={() => router.push(item.route as any)}
+                      activeOpacity={0.8}
+                      accessibilityRole="button"
+                      accessibilityLabel={item.label}
+                    >
+                      <Ionicons name={item.icon} size={18} color={active ? Colors.primary : Colors.textSecondary} />
+                      <Text style={[s.railNavLabel, active && s.railNavLabelActive]}>{item.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              <TouchableOpacity
+                style={s.railHelpBtn}
+                onPress={() => router.push('/(vendor)/support' as any)}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+              >
+                <Text style={s.railHelpText}>Help and support</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <View style={s.threeColBody}>
+            {(isExpanded || !phoneThread) && conversationList}
+            {(isExpanded || phoneThread) && threadCol}
+            {isExpanded && contextCol}
+          </View>
+        </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -704,14 +621,21 @@ function MessagesScreen() {
 const s = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: Colors.surface, // Warm off-white #F8FAFC
+    backgroundColor: Colors.surface,
+  },
+  flex1: {
+    flex: 1,
   },
   desktopLayout: {
     flex: 1,
     flexDirection: 'row',
   },
+  threeColBody: {
+    flex: 1,
+    flexDirection: 'row',
+  },
 
-  /* Left Rail */
+  /* Desktop rail */
   navRail: {
     width: 240,
     backgroundColor: Colors.card,
@@ -732,182 +656,179 @@ const s = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 8,
-    backgroundColor: Colors.primaryLight,
+    backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  railBrandLogoIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 20,
-  },
-  railBrandTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
   railBrandSub: {
     fontSize: 12,
-    color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  railNavGroup: {
-    gap: 4,
-    flex: 1,
+    color: Colors.textSubtle,
+    fontFamily: FontFamily.semibold,
   },
   railNavItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
     paddingHorizontal: Spacing.md,
-    paddingVertical: 10,
+    minHeight: 44,
     borderRadius: BorderRadii.input,
+    marginBottom: 4,
   },
   railNavItemActive: {
     backgroundColor: Colors.primaryLight,
   },
-  railNavIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 16,
-  },
   railNavLabel: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontSize: 14,
+    fontFamily: FontFamily.semibold,
     color: Colors.textSecondary,
   },
   railNavLabelActive: {
     color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  railFooter: {
-    gap: Spacing.xs,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    paddingTop: Spacing.md,
-  },
-  storeSelectorPill: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.input,
-  },
-  storeSelectorText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
+    fontFamily: FontFamily.bold,
   },
   railHelpBtn: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: Spacing.sm,
-    paddingVertical: 6,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
   },
   railHelpText: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontFamily: FontFamily.semibold,
+  },
+
+  /* Shared bits */
+  sampleChip: {
+    backgroundColor: Colors.warningLight,
+    borderWidth: 1,
+    borderColor: Colors.warningBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: BorderRadii.pill,
+  },
+  sampleChipText: {
     fontSize: 12,
-    color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
+    color: Colors.warning,
   },
-
-  /* Main Console Area */
-  mainConsole: {
-    flex: 1,
-    backgroundColor: Colors.surface,
-    flexDirection: 'column',
-  },
-
-  /* Edge State Simulator */
-  simStripCard: {
-    backgroundColor: Colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
+  emptyWrap: {
+    alignItems: 'center',
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.xs,
-    paddingBottom: Spacing.xs,
+    paddingVertical: Spacing.xxl,
   },
-  simTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
+  emptyIconBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: Colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.md,
+  },
+  emptyTitle: {
+    fontSize: 16,
+    fontFamily: FontFamily.bold,
+    color: Colors.textPrimary,
     marginBottom: 4,
   },
-  simScrollContainer: {
-    gap: Spacing.xs,
+  emptyBody: {
+    fontSize: 14,
+    lineHeight: 21,
+    fontFamily: FontFamily.regular,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.md,
   },
-  simChip: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: BorderRadii.pill,
-    backgroundColor: Colors.surface,
+  emptyBtn: {
+    minHeight: 44,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: BorderRadii.input,
     borderWidth: 1,
     borderColor: Colors.border,
+    backgroundColor: Colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  simChipActive: {
-    backgroundColor: Colors.primaryLight,
-    borderColor: Colors.primaryBorder,
+  emptyBtnText: {
+    fontSize: 14,
+    fontFamily: FontFamily.semibold,
+    color: Colors.textPrimary,
   },
-  simChipText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+  noMatchWrap: {
+    padding: Spacing.lg,
+  },
+  noMatchText: {
+    fontSize: 14,
+    fontFamily: FontFamily.regular,
     color: Colors.textSecondary,
   },
-  simChipTextActive: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
+  primaryBtn: {
+    minHeight: 44,
+    backgroundColor: Colors.primary,
+    borderRadius: BorderRadii.input,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.lg,
+  },
+  primaryBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontFamily: FontFamily.semibold,
   },
 
-  /* 3-Column Body Composition */
-  threeColBody: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-
-  /* Left Column: Conversation List */
+  /* Conversation list */
   convListCol: {
-    width: 300,
     backgroundColor: Colors.card,
     borderRightWidth: 1,
     borderRightColor: Colors.border,
+  },
+  convListColDesktop: {
+    width: 300,
+  },
+  convListColPhone: {
+    flex: 1,
+    borderRightWidth: 0,
   },
   convHeaderBox: {
     padding: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
+  convHeaderTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
   convHeaderTitle: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontSize: 16,
+    fontFamily: FontFamily.bold,
     color: Colors.textPrimary,
   },
   convHeaderSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: FontFamily.regular,
     fontSize: 12,
-    color: Colors.textMuted,
-    marginBottom: Spacing.xs,
+    color: Colors.textSubtle,
+    marginTop: 2,
+    marginBottom: Spacing.sm,
   },
   convSearchInput: {
-    height: 34,
+    minHeight: 44,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    borderRadius: BorderRadii.pill,
-    paddingHorizontal: 12,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
+    borderRadius: BorderRadii.input,
+    paddingHorizontal: Spacing.md,
+    fontFamily: FontFamily.regular,
+    fontSize: 14,
     color: Colors.textPrimary,
   },
-
   convItemCard: {
-    padding: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+    minHeight: 44,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
   },
@@ -923,64 +844,60 @@ const s = StyleSheet.create({
     marginBottom: 2,
   },
   convOrderIdText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontSize: 14,
+    fontFamily: FontFamily.semibold,
     color: Colors.textPrimary,
   },
   convTimeText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: FontFamily.regular,
     fontSize: 12,
-    color: Colors.textMuted,
+    color: Colors.textSubtle,
   },
   convMetaRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.xs,
     marginBottom: 4,
   },
   convCustomerName: {
+    flexShrink: 1,
     fontSize: 12,
     color: Colors.textSecondary,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
   },
   convStatusTag: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
     borderRadius: BorderRadii.pill,
   },
   convStatusTagText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
   },
   convPreviewText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: FontFamily.regular,
     fontSize: 12,
-    fontStyle: 'italic',
-    color: Colors.textMuted,
+    color: Colors.textSubtle,
   },
   unreadBadgeChip: {
     alignSelf: 'flex-start',
     backgroundColor: Colors.primary,
-    paddingHorizontal: 6,
+    paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: BorderRadii.pill,
-    marginTop: 4,
+    marginTop: 6,
   },
   unreadBadgeChipText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
     color: '#FFFFFF',
   },
 
-  /* Center Column: Chat Thread */
+  /* Thread */
   chatThreadCol: {
     flex: 1,
     backgroundColor: Colors.surface,
-    flexDirection: 'column',
   },
   chatHeaderBar: {
     backgroundColor: Colors.card,
@@ -991,6 +908,7 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.sm,
   },
   titleRow: {
     flexDirection: 'row',
@@ -999,8 +917,7 @@ const s = StyleSheet.create({
   },
   chatTitleText: {
     fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
+    fontFamily: FontFamily.bold,
     color: Colors.textPrimary,
   },
   statusTag: {
@@ -1013,128 +930,83 @@ const s = StyleSheet.create({
   },
   statusTagText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
     color: Colors.primary,
   },
   chatSubText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: FontFamily.regular,
     fontSize: 12,
     color: Colors.textSecondary,
-    marginTop: 1,
+    marginTop: 2,
   },
-  supportEscalateBtn: {
+  supportBtn: {
+    minHeight: 44,
+    justifyContent: 'center',
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: BorderRadii.pill,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadii.input,
   },
-  supportEscalateBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
+  supportBtnText: {
+    fontSize: 13,
+    fontFamily: FontFamily.semibold,
+    color: Colors.textPrimary,
   },
-
   privacyBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
-    backgroundColor: '#EEF2FF',
+    backgroundColor: Colors.primaryLight,
     borderBottomWidth: 1,
-    borderBottomColor: '#C7D2FE',
+    borderBottomColor: Colors.primaryBorder,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: 6,
-  },
-  privacyBannerIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
+    paddingVertical: Spacing.xs,
   },
   privacyBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#3730A3',
     flex: 1,
-  },
-
-  offlineBanner: {
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 6,
-  },
-  offlineBannerText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.warning,
+    fontFamily: FontFamily.semibold,
+    color: Colors.textSecondary,
   },
-  expiredBanner: {
-    backgroundColor: Colors.surface,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 6,
+  archivedBanner: {
+    backgroundColor: Colors.card,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.xs,
   },
-  expiredBannerText: {
+  archivedBannerText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
+    fontFamily: FontFamily.semibold,
+    color: Colors.textSecondary,
     textAlign: 'center',
   },
   cancelledBanner: {
     backgroundColor: Colors.dangerLight,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: 6,
+    paddingVertical: Spacing.xs,
   },
   cancelledBannerText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
     color: Colors.danger,
     textAlign: 'center',
   },
-  escalatedBanner: {
-    backgroundColor: '#EEF2FF',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 6,
-  },
-  escalatedBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#3730A3',
-    textAlign: 'center',
-  },
-
   messageAreaScroll: {
     flex: 1,
   },
   messageAreaContent: {
     padding: Spacing.lg,
+    flexGrow: 1,
   },
-  unreadDivider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.md,
+  threadEmptyText: {
+    fontSize: 14,
+    fontFamily: FontFamily.regular,
+    color: Colors.textSubtle,
+    textAlign: 'center',
+    marginTop: Spacing.xl,
   },
-  unreadDividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: Colors.border,
-  },
-  unreadDividerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
-  },
-
   systemMessageBubble: {
     alignSelf: 'center',
     backgroundColor: Colors.card,
@@ -1144,14 +1016,14 @@ const s = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: 4,
     marginBottom: Spacing.md,
+    maxWidth: '90%',
   },
   systemMessageText: {
     fontSize: 12,
-    color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    color: Colors.textSecondary,
+    fontFamily: FontFamily.semibold,
+    textAlign: 'center',
   },
-
   messageRow: {
     marginBottom: Spacing.md,
   },
@@ -1161,37 +1033,31 @@ const s = StyleSheet.create({
   messageRowCustomer: {
     alignItems: 'flex-start',
   },
-
   messageBubble: {
     maxWidth: '85%',
     borderRadius: BorderRadii.card,
     padding: Spacing.md,
   },
   messageBubbleVendor: {
-    backgroundColor: Colors.primary, // Royal Blue #1D4ED8
+    backgroundColor: Colors.primary,
     borderBottomRightRadius: 2,
   },
   messageBubbleCustomer: {
-    backgroundColor: '#334155', // Slate dark
+    backgroundColor: '#334155',
     borderBottomLeftRadius: 2,
   },
-
   messageText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    lineHeight: 18,
+    fontFamily: FontFamily.medium,
+    fontSize: 14,
+    lineHeight: 20,
+    color: '#FFFFFF',
   },
   messageTextVendor: {
     color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_500Medium',
-    fontWeight: '500',
   },
   messageTextCustomer: {
     color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_500Medium',
-    fontWeight: '500',
   },
-
   substitutionCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: BorderRadii.input,
@@ -1205,51 +1071,45 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
     marginBottom: 4,
   },
   subCardTitle: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
+    fontFamily: FontFamily.semibold,
+    color: Colors.textSubtle,
     letterSpacing: 0.5,
   },
   subApprovalBadge: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 6,
+    backgroundColor: Colors.successLight,
+    paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: BorderRadii.pill,
   },
-  subApprovalBadgePending: {
-    backgroundColor: Colors.warningLight,
-  },
   subApprovalBadgeText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.warning,
+    fontFamily: FontFamily.semibold,
+    color: Colors.success,
   },
   subOriginalText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: FontFamily.regular,
     fontSize: 12,
-    color: Colors.textMuted,
+    color: Colors.textSubtle,
     textDecorationLine: 'line-through',
   },
   subSuggestedText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontSize: 13,
+    fontFamily: FontFamily.semibold,
     color: Colors.textPrimary,
-    marginTop: 1,
+    marginTop: 2,
   },
   subPriceText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
     color: Colors.success,
     marginTop: 2,
   },
-
   metaRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -1258,51 +1118,13 @@ const s = StyleSheet.create({
     marginTop: 4,
   },
   timestampText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: FontFamily.regular,
     fontSize: 12,
-    color: 'rgba(255, 255, 255, 0.7)',
+    color: 'rgba(255, 255, 255, 0.75)',
   },
   timestampTextVendor: {
-    color: 'rgba(255, 255, 255, 0.8)',
+    color: 'rgba(255, 255, 255, 0.85)',
   },
-  statusCheckText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#FFFFFF',
-  },
-
-  retryBtn: {
-    marginTop: 4,
-    alignSelf: 'flex-end',
-  },
-  retryBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFD1D1',
-    textDecorationLine: 'underline',
-  },
-
-  typingIndicatorRow: {
-    alignItems: 'flex-start',
-    marginBottom: Spacing.md,
-  },
-  typingBubble: {
-    backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.pill,
-  },
-  typingText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    fontStyle: 'italic',
-    color: Colors.textMuted,
-  },
-
-  /* Quick Replies Bar */
   quickRepliesBar: {
     backgroundColor: Colors.card,
     borderTopWidth: 1,
@@ -1314,17 +1136,17 @@ const s = StyleSheet.create({
     gap: Spacing.xs,
   },
   quickReplyChip: {
+    minHeight: 44,
+    justifyContent: 'center',
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: Spacing.md,
     borderRadius: BorderRadii.pill,
   },
   quickReplyChipText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
     color: Colors.primary,
   },
 
@@ -1341,15 +1163,14 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.dangerBorder,
     borderRadius: BorderRadii.input,
-    padding: Spacing.xs,
-    marginBottom: Spacing.xs,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
   },
   blockedContentBannerText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
     color: Colors.danger,
-    lineHeight: 15,
+    lineHeight: 16,
   },
   inputRow: {
     flexDirection: 'row',
@@ -1366,8 +1187,8 @@ const s = StyleSheet.create({
     borderRadius: BorderRadii.input,
     paddingHorizontal: Spacing.md,
     paddingVertical: 10,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
+    fontFamily: FontFamily.regular,
+    fontSize: 14,
     color: Colors.textPrimary,
   },
   composerInputError: {
@@ -1375,21 +1196,20 @@ const s = StyleSheet.create({
     backgroundColor: Colors.dangerLight,
   },
   sendBtn: {
-    height: 44,
-    paddingHorizontal: 16,
+    minHeight: 44,
+    paddingHorizontal: Spacing.lg,
     borderRadius: BorderRadii.input,
     backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   sendBtnDisabled: {
-    backgroundColor: '#94A3B8',
+    backgroundColor: Colors.textSubtle,
   },
   sendBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontSize: 14,
+    fontFamily: FontFamily.semibold,
   },
   characterGuidanceRow: {
     flexDirection: 'row',
@@ -1397,166 +1217,87 @@ const s = StyleSheet.create({
     marginTop: 4,
   },
   characterGuidanceText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: FontFamily.regular,
     fontSize: 12,
-    color: Colors.textMuted,
+    color: Colors.textSubtle,
   },
-  privacyHintText: {
+  notConnectedBox: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadii.input,
+    padding: Spacing.md,
+  },
+  notConnectedTitle: {
+    fontSize: 14,
+    fontFamily: FontFamily.semibold,
+    color: Colors.textPrimary,
+  },
+  notConnectedBody: {
     fontSize: 12,
-    color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    lineHeight: 18,
+    fontFamily: FontFamily.regular,
+    color: Colors.textSecondary,
+    marginTop: 2,
+  },
+  noSelectionWrap: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.xl,
+    gap: Spacing.sm,
+  },
+  noSelectionText: {
+    fontSize: 14,
+    fontFamily: FontFamily.regular,
+    color: Colors.textSecondary,
+    textAlign: 'center',
   },
 
-  /* Right Column: Order Context Panel (~320px) */
+  /* Order context (desktop) */
   orderContextCol: {
     width: 320,
     backgroundColor: Colors.card,
     borderLeftWidth: 1,
     borderLeftColor: Colors.border,
     padding: Spacing.lg,
-    gap: Spacing.lg,
+    gap: Spacing.md,
   },
-  contextHeaderCard: {
+  contextCard: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadii.input,
     padding: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.border,
+    gap: 4,
   },
-  contextHeaderTitle: {
+  contextLabel: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
+    fontFamily: FontFamily.semibold,
+    color: Colors.textSubtle,
     letterSpacing: 0.5,
   },
-  contextCustomerName: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+  contextTitle: {
+    fontSize: 16,
+    fontFamily: FontFamily.bold,
     color: Colors.textPrimary,
-    marginTop: 2,
   },
-  contextTotalAmount: {
+  contextBody: {
     fontSize: 12,
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    marginTop: 2,
+    fontFamily: FontFamily.regular,
+    color: Colors.textSecondary,
   },
-
-  stageCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  stageCardTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  stagePillActive: {
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.input,
-  },
-  stagePillActiveText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  stageHint: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 4,
-  },
-
-  substitutionContextCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  subContextTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
-  },
-  subContextOriginal: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    textDecorationLine: 'line-through',
-    marginTop: 4,
-  },
-  subContextNew: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    marginTop: 2,
-  },
-  subStatusBadgeRow: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: BorderRadii.pill,
-    marginTop: 6,
+  statusPill: {
     alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: BorderRadii.pill,
+    marginTop: 4,
   },
-  subStatusBadgeText: {
+  statusPillText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-  },
-
-  contextActionsGroup: {
-    gap: Spacing.sm,
-  },
-  openOrderDetailsBtn: {
-    backgroundColor: Colors.primary,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-  },
-  openOrderDetailsBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-
-  toastBanner: {
-    position: 'absolute',
-    bottom: 24,
-    left: Spacing.xl,
-    right: Spacing.xl,
-    backgroundColor: '#0F172A',
-    borderRadius: BorderRadii.input,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    elevation: 8,
-  },
-  toastText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    fontFamily: FontFamily.semibold,
   },
 });
 
-export default withComingSoon(MessagesScreen, 'Customer messages');
+export default MessagesScreen;

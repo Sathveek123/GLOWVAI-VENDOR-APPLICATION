@@ -9,9 +9,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, usePathname } from 'expo-router';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Colors, Spacing, BorderRadii } from '../theme/tokens';
 
 export type MobileTab = 'home' | 'orders' | 'catalog' | 'earnings' | 'profile';
+
+type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
 interface MobileBottomNavProps {
   currentTab: MobileTab;
@@ -26,12 +29,12 @@ export default function MobileBottomNav({ currentTab }: MobileBottomNavProps) {
   // Hide on desktop view (width >= 1024) where left sidebar rail is visible
   if (width >= 1024) return null;
 
-  const tabs: { key: MobileTab; label: string; icon: string; route: string }[] = [
-    { key: 'home', label: 'Home', icon: '🏠', route: '/(vendor)/home' },
-    { key: 'orders', label: 'Orders', icon: '📋', route: '/(vendor)/orders' },
-    { key: 'catalog', label: 'Catalog', icon: '🧴', route: '/(vendor)/catalog' },
-    { key: 'earnings', label: 'Earnings', icon: '💳', route: '/(vendor)/earnings' },
-    { key: 'profile', label: 'Profile', icon: '👤', route: '/(vendor)/profile' },
+  const tabs: { key: MobileTab; label: string; icon: IconName; activeIcon: IconName; route: string }[] = [
+    { key: 'home', label: 'Home', icon: 'home-outline', activeIcon: 'home', route: '/(vendor)/home' },
+    { key: 'orders', label: 'Orders', icon: 'receipt-outline', activeIcon: 'receipt', route: '/(vendor)/orders' },
+    { key: 'catalog', label: 'Catalog', icon: 'cube-outline', activeIcon: 'cube', route: '/(vendor)/catalog' },
+    { key: 'earnings', label: 'Earnings', icon: 'wallet-outline', activeIcon: 'wallet', route: '/(vendor)/earnings' },
+    { key: 'profile', label: 'Profile', icon: 'person-outline', activeIcon: 'person', route: '/(vendor)/profile' },
   ];
 
   const handleNavigation = (targetRoute: string, targetKey: MobileTab) => {
@@ -55,7 +58,12 @@ export default function MobileBottomNav({ currentTab }: MobileBottomNavProps) {
               accessibilityState={{ selected: isActive }}
               accessibilityLabel={`${tab.label} tab`}
             >
-              <Text style={[s.icon, isActive && s.activeIcon]}>{tab.icon}</Text>
+              <Ionicons
+                name={isActive ? tab.activeIcon : tab.icon}
+                size={22}
+                color={isActive ? Colors.primary : Colors.textSecondary || '#64748B'}
+                style={isActive ? s.activeIcon : s.icon}
+              />
               <Text style={[s.label, isActive && s.activeLabel]} numberOfLines={1}>
                 {tab.label}
               </Text>
@@ -104,14 +112,10 @@ const s = StyleSheet.create({
     backgroundColor: '#F1F5F9',
   },
   icon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
     marginBottom: 2,
-    opacity: 0.65,
   },
   activeIcon: {
-    opacity: 1.0,
-    transform: [{ scale: 1.1 }],
+    marginBottom: 2,
   },
   label: {
     fontSize: 12,

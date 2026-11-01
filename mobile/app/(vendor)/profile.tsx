@@ -1,1543 +1,573 @@
 /**
- * SCREEN 25: Store Profile & KYC Dossier
- * File: mobile/app/(vendor)/profile.tsx
- *
- * Production-grade merchant identity and compliance hub for GlowVAI Vendors.
- * Features:
- *   • Profile Header Card with store logo photo upload, 4.96 rating badge, & live duty status
- *   • 4 Accessible Tabs: "Store", "Hours", "KYC", "Bank"
- *   • 7-day operating hours schedule with "Copy Monday to All Days" & live customer preview
- *   • 6-document KYC Dossier with timed reveal (10s auto-remasking) & upload malware scanner
- *   • Bank summary linked to Screen 24 bank management flow
- *   • Separated Danger Zone logout modal explaining session invalidation
- *   • Complete edge states (Loading, Offline, Unsaved changes, Permission denied, Session expired)
+ * Account and store profile. Everything shown comes from the signed-in account (GET /api/vendor/me).
+ * Fields the account does not have yet read "Not added yet" instead of placeholder details.
  */
-
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useState, useEffect, useMemo } from 'react';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
-  SafeAreaView,
-  ScrollView,
-  TouchableOpacity,
   TextInput,
-  Image,
-  Alert,
-  Modal,
+  Pressable,
   ActivityIndicator,
-  Switch,
-  RefreshControl,
-  Platform,
+  StyleSheet,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import ScreenShell from '../../src/components/ScreenShell';
+import { vendorApi } from '../../src/services/api';
+import { clearSession, getSession } from '../../src/services/session';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
-import useVendorStore from '../../src/store/useVendorStore';
-import AppHeader from '../../src/components/AppHeader';
-import MobileBottomNav from '../../src/components/MobileBottomNav';
-import { soundService } from '../../src/services/sound';
-import { clearSession } from '../../src/services/session';
+import { TypeScale } from '../../src/theme/typography';
 
-const COLOR_ROYAL_BLUE = Colors.primary;
-const COLOR_EMERALD = Colors.success;
-const COLOR_AMBER = Colors.warning;
-const COLOR_DANGER = Colors.danger;
-const COLOR_SLATE = '#64748B';
+type LoadState = 'loading' | 'ready' | 'error';
 
-const DAYS_OF_WEEK = [
-  { key: 'Mon', name: 'Monday' },
-  { key: 'Tue', name: 'Tuesday' },
-  { key: 'Wed', name: 'Wednesday' },
-  { key: 'Thu', name: 'Thursday' },
-  { key: 'Fri', name: 'Friday' },
-  { key: 'Sat', name: 'Saturday' },
-  { key: 'Sun', name: 'Sunday' },
-];
-
-export interface KycDocItem {
-  id: string;
-  kind: string;
-  maskedNumber: string;
-  fullNumber: string;
-  status: 'VERIFIED' | 'PENDING_REVIEW' | 'EXPIRING_SOON' | 'REJECTED' | 'REPLACEMENT_REQUIRED' | 'UPLOAD_PROCESSING' | 'UNAVAILABLE';
-  fileName: string;
-  fileSize: string;
-  expiresAt?: string;
+/** The fields the backend accepts on PATCH /api/vendor/:vendorId, as the form edits them. */
+interface Draft {
+  name: string;
+  shopName: string;
+  email: string;
+  address: string;
+  locality: string;
+  city: string;
+  pinCode: string;
+  openTime: string;
+  closeTime: string;
 }
 
-const INITIAL_KYC_DOCS: KycDocItem[] = [
-  {
-    id: 'kyc-1',
-    kind: 'GSTIN Registration Certificate',
-    maskedNumber: '37AAAAA****1Z5',
-    fullNumber: '37AAAAA00001Z5',
-    status: 'VERIFIED',
-    fileName: 'gst_certificate_2026.pdf',
-    fileSize: '1.4 MB',
-  },
-  {
-    id: 'kyc-2',
-    kind: 'Merchant PAN Identity Card',
-    maskedNumber: 'ABCDE****F',
-    fullNumber: 'ABCDE1234F',
-    status: 'VERIFIED',
-    fileName: 'pan_card_owner.pdf',
-    fileSize: '820 KB',
-  },
-  {
-    id: 'kyc-3',
-    kind: 'FSSAI Cosmetic Retail License',
-    maskedNumber: '1152400****891',
-    fullNumber: '11524009900891',
-    status: 'EXPIRING_SOON',
-    fileName: 'fssai_license_2026.pdf',
-    fileSize: '2.1 MB',
-    expiresAt: '28 Days (Nov 5, 2026)',
-  },
-  {
-    id: 'kyc-4',
-    kind: 'Trade & Municipal Dark Store License',
-    maskedNumber: 'TRD-VIJ-2026-99',
-    fullNumber: 'TRD-VIJ-2026-99',
-    status: 'PENDING_REVIEW',
-    fileName: 'trade_license_vij.pdf',
-    fileSize: '1.1 MB',
-  },
-  {
-    id: 'kyc-5',
-    kind: 'Dark Store Geo-Fence Map Coordinates',
-    maskedNumber: 'Benz Circle (5km Radius)',
-    fullNumber: '16.5062° N, 80.6480° E',
-    status: 'REPLACEMENT_REQUIRED',
-    fileName: 'geofence_map_old.png',
-    fileSize: '950 KB',
-  },
-  {
-    id: 'kyc-6',
-    kind: 'Store Front & Shelf Inspection Photo',
-    maskedNumber: 'STR-PHOTO-2026',
-    fullNumber: 'STR-PHOTO-2026-FULL',
-    status: 'REJECTED',
-    fileName: 'store_photo_blurry.jpg',
-    fileSize: '410 KB',
-  },
-  {
-    id: 'kyc-7',
-    kind: 'Utility Bill (Address & Electricity Proof)',
-    maskedNumber: 'Pending Upload',
-    fullNumber: 'Pending Upload',
-    status: 'UNAVAILABLE',
-    fileName: 'No file uploaded',
-    fileSize: '0 KB',
-  },
-];
+interface Account extends Partial<Draft> {
+  vendorId?: string;
+  storeId?: string;
+  phone?: string;
+  kycStatus?: 'PENDING' | 'APPROVED' | 'REJECTED' | string;
+  verificationStatus?: string;
+  kycRejectionReason?: string | null;
+  bankName?: string;
+  accountNumber?: string;
+  isOnline?: boolean;
+}
+
+function toDraft(a: Account): Draft {
+  return {
+    name: a.name || '',
+    shopName: a.shopName || '',
+    email: a.email || '',
+    address: a.address || '',
+    locality: a.locality || '',
+    city: a.city || '',
+    pinCode: a.pinCode || '',
+    openTime: a.openTime || '',
+    closeTime: a.closeTime || '',
+  };
+}
+
+/** Shows only the last four digits of a phone number or account number. */
+function maskDigits(value?: string | null, prefix = '••••••'): string | null {
+  const digits = (value || '').replace(/\D/g, '');
+  if (digits.length < 4) return null;
+  return `${prefix}${digits.slice(-4)}`;
+}
+
+const NOT_ADDED = 'Not added yet';
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { vendor } = useVendorStore();
-  const isOnline = vendor?.isOnline ?? true;
+  const [state, setState] = useState<LoadState>('loading');
+  const [account, setAccount] = useState<Account | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [confirmingSignOut, setConfirmingSignOut] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
 
-  // Active Tab State
-  const [activeTab, setActiveTab] = useState<'STORE' | 'HOURS' | 'KYC' | 'BANK'>('STORE');
-
-  // Store Profile Form Fields State
-  const [storeName, setStoreName] = useState<string>('');
-  const [ownerName, setOwnerName] = useState<string>('');
-  const [phone, setPhone] = useState<string>('+91 9876543210');
-  const [email, setEmail] = useState<string>('priya.beauty@glowvai.in');
-  const [description, setDescription] = useState<string>('Premium authentic cosmetics, skincare, and fragrance dark store in Vijayawada.');
-  const [address, setAddress] = useState<string>('Door 12-4-5, Benz Circle Main Road');
-  const [locality, setLocality] = useState<string>('Benz Circle');
-  const [city, setCity] = useState<string>('Vijayawada');
-  const [pinCode, setPinCode] = useState<string>('520010');
-  const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
-  const [isSaving, setIsSaving] = useState<boolean>(false);
-
-  // Operating Hours State
-  const [hoursSchedule, setHoursSchedule] = useState<Record<string, { open: boolean; openTime: string; closeTime: string }>>({
-    Mon: { open: true, openTime: '08:00 AM', closeTime: '11:00 PM' },
-    Tue: { open: true, openTime: '08:00 AM', closeTime: '11:00 PM' },
-    Wed: { open: true, openTime: '08:00 AM', closeTime: '11:00 PM' },
-    Thu: { open: true, openTime: '08:00 AM', closeTime: '11:00 PM' },
-    Fri: { open: true, openTime: '08:00 AM', closeTime: '11:00 PM' },
-    Sat: { open: true, openTime: '08:00 AM', closeTime: '11:00 PM' },
-    Sun: { open: true, openTime: '10:00 AM', closeTime: '10:00 PM' },
-  });
-
-  const [specialClosures, setSpecialClosures] = useState<{ id: string; date: string; reason: string }[]>([
-    { id: '1', date: '2026-11-01', reason: 'Deepavali Festival Store Holiday' },
-  ]);
-  const [newClosureDate, setNewClosureDate] = useState<string>('');
-  const [newClosureReason, setNewClosureReason] = useState<string>('');
-
-  // KYC Dossier State
-  const [kycDocs, setKycDocs] = useState<KycDocItem[]>(INITIAL_KYC_DOCS);
-  const [revealedDocIds, setRevealedDocIds] = useState<Record<string, boolean>>({});
-  const [uploadTargetDoc, setUploadTargetDoc] = useState<KycDocItem | null>(null);
-  const [isUploadingFile, setIsUploadingFile] = useState<boolean>(false);
-
-  // Logout Modal
-  const [showLogoutModal, setShowLogoutModal] = useState<boolean>(false);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
-
-  // Dev Edge States
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isOffline, setIsOffline] = useState<boolean>(false);
-  const [isPermissionDenied, setIsPermissionDenied] = useState<boolean>(false);
-  const [showSessionExpired, setShowSessionExpired] = useState<boolean>(false);
-
-  useEffect(() => {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = 'Store Profile & KYC Dossier | GlowVAI Vendor';
+  const load = useCallback(async () => {
+    setState('loading');
+    try {
+      const res = await vendorApi.me();
+      setAccount(res?.vendor || {});
+      setState('ready');
+    } catch (_) {
+      setState('error');
     }
   }, []);
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    soundService.playSuccessDing();
-    setTimeout(() => setRefreshing(false), 800);
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const startEditing = () => {
+    if (!account) return;
+    setDraft(toDraft(account));
+    setSaveError(null);
+    setEditing(true);
   };
 
-  const handleSaveStoreProfile = () => {
-    if (!storeName.trim() || !ownerName.trim()) {
-      Alert.alert('Required Fields', 'Store Name and Owner Name cannot be empty.');
+  const cancelEditing = () => {
+    setEditing(false);
+    setDraft(null);
+    setSaveError(null);
+  };
+
+  const update = (key: keyof Draft, value: string) => {
+    setDraft(prev => (prev ? { ...prev, [key]: value } : prev));
+  };
+
+  const save = async () => {
+    if (!draft || !account) return;
+    const name = draft.name.trim();
+    const shopName = draft.shopName.trim();
+    const email = draft.email.trim();
+    if (!name || !shopName) {
+      setSaveError('Owner name and store name are required.');
       return;
     }
-    setIsSaving(true);
-    soundService.playSuccessDing();
-    setTimeout(() => {
-      setIsSaving(false);
-      setHasUnsavedChanges(false);
-      Alert.alert('Profile Saved ✅', 'Your dark store profile details have been updated.');
-    }, 800);
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
+      setSaveError('Enter a valid email address.');
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const session = await getSession();
+      const vendorId = account.vendorId || session.vendorId;
+      if (!vendorId) throw new Error('No vendor id');
+      const payload: Draft = {
+        ...draft,
+        name,
+        shopName,
+        email,
+        address: draft.address.trim(),
+        locality: draft.locality.trim(),
+        city: draft.city.trim(),
+        pinCode: draft.pinCode.trim(),
+        openTime: draft.openTime.trim(),
+        closeTime: draft.closeTime.trim(),
+      };
+      const res = await vendorApi.updateProfile(vendorId, payload);
+      setAccount({ ...account, ...(res?.vendor || payload) });
+      setEditing(false);
+      setDraft(null);
+    } catch (_) {
+      setSaveError('Your changes were not saved. Check your connection and try again.');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleCopyMondayHoursToAll = () => {
-    const mon = hoursSchedule['Mon'];
-    const updated: any = {};
-    DAYS_OF_WEEK.forEach((d) => {
-      updated[d.key] = { ...mon };
-    });
-    setHoursSchedule(updated);
-    soundService.playSuccessDing();
-    Alert.alert('Hours Copied ⏰', 'Monday operating hours applied to all 7 days.');
+  const signOut = async () => {
+    setSigningOut(true);
+    await clearSession();
+    router.replace('/(auth)/login');
   };
 
-  const handleToggleTimedReveal = (docId: string) => {
-    soundService.playSuccessDing();
-    setRevealedDocIds((prev) => ({ ...prev, [docId]: true }));
-    // Auto-remask after 10 seconds
-    setTimeout(() => {
-      setRevealedDocIds((prev) => ({ ...prev, [docId]: false }));
-    }, 10000);
-  };
-
-  const handleSimulateDocumentUpload = () => {
-    if (!uploadTargetDoc) return;
-    setIsUploadingFile(true);
-    soundService.playSuccessDing();
-    setTimeout(() => {
-      setIsUploadingFile(false);
-      setKycDocs((prev) =>
-        prev.map((d) =>
-          d.id === uploadTargetDoc.id
-            ? { ...d, status: 'PENDING_REVIEW', fileName: `${d.kind.toLowerCase().replace(/\s+/g, '_')}_new.pdf`, fileSize: '1.8 MB' }
-            : d
-        )
-      );
-      setUploadTargetDoc(null);
-      Alert.alert('Upload Complete ☁️', 'File uploaded and passed malware scan. Compliance review pending.');
-    }, 1200);
-  };
-
-  const verifiedCount = useMemo(() => {
-    return kycDocs.filter((d) => d.status === 'VERIFIED').length;
-  }, [kycDocs]);
+  const shown = (value?: string | null) => (value && value.trim() ? value : NOT_ADDED);
+  const kyc = account?.kycStatus || account?.verificationStatus;
+  const kycTone = KYC_TONE[kyc as keyof typeof KYC_TONE] || KYC_TONE.NONE;
+  const initial = (account?.shopName || account?.name || '?').trim().charAt(0).toUpperCase();
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      {/* ── Top Header ────────────────────────────────────────────────────────── */}
-      <AppHeader
-        title="Profile"
-        subtitle="Store ID: DS-VIJ-01 • Partner since Aug 2024"
-        showBell={true}
-        showBack={true}
-      />
-
-      {/* Edge State Banners */}
-      {isOffline && (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>
-            ⚡ Offline Mode — Displaying cached store profile dossier.
-          </Text>
-        </View>
-      )}
-
-      {hasUnsavedChanges && (
-        <View style={styles.unsavedBanner}>
-          <Text style={styles.unsavedBannerText}>
-            ⚠️ You have unsaved profile changes. Tap "Save Changes" to apply.
-          </Text>
-        </View>
-      )}
-
-      {isPermissionDenied && (
-        <View style={styles.deniedBanner}>
-          <Text style={styles.deniedBannerText}>
-            🔒 Permission Denied — Only primary Store Managers can modify KYC dossiers.
-          </Text>
-        </View>
-      )}
-
-      <ScrollView
-        style={styles.scrollArea}
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[COLOR_ROYAL_BLUE]} />}
-      >
-        {/* DEV TESTING STRIP */}
-        {__DEV__ && (
-        <View style={styles.devStrip}>
-          <Text style={styles.devTitle}>TEST PROFILE & KYC EDGE STATES:</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.devPillRow}>
-            <TouchableOpacity
-              style={[styles.devPill, isLoading && styles.devPillActive]}
-              onPress={() => setIsLoading(!isLoading)}
-            >
-              <Text style={styles.devPillText}>Loading</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, isOffline && styles.devPillActive]}
-              onPress={() => setIsOffline(!isOffline)}
-            >
-              <Text style={styles.devPillText}>Offline</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, hasUnsavedChanges && styles.devPillActive]}
-              onPress={() => setHasUnsavedChanges(!hasUnsavedChanges)}
-            >
-              <Text style={styles.devPillText}>Unsaved Changes</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, isPermissionDenied && styles.devPillActive]}
-              onPress={() => setIsPermissionDenied(!isPermissionDenied)}
-            >
-              <Text style={styles.devPillText}>Permission Denied</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.devPill}
-              onPress={() => setShowSessionExpired(true)}
-            >
-              <Text style={styles.devPillText}>Session Expired</Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
-        )}
-
-        {/* ── 1. PROFILE HEADER CARD ────────────────────────────────────────── */}
-        {isLoading ? (
-          <View style={[styles.card, { padding: 30, alignItems: 'center' }]}>
-            <ActivityIndicator size="large" color={COLOR_ROYAL_BLUE} />
-            <Text style={{ color: COLOR_SLATE, marginTop: 10 }}>Loading profile dossier...</Text>
+    <ScreenShell
+      header={{ title: 'Account', showBack: true }}
+      backgroundColor={Colors.surface}
+      contentContainerStyle={s.content}
+      keyboardAvoiding={editing}
+    >
+      {state === 'error' ? (
+        <View style={s.errorBox} accessibilityRole="alert">
+          <Ionicons name="alert-circle-outline" size={20} color={Colors.danger} />
+          <View style={{ flex: 1 }}>
+            <Text style={s.errorTitle}>We could not load your account</Text>
+            <Text style={s.errorBody}>Check your connection and try again.</Text>
           </View>
-        ) : (
-          <View style={styles.card}>
-            <View style={styles.profileTopRow}>
-              <View style={styles.avatarWrap}>
-                <View style={[styles.avatarImg, { alignItems: 'center', justifyContent: 'center', backgroundColor: '#EFF6FF' }]}>
-                  <Ionicons name="storefront-outline" size={28} color="#1D4ED8" />
-                </View>
-                <TouchableOpacity
-                  style={styles.cameraBadge}
-                  onPress={() => Alert.alert('Upload Store Avatar', 'Select photo from gallery or camera.')}
-                >
-                  <Ionicons name="camera-outline" size={12} style={{ color: '#FFFFFF' }} />
-                </TouchableOpacity>
-              </View>
+          <Pressable onPress={load} accessibilityRole="button" style={({ pressed }) => [s.retryBtn, pressed && { opacity: 0.7 }]}>
+            <Text style={s.retryText}>Retry</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <Text style={styles.storeTitleText}>{storeName}</Text>
-                  <View style={[styles.dutyPill, isOnline ? styles.dutyOpen : styles.dutyPaused]}>
-                    <Text style={styles.dutyPillText}>{isOnline ? '🟢 Open' : '⏸️ Paused'}</Text>
-                  </View>
-                </View>
-
-                <Text style={styles.storeSubText}>Beauty, Skincare & Cosmetics Dark Store</Text>
-                <Text style={styles.locationText}>📍 {locality}, {city} ({pinCode})</Text>
-
-                <View style={styles.ratingRow}>
-                  <Text style={styles.ratingText}>4.96 ⭐</Text>
-                  <Text style={styles.ratingSub}>(128 verified customer reviews)</Text>
-                </View>
+      {state === 'loading' ? (
+        <View style={s.loadingBox}>
+          <ActivityIndicator color={Colors.primary} />
+          <Text style={s.loadingText}>Loading your account</Text>
+        </View>
+      ) : (
+        <>
+          {/* Identity */}
+          <View style={s.identity}>
+            <View style={s.avatar}>
+              <Text style={s.avatarText}>{initial}</Text>
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={s.storeName} numberOfLines={2}>{shown(account?.shopName)}</Text>
+              <Text style={s.ownerName} numberOfLines={1}>{shown(account?.name)}</Text>
+              <View style={[s.pill, { backgroundColor: kycTone.bg, borderColor: kycTone.border }]}>
+                <Text style={[s.pillText, { color: kycTone.text }]}>{kycTone.label}</Text>
               </View>
             </View>
           </View>
-        )}
 
-        {/* ── 2. FOUR ACCESSIBLE TABS ───────────────────────────────────────── */}
-        {!isLoading && !isPermissionDenied && (
-          <>
-            <View style={styles.tabsRow}>
-              <TouchableOpacity
-                style={[styles.tabBtn, activeTab === 'STORE' && styles.tabBtnActive]}
-                onPress={() => setActiveTab('STORE')}
-              >
-                <Text style={[styles.tabBtnText, activeTab === 'STORE' && styles.tabBtnTextActive]}>
-                  🏪 Store
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tabBtn, activeTab === 'HOURS' && styles.tabBtnActive]}
-                onPress={() => setActiveTab('HOURS')}
-              >
-                <Text style={[styles.tabBtnText, activeTab === 'HOURS' && styles.tabBtnTextActive]}>
-                  ⏰ Hours
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tabBtn, activeTab === 'KYC' && styles.tabBtnActive]}
-                onPress={() => setActiveTab('KYC')}
-              >
-                <Text style={[styles.tabBtnText, activeTab === 'KYC' && styles.tabBtnTextActive]}>
-                  📜 KYC ({verifiedCount}/{kycDocs.length})
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.tabBtn, activeTab === 'BANK' && styles.tabBtnActive]}
-                onPress={() => setActiveTab('BANK')}
-              >
-                <Text style={[styles.tabBtnText, activeTab === 'BANK' && styles.tabBtnTextActive]}>
-                  🏦 Bank
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* TAB 1: STORE DETAILS */}
-            {activeTab === 'STORE' && (
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>MERCHANT IDENTITY & ADDRESS</Text>
-
-                <View style={styles.formGrid}>
-                  <View style={styles.formColFull}>
-                    <Text style={styles.inputLabel}>STORE / SHOP NAME</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      value={storeName}
-                      onChangeText={(t) => {
-                        setStoreName(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                    />
-                  </View>
-
-                  <View style={styles.formColFull}>
-                    <Text style={styles.inputLabel}>REGISTERED OWNER NAME</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      value={ownerName}
-                      onChangeText={(t) => {
-                        setOwnerName(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                    />
-                  </View>
-
-                  <View style={styles.formColHalf}>
-                    <Text style={styles.inputLabel}>PRIMARY PHONE (+91)</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      value={phone}
-                      onChangeText={(t) => {
-                        setPhone(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                      keyboardType="phone-pad"
-                    />
-                  </View>
-
-                  <View style={styles.formColHalf}>
-                    <Text style={styles.inputLabel}>EMAIL ADDRESS</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      value={email}
-                      onChangeText={(t) => {
-                        setEmail(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                      keyboardType="email-address"
-                    />
-                  </View>
-
-                  <View style={styles.formColFull}>
-                    <Text style={styles.inputLabel}>STORE DESCRIPTION</Text>
-                    <TextInput
-                      style={[styles.textInput, { height: 60, textAlignVertical: 'top' }]}
-                      value={description}
-                      onChangeText={(t) => {
-                        setDescription(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                      multiline
-                    />
-                  </View>
-
-                  <View style={styles.formColFull}>
-                    <Text style={styles.inputLabel}>STREET ADDRESS</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      value={address}
-                      onChangeText={(t) => {
-                        setAddress(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                    />
-                  </View>
-
-                  <View style={styles.formColThird}>
-                    <Text style={styles.inputLabel}>LOCALITY</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      value={locality}
-                      onChangeText={(t) => {
-                        setLocality(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                    />
-                  </View>
-
-                  <View style={styles.formColThird}>
-                    <Text style={styles.inputLabel}>CITY</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      value={city}
-                      onChangeText={(t) => {
-                        setCity(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                    />
-                  </View>
-
-                  <View style={styles.formColThird}>
-                    <Text style={styles.inputLabel}>PINCODE</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      value={pinCode}
-                      onChangeText={(t) => {
-                        setPinCode(t);
-                        setHasUnsavedChanges(true);
-                      }}
-                      keyboardType="number-pad"
-                    />
-                  </View>
+          {editing && draft ? (
+            <View style={s.card}>
+              <Text style={s.cardTitle}>Edit details</Text>
+              <Field label="Owner name" value={draft.name} onChangeText={v => update('name', v)} autoCapitalize="words" />
+              <Field label="Store name" value={draft.shopName} onChangeText={v => update('shopName', v)} autoCapitalize="words" />
+              <Field label="Email" value={draft.email} onChangeText={v => update('email', v)} keyboardType="email-address" autoCapitalize="none" />
+              <Field label="Address" value={draft.address} onChangeText={v => update('address', v)} autoCapitalize="sentences" />
+              <View style={s.twoCol}>
+                <View style={{ flex: 1 }}>
+                  <Field label="Locality" value={draft.locality} onChangeText={v => update('locality', v)} autoCapitalize="words" />
                 </View>
-
-                <TouchableOpacity
-                  style={styles.saveBtn}
-                  onPress={handleSaveStoreProfile}
-                  disabled={isSaving}
-                >
-                  {isSaving ? (
-                    <ActivityIndicator size="small" color="#ffffff" />
-                  ) : (
-                    <Text style={styles.saveBtnText}>Save Profile Changes</Text>
-                  )}
-                </TouchableOpacity>
+                <View style={{ flex: 1 }}>
+                  <Field label="City" value={draft.city} onChangeText={v => update('city', v)} autoCapitalize="words" />
+                </View>
               </View>
-            )}
-
-            {/* TAB 2: OPERATING HOURS */}
-            {activeTab === 'HOURS' && (
-              <View style={styles.card}>
-                <View style={styles.hoursHeaderRow}>
-                  <View>
-                    <Text style={styles.cardTitle}>7-DAY OPERATING SCHEDULE</Text>
-                    <Text style={styles.cardSub}>Set store opening & closing windows for customer fulfillment</Text>
-                  </View>
-
-                  <TouchableOpacity style={styles.copyMonBtn} onPress={handleCopyMondayHoursToAll}>
-                    <Text style={styles.copyMonBtnText}>Copy Mon to All</Text>
-                  </TouchableOpacity>
+              <View style={s.twoCol}>
+                <View style={{ flex: 1 }}>
+                  <Field label="PIN code" value={draft.pinCode} onChangeText={v => update('pinCode', v)} keyboardType="number-pad" maxLength={6} />
                 </View>
-
-                <View style={styles.previewLineBox}>
-                  <Text style={styles.previewLineText}>
-                    ℹ️ Live Preview: Customers can order today until 11:00 PM.
-                  </Text>
+                <View style={{ flex: 1 }}>
+                  <Field label="Opens" value={draft.openTime} onChangeText={v => update('openTime', v)} placeholder="09:00 AM" />
                 </View>
+                <View style={{ flex: 1 }}>
+                  <Field label="Closes" value={draft.closeTime} onChangeText={v => update('closeTime', v)} placeholder="10:00 PM" />
+                </View>
+              </View>
 
-                {DAYS_OF_WEEK.map((d) => {
-                  const schedule = hoursSchedule[d.key] || { open: true, openTime: '08:00 AM', closeTime: '11:00 PM' };
-                  return (
-                    <View key={d.key} style={styles.hoursRow}>
-                      <View style={styles.daySwitchGroup}>
-                        <Switch
-                          value={schedule.open}
-                          onValueChange={() =>
-                            setHoursSchedule((prev) => ({
-                              ...prev,
-                              [d.key]: { ...prev[d.key], open: !prev[d.key].open },
-                            }))
-                          }
-                          trackColor={{ false: '#CBD5E1', true: '#BFDBFE' }}
-                          thumbColor={schedule.open ? COLOR_ROYAL_BLUE : '#94A3B8'}
-                        />
-                        <Text style={styles.dayNameText}>{d.name}</Text>
-                      </View>
+              {saveError ? (
+                <Text style={s.formError} accessibilityRole="alert">{saveError}</Text>
+              ) : null}
 
-                      {schedule.open ? (
-                        <View style={styles.timeWrap}>
-                          <Text style={styles.timePill}>{schedule.openTime}</Text>
-                          <Text style={{ color: COLOR_SLATE, fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12 }}>to</Text>
-                          <Text style={styles.timePill}>{schedule.closeTime}</Text>
-                        </View>
-                      ) : (
-                        <Text style={styles.closedText}>Closed for Orders</Text>
-                      )}
-                    </View>
-                  );
-                })}
+              <View style={s.formActions}>
+                <Pressable
+                  onPress={cancelEditing}
+                  disabled={saving}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [s.secondaryBtn, pressed && { opacity: 0.8 }]}
+                >
+                  <Text style={s.secondaryText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={save}
+                  disabled={saving}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [s.primaryBtn, (pressed || saving) && { opacity: 0.85 }]}
+                >
+                  {saving ? <ActivityIndicator color={Colors.background} /> : <Text style={s.primaryText}>Save changes</Text>}
+                </Pressable>
+              </View>
+            </View>
+          ) : (
+            <Pressable
+              onPress={startEditing}
+              accessibilityRole="button"
+              accessibilityLabel="Edit store details"
+              style={({ pressed }) => [s.editBtn, pressed && { opacity: 0.8 }]}
+            >
+              <Ionicons name="create-outline" size={18} color={Colors.primary} />
+              <Text style={s.editText}>Edit details</Text>
+            </Pressable>
+          )}
 
-                <Text style={[styles.cardTitle, { marginTop: 16 }]}>SPECIAL CLOSURES & HOLIDAYS</Text>
-                {specialClosures.map((sc) => (
-                  <View key={sc.id} style={sc.id === '1' ? styles.closureRow : styles.closureRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.closureReason}>{sc.reason}</Text>
-                      <Text style={styles.closureDate}>📅 {sc.date}</Text>
-                    </View>
-                    <TouchableOpacity
-                      onPress={() => setSpecialClosures((prev) => prev.filter((item) => item.id !== sc.id))}
+          <Text style={s.sectionLabel}>Store details</Text>
+          <View style={s.card}>
+            <Row label="Owner name" value={shown(account?.name)} />
+            <Row label="Store name" value={shown(account?.shopName)} />
+            <Row label="Phone" value={maskDigits(account?.phone) || NOT_ADDED} />
+            <Row label="Email" value={shown(account?.email)} />
+            <Row label="Address" value={shown(account?.address)} />
+            <Row label="Locality" value={shown(account?.locality)} />
+            <Row label="City" value={shown(account?.city)} />
+            <Row label="PIN code" value={shown(account?.pinCode)} last />
+          </View>
+
+          <Text style={s.sectionLabel}>Opening hours</Text>
+          <View style={s.card}>
+            <Row label="Opens" value={shown(account?.openTime)} />
+            <Row label="Closes" value={shown(account?.closeTime)} last />
+          </View>
+
+          <Text style={s.sectionLabel}>Payouts</Text>
+          <View style={s.card}>
+            <Row label="Bank" value={shown(account?.bankName)} />
+            <Row label="Account" value={maskDigits(account?.accountNumber, '•••• ') || NOT_ADDED} />
+            <LinkRow label="Manage bank account" onPress={() => router.push('/(vendor)/bank-edit')} last />
+          </View>
+
+          <Text style={s.sectionLabel}>Verification</Text>
+          <View style={s.card}>
+            <Row label="Status" value={kycTone.label} />
+            {account?.kycRejectionReason ? (
+              <Row label="Reason" value={account.kycRejectionReason} />
+            ) : null}
+            <LinkRow label="Tax and documents" onPress={() => router.push('/(vendor)/tax-documents')} last />
+          </View>
+
+          <Text style={s.sectionLabel}>Security</Text>
+          <View style={s.card}>
+            <LinkRow label="Security and sign-in" onPress={() => router.push('/(vendor)/security')} last />
+          </View>
+
+          <Text style={s.sectionLabel}>Help</Text>
+          <View style={s.card}>
+            <LinkRow label="Help and support" onPress={() => router.push('/(vendor)/support')} last />
+          </View>
+
+          <Text style={s.sectionLabel}>Session</Text>
+          <View style={s.card}>
+            <View style={s.signOutBox}>
+              {!confirmingSignOut ? (
+                <Pressable
+                  onPress={() => setConfirmingSignOut(true)}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [s.dangerOutline, pressed && { opacity: 0.8 }]}
+                >
+                  <Text style={s.dangerOutlineText}>Sign out</Text>
+                </Pressable>
+              ) : (
+                <>
+                  <Text style={s.signOutBody}>Sign out of GlowVAI on this device now?</Text>
+                  <View style={s.confirmRow}>
+                    <Pressable
+                      onPress={() => setConfirmingSignOut(false)}
+                      disabled={signingOut}
+                      accessibilityRole="button"
+                      style={({ pressed }) => [s.secondaryBtn, pressed && { opacity: 0.8 }]}
                     >
-                      <Text style={styles.removeText}>Remove</Text>
-                    </TouchableOpacity>
+                      <Text style={s.secondaryText}>Cancel</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={signOut}
+                      disabled={signingOut}
+                      accessibilityRole="button"
+                      style={({ pressed }) => [s.dangerSolid, (pressed || signingOut) && { opacity: 0.8 }]}
+                    >
+                      {signingOut ? <ActivityIndicator color={Colors.background} /> : <Text style={s.dangerSolidText}>Sign out</Text>}
+                    </Pressable>
                   </View>
-                ))}
-
-                <View style={styles.addClosureRow}>
-                  <TextInput
-                    style={[styles.textInput, { flex: 1 }]}
-                    placeholder="YYYY-MM-DD"
-                    value={newClosureDate}
-                    onChangeText={setNewClosureDate}
-                  />
-                  <TextInput
-                    style={[styles.textInput, { flex: 1 }]}
-                    placeholder="Closure Reason"
-                    value={newClosureReason}
-                    onChangeText={setNewClosureReason}
-                  />
-                  <TouchableOpacity
-                    style={styles.addClosureBtn}
-                    onPress={() => {
-                      if (!newClosureDate || !newClosureReason) return;
-                      setSpecialClosures((prev) => [
-                        ...prev,
-                        { id: Date.now().toString(), date: newClosureDate, reason: newClosureReason },
-                      ]);
-                      setNewClosureDate('');
-                      setNewClosureReason('');
-                    }}
-                  >
-                    <Text style={styles.addClosureBtnText}>Add</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
-
-            {/* TAB 3: KYC DOSSIER */}
-            {activeTab === 'KYC' && (
-              <View style={styles.card}>
-                <View style={styles.cardHeaderRow}>
-                  <View>
-                    <Text style={styles.cardTitle}>KYC DOSSIER & VERIFIED LICENSES</Text>
-                    <Text style={styles.cardSub}>
-                      {verifiedCount} of {kycDocs.length} Documents Verified (83%)
-                    </Text>
-                  </View>
-                  <View style={styles.statusVerifiedPill}>
-                    <Text style={styles.statusVerifiedText}>Active Merchant</Text>
-                  </View>
-                </View>
-
-                {/* Progress Bar */}
-                <View style={styles.progressTrack}>
-                  <View style={[styles.progressFill, { width: `${(verifiedCount / kycDocs.length) * 100}%` }]} />
-                </View>
-
-                {kycDocs.map((doc) => {
-                  const isRevealed = revealedDocIds[doc.id];
-                  return (
-                    <View key={doc.id} style={styles.kycRow}>
-                      <View style={{ flex: 1, paddingRight: 8 }}>
-                        <View style={styles.kycHeaderRow}>
-                          <Text style={styles.kycKindText}>{doc.kind}</Text>
-                          <View
-                            style={[
-                              styles.kycBadge,
-                              doc.status === 'VERIFIED'
-                                ? styles.kycBadgeVerified
-                                : doc.status === 'REJECTED'
-                                ? { backgroundColor: '#FEF2F2', borderColor: '#FCA5A5' }
-                                : doc.status === 'UNAVAILABLE'
-                                ? { backgroundColor: '#F1F5F9', borderColor: '#CBD5E1' }
-                                : styles.kycBadgeExpiring,
-                            ]}
-                          >
-                            <Text
-                              style={[
-                                styles.kycBadgeText,
-                                doc.status === 'VERIFIED'
-                                  ? styles.kycTextVerified
-                                  : doc.status === 'REJECTED'
-                                  ? { color: COLOR_DANGER }
-                                  : doc.status === 'UNAVAILABLE'
-                                  ? { color: COLOR_SLATE }
-                                  : styles.kycTextExpiring,
-                              ]}
-                            >
-                              {doc.status === 'VERIFIED'
-                                ? '✓ Verified'
-                                : doc.status === 'PENDING_REVIEW'
-                                ? '⌛ Pending Review'
-                                : doc.status === 'EXPIRING_SOON'
-                                ? '⚠️ Expiring Soon'
-                                : doc.status === 'REJECTED'
-                                ? '❌ Rejected'
-                                : doc.status === 'REPLACEMENT_REQUIRED'
-                                ? '⚠️ Replace Required'
-                                : doc.status === 'UPLOAD_PROCESSING'
-                                ? '☁️ Processing'
-                                : '🔒 Unavailable'}
-                            </Text>
-                          </View>
-                        </View>
-
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
-                          <Text style={styles.kycCodeText}>
-                            {isRevealed ? doc.fullNumber : doc.maskedNumber}
-                          </Text>
-                          <TouchableOpacity onPress={() => handleToggleTimedReveal(doc.id)}>
-                            <Text style={styles.revealBtnText}>{isRevealed ? 'Hide' : 'Reveal'}</Text>
-                          </TouchableOpacity>
-                        </View>
-
-                        <Text style={styles.kycFileMeta}>
-                          {doc.fileName} • {doc.fileSize} {doc.expiresAt ? `• Exp: ${doc.expiresAt}` : ''}
-                        </Text>
-                      </View>
-
-                      <TouchableOpacity
-                        style={styles.replaceBtn}
-                        onPress={() => setUploadTargetDoc(doc)}
-                      >
-                        <Text style={styles.replaceBtnText}>Replace Upload</Text>
-                      </TouchableOpacity>
-                    </View>
-                  );
-                })}
-
-                <Text style={styles.kycDisclaimerLine}>
-                  🔒 Documents are stored with 256-bit AES encryption under Indian IT Act compliance.
-                </Text>
-              </View>
-            )}
-
-            {/* TAB 4: BANK ACCOUNT SUMMARY */}
-            {activeTab === 'BANK' && (
-              <View style={styles.card}>
-                <Text style={styles.cardTitle}>SETTLEMENT BANK ACCOUNT SUMMARY</Text>
-                <Text style={styles.bankNameVal}>HDFC Bank</Text>
-                <Text style={styles.bankSubVal}>Account Number: ••••••4589 | IFSC: HDFC0001234</Text>
-                <Text style={styles.bankSubVal}>UPI Payout VPA: glow••••@hdfcbank</Text>
-
-                <TouchableOpacity
-                  style={styles.manageBankLinkBtn}
-                  onPress={() => router.push('/(vendor)/bank-edit')}
-                >
-                  <Text style={styles.manageBankLinkText}>Manage Bank Account & UPI (Screen 24) →</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* ── SEPARATED DANGER ZONE LOGOUT ───────────────────────────────── */}
-            <View style={styles.dangerZoneCard}>
-              <Text style={styles.dangerZoneTitle}>DANGER ZONE</Text>
-              <Text style={styles.dangerZoneSub}>
-                Logging out invalidates your active session. Live incoming customer orders will pause until you log back in.
-              </Text>
-
-              <TouchableOpacity
-                style={styles.logoutBtn}
-                onPress={() => {
-                  soundService.playSuccessDing();
-                  setShowLogoutModal(true);
-                }}
-              >
-                <Text style={styles.logoutBtnText}>Log Out of GlowVAI Vendor</Text>
-              </TouchableOpacity>
-            </View>
-          </>
-        )}
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
-
-      {/* ── UPLOAD DOCUMENT MODAL ──────────────────────────────────────────── */}
-      <Modal visible={!!uploadTargetDoc} transparent animationType="slide">
-        {uploadTargetDoc && (
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalSheet}>
-              <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Upload {uploadTargetDoc.kind}</Text>
-                <TouchableOpacity onPress={() => setUploadTargetDoc(null)}>
-                  <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-                </TouchableOpacity>
-              </View>
-
-              <Text style={styles.modalSubText}>Accepted file formats: PDF, PNG, JPG (Max file size 5MB)</Text>
-
-              <View style={styles.uploadDropZone}>
-                <Ionicons name="cloud-upload-outline" size={32} style={{ color: '#475569' }} />
-                <Text style={{ fontSize: 13, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: COLOR_ROYAL_BLUE, marginTop: 6 }}>
-                  Tap to Select File or Take Photo
-                </Text>
-                <Text style={{ fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: COLOR_SLATE, marginTop: 2 }}>Malware scanning automatically enabled</Text>
-              </View>
-
-              <TouchableOpacity
-                style={styles.modalPrimaryBtn}
-                onPress={handleSimulateDocumentUpload}
-                disabled={isUploadingFile}
-              >
-                {isUploadingFile ? (
-                  <ActivityIndicator size="small" color="#ffffff" />
-                ) : (
-                  <Text style={styles.modalPrimaryBtnText}>Simulate Secure Upload</Text>
-                )}
-              </TouchableOpacity>
+                </>
+              )}
             </View>
           </View>
-        )}
-      </Modal>
-
-      {/* ── LOGOUT CONFIRMATION MODAL ─────────────────────────────────────── */}
-      <Modal visible={showLogoutModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalSheet, { padding: 20 }]}>
-            <Text style={[styles.modalTitle, { color: COLOR_DANGER }]}>Log out of GlowVAI Vendor?</Text>
-            <Text style={{ fontFamily: 'PlusJakartaSans_400Regular', fontSize: 13, color: COLOR_SLATE, marginVertical: 12, lineHeight: 18 }}>
-              Are you sure you want to log out? Your store duty status will be paused and you will not receive live incoming customer order offer chime notifications until you sign back in.
-            </Text>
-
-            <View style={{ flexDirection: 'row', gap: 10, marginTop: 10 }}>
-              <TouchableOpacity
-                style={[styles.modalPrimaryBtn, { flex: 1, backgroundColor: COLOR_DANGER }]}
-                onPress={async () => {
-                  setShowLogoutModal(false);
-                  await clearSession();
-                  router.replace('/(auth)/login');
-                }}
-              >
-                <Text style={styles.modalPrimaryBtnText}>Log Out</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.modalPrimaryBtn, { flex: 1, backgroundColor: '#F1F5F9' }]}
-                onPress={() => setShowLogoutModal(false)}
-              >
-                <Text style={[styles.modalPrimaryBtnText, { color: '#0F172A' }]}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* SESSION EXPIRED MODAL */}
-      <Modal visible={showSessionExpired} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalSheet, { padding: 20 }]}>
-            <Text style={[styles.modalTitle, { color: COLOR_DANGER }]}>🔒 Session Expired</Text>
-            <Text style={{ fontFamily: 'PlusJakartaSans_400Regular', fontSize: 13, color: COLOR_SLATE, marginVertical: 12 }}>
-              Your authentication token has expired for security compliance. Please log in again to continue managing your dark store.
-            </Text>
-            <TouchableOpacity
-              style={styles.modalPrimaryBtn}
-              onPress={() => {
-                setShowSessionExpired(false);
-                router.replace('/(auth)/login');
-              }}
-            >
-              <Text style={styles.modalPrimaryBtnText}>Log In Again</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Mobile Bottom Navigation Bar */}
-      <MobileBottomNav currentTab="profile" />
-    </SafeAreaView>
+        </>
+      )}
+    </ScreenShell>
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-  header: {
+// ── Pieces ───────────────────────────────────────────────────────────────────
+
+const KYC_TONE = {
+  APPROVED: { label: 'Approved', bg: Colors.successLight, border: Colors.successBorder, text: '#15803D' },
+  PENDING: { label: 'Under review', bg: Colors.warningLight, border: Colors.warningBorder, text: '#B45309' },
+  REJECTED: { label: 'Rejected', bg: Colors.dangerLight, border: Colors.dangerBorder, text: Colors.danger },
+  NONE: { label: 'Not submitted', bg: Colors.surface, border: Colors.border, text: Colors.textSecondary },
+};
+
+function Row({ label, value, last }: { label: string; value: string; last?: boolean }) {
+  const missing = value === NOT_ADDED;
+  return (
+    <View style={[s.row, last && { borderBottomWidth: 0 }]}>
+      <Text style={s.rowLabel}>{label}</Text>
+      <Text style={[s.rowValue, missing && { color: Colors.textSubtle }]} selectable>{value}</Text>
+    </View>
+  );
+}
+
+function LinkRow({ label, onPress, last }: { label: string; onPress: () => void; last?: boolean }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [s.linkRow, last && { borderBottomWidth: 0 }, pressed && { backgroundColor: Colors.surface }]}
+    >
+      <Text style={s.linkText}>{label}</Text>
+      <Ionicons name="chevron-forward" size={18} color={Colors.textSubtle} />
+    </Pressable>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  ...rest
+}: {
+  label: string;
+  value: string;
+  onChangeText: (v: string) => void;
+  placeholder?: string;
+  keyboardType?: 'default' | 'email-address' | 'number-pad';
+  autoCapitalize?: 'none' | 'sentences' | 'words';
+  maxLength?: number;
+}) {
+  return (
+    <View style={s.field}>
+      <Text style={s.fieldLabel}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder || NOT_ADDED}
+        placeholderTextColor={Colors.textSubtle}
+        accessibilityLabel={label}
+        autoCorrect={false}
+        style={s.fieldInput}
+        {...rest}
+      />
+    </View>
+  );
+}
+
+const s = StyleSheet.create({
+  content: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.xxl },
+
+  errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    gap: 12,
-  },
-  backBtn: {
-    padding: 6,
-  },
-  backBtnText: {
-    fontSize: 22,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  headerTitleWrap: {
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  headerSubTitle: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  verifiedBadgePill: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  verifiedBadgeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_EMERALD,
-  },
-
-  offlineBanner: {
-    backgroundColor: COLOR_AMBER,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-  },
-  offlineBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-    textAlign: 'center',
-  },
-  unsavedBanner: {
-    backgroundColor: '#FEF3C7',
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#FDE68A',
-  },
-  unsavedBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#92400E',
-    textAlign: 'center',
-  },
-  deniedBanner: {
-    backgroundColor: '#FEF2F2',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#FCA5A5',
-  },
-  deniedBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_DANGER,
-    textAlign: 'center',
-  },
-
-  scrollArea: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-    gap: 16,
-  },
-
-  devStrip: {
-    backgroundColor: '#F1F5F9',
-    padding: 8,
-    borderRadius: 10,
-  },
-  devTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  devPillRow: {
-    gap: 6,
-  },
-  devPill: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
+    gap: Spacing.md,
+    backgroundColor: Colors.dangerLight,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: Colors.dangerBorder,
+    borderRadius: BorderRadii.card,
+    padding: Spacing.lg,
+    marginBottom: Spacing.xl,
   },
-  devPillActive: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    borderColor: COLOR_ROYAL_BLUE,
-  },
-  devPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#334155',
-  },
+  errorTitle: { ...TypeScale.bodyStrong, color: Colors.textPrimary },
+  errorBody: { ...TypeScale.caption, color: Colors.textSecondary, marginTop: 2 },
+  retryBtn: { minHeight: 44, minWidth: 44, paddingHorizontal: Spacing.md, justifyContent: 'center', alignItems: 'center' },
+  retryText: { ...TypeScale.bodyStrong, color: Colors.primary },
+  loadingBox: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xl },
+  loadingText: { ...TypeScale.body, color: Colors.textSecondary },
 
+  identity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.lg,
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadii.card,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    padding: Spacing.lg,
+    marginBottom: Spacing.md,
+  },
+  avatar: {
+    width: 56, height: 56, borderRadius: 16,
+    backgroundColor: Colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  avatarText: { ...TypeScale.title, color: Colors.primary },
+  storeName: { ...TypeScale.title, color: Colors.textPrimary },
+  ownerName: { ...TypeScale.body, color: Colors.textSecondary, marginTop: 2 },
+  pill: { paddingHorizontal: Spacing.sm, paddingVertical: 3, borderRadius: BorderRadii.pill, borderWidth: 1, alignSelf: 'flex-start', marginTop: Spacing.sm },
+  pillText: { ...TypeScale.label },
+
+  editBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    minHeight: 44,
+    borderRadius: BorderRadii.input,
+    borderWidth: 1,
+    borderColor: Colors.primaryBorder,
+    backgroundColor: Colors.background,
+    marginBottom: Spacing.lg,
+  },
+  editText: { ...TypeScale.bodyStrong, color: Colors.primary },
+
+  sectionLabel: { ...TypeScale.label, color: Colors.textSecondary, textTransform: 'uppercase', marginTop: Spacing.md, marginBottom: Spacing.sm },
   card: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadii.card,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 4,
-    elevation: 1,
+    borderColor: Colors.border,
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.lg,
   },
-  cardTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-    letterSpacing: 0.5,
-    marginBottom: 12,
-  },
-  cardSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#94A3B8',
-    marginTop: 2,
-  },
+  cardTitle: { ...TypeScale.title, color: Colors.textPrimary, paddingTop: Spacing.lg, marginBottom: Spacing.md },
 
-  profileTopRow: {
+  row: {
     flexDirection: 'row',
-    gap: 14,
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: Spacing.md,
+    minHeight: 44,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  rowLabel: { ...TypeScale.body, color: Colors.textSecondary, flexShrink: 0 },
+  rowValue: { ...TypeScale.bodyStrong, color: Colors.textPrimary, textAlign: 'right', flexShrink: 1 },
+  linkRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
   },
-  avatarWrap: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    position: 'relative',
-    overflow: 'visible',
+  linkText: { ...TypeScale.bodyStrong, color: Colors.primary },
+
+  field: { marginBottom: Spacing.md },
+  fieldLabel: { ...TypeScale.label, color: Colors.textSecondary, marginBottom: Spacing.xs },
+  fieldInput: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderColor: Colors.inputBorder,
+    borderRadius: BorderRadii.input,
+    paddingHorizontal: Spacing.md,
+    ...TypeScale.body,
+    color: Colors.textPrimary,
   },
-  avatarImg: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-  },
-  cameraBadge: {
-    position: 'absolute',
-    bottom: -2,
-    right: -2,
-    backgroundColor: COLOR_ROYAL_BLUE,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+  twoCol: { flexDirection: 'row', gap: Spacing.sm },
+  formError: { ...TypeScale.body, color: Colors.danger, marginBottom: Spacing.md },
+  formActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.sm, paddingBottom: Spacing.lg },
+  primaryBtn: {
+    minHeight: 44,
+    minWidth: 140,
+    borderRadius: BorderRadii.input,
+    backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: '#FFFFFF',
+    paddingHorizontal: Spacing.lg,
   },
-  storeTitleText: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  storeSubText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  locationText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#334155',
-    marginTop: 2,
-  },
-  ratingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    marginTop: 4,
-  },
-  ratingText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_AMBER,
-  },
-  ratingSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-  },
-  dutyPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  dutyOpen: {
-    backgroundColor: '#DCFCE7',
-  },
-  dutyPaused: {
-    backgroundColor: '#FEF3C7',
-  },
-  dutyPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-  },
-
-  tabsRow: {
-    flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 12,
-    padding: 3,
-    gap: 3,
-  },
-  tabBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 10,
-  },
-  tabBtnActive: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  tabBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  tabBtnTextActive: {
-    color: '#0F172A',
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-
-  formGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  formColFull: {
-    width: '100%',
-  },
-  formColHalf: {
-    width: '48%',
-  },
-  formColThird: {
-    width: '31%',
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-    marginBottom: 4,
-  },
-  textInput: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
+  primaryText: { ...TypeScale.bodyStrong, color: Colors.background },
+  secondaryBtn: {
+    minHeight: 44,
+    minWidth: 96,
+    borderRadius: BorderRadii.input,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: '#0F172A',
-  },
-  saveBtn: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    borderRadius: 12,
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  saveBtnText: {
-    color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    fontSize: 13,
-  },
-
-  hoursHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  copyMonBtn: {
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: COLOR_ROYAL_BLUE,
-  },
-  copyMonBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-  previewLineBox: {
-    backgroundColor: '#EFF6FF',
-    padding: 8,
-    borderRadius: 8,
-    marginVertical: 10,
-  },
-  previewLineText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-  hoursRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  daySwitchGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  dayNameText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-  },
-  timeWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  timePill: {
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-  closedText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#94A3B8',
-    fontStyle: 'italic',
-  },
-
-  closureRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  closureReason: {
-    fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-  },
-  closureDate: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  removeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_DANGER,
-  },
-  addClosureRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 10,
-  },
-  addClosureBtn: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
+    borderColor: Colors.inputBorder,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: Spacing.lg,
   },
-  addClosureBtnText: {
-    color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    fontSize: 12,
-  },
+  secondaryText: { ...TypeScale.bodyStrong, color: Colors.textPrimary },
 
-  cardHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  statusVerifiedPill: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  statusVerifiedText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_EMERALD,
-  },
-  progressTrack: {
-    height: 6,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginVertical: 10,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: COLOR_EMERALD,
-  },
-  kycRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  kycHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  kycKindText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-  },
-  kycBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  kycBadgeVerified: { backgroundColor: '#DCFCE7' },
-  kycBadgeExpiring: { backgroundColor: '#FEF3C7' },
-  kycBadgeAction: { backgroundColor: '#FEE2E2' },
-  kycBadgeText: { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' },
-  kycTextVerified: { color: COLOR_EMERALD },
-  kycTextExpiring: { color: COLOR_AMBER },
-  kycTextAction: { color: COLOR_DANGER },
-
-  kycCodeText: {
-    fontSize: 12,
-    
-    fontFamily: 'JetBrainsMono_500Medium',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-  revealBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-  kycFileMeta: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  replaceBtn: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  replaceBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#334155',
-  },
-  kycDisclaimerLine: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    textAlign: 'center',
-    marginTop: 12,
-  },
-
-  bankNameVal: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-  },
-  bankSubVal: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  manageBankLinkBtn: {
-    backgroundColor: '#EFF6FF',
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
-    marginTop: 12,
+  signOutBox: { paddingVertical: Spacing.lg },
+  signOutBody: { ...TypeScale.body, color: Colors.textSecondary, marginBottom: Spacing.md },
+  dangerOutline: {
+    minHeight: 44,
+    borderRadius: BorderRadii.input,
     borderWidth: 1,
-    borderColor: COLOR_ROYAL_BLUE,
-  },
-  manageBankLinkText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-  },
-
-  dangerZoneCard: {
-    backgroundColor: '#FEF2F2',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-  },
-  dangerZoneTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_DANGER,
-    letterSpacing: 0.5,
-  },
-  dangerZoneSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#7F1D1D',
-    marginTop: 4,
-    lineHeight: 15,
-  },
-  logoutBtn: {
-    backgroundColor: COLOR_DANGER,
-    borderRadius: 12,
-    paddingVertical: 12,
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  logoutBtnText: {
-    color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    fontSize: 13,
-  },
-
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
-  },
-  modalSheet: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 18,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  modalCloseText: {
-    fontSize: 18,
-    color: '#64748B',
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  modalSubText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginBottom: 12,
-  },
-  uploadDropZone: {
-    height: 120,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 12,
-    borderWidth: 1.5,
-    borderColor: COLOR_ROYAL_BLUE,
-    borderStyle: 'dashed',
+    borderColor: Colors.dangerBorder,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 16,
+    paddingHorizontal: Spacing.lg,
+    alignSelf: 'flex-start',
   },
-  modalPrimaryBtn: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    borderRadius: 12,
-    paddingVertical: 12,
+  dangerOutlineText: { ...TypeScale.bodyStrong, color: Colors.danger },
+  confirmRow: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' },
+  dangerSolid: {
+    minHeight: 44,
+    minWidth: 96,
+    borderRadius: BorderRadii.input,
+    backgroundColor: Colors.danger,
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.lg,
   },
-  modalPrimaryBtnText: {
-    color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    fontSize: 13,
-  },
+  dangerSolidText: { ...TypeScale.bodyStrong, color: Colors.background },
 });

@@ -1,9 +1,10 @@
 /**
  * SCREEN 18: Customer Returns & Inspection
- * Desktop 1440x1024 Split-Layout Inspection Workstation
+ * Desktop 1440x1024 Split-Layout Inspection Workstation; single column on phone
+ * No returns API exists yet, so production starts with an honest empty state.
+ * Sample claims and edge-state toggles are developer-only (__DEV__).
  * File: mobile/app/(vendor)/returns.tsx
  */
-import { withComingSoon } from '../../src/components/ComingSoon';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Wordmark from '../../src/components/Wordmark';
 import React, { useState, useEffect, useMemo } from 'react';
@@ -21,15 +22,15 @@ import {
   Image,
   useWindowDimensions,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, type Href } from 'expo-router';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
 
 export interface CustomerReturnRequest {
   returnId: string;
   orderId: string;
-  customerName: string; // Privacy safe: "Priya S."
-  customerArea: string; // "Benz Circle"
+  customerName: string; // Privacy safe: first name and initial only
+  customerArea: string;
   productName: string;
   brand: string;
   itemPrice: number;
@@ -38,7 +39,7 @@ export interface CustomerReturnRequest {
   customerNote: string;
   purchaseDate: string;
   requestAge: string;
-  slaHoursRemaining: number;
+  slaHoursRemaining?: number; // Only set when a policy response timer applies
   status: 'Awaiting Review' | 'Escalated' | 'Resolved' | 'Refund Pending';
   photos: string[];
   evidenceChecklist: {
@@ -52,7 +53,10 @@ export interface CustomerReturnRequest {
   isDuplicateClaim?: boolean;
 }
 
-const INITIAL_RETURNS: CustomerReturnRequest[] = [
+type TabFilter = 'all' | 'action' | 'escalated' | 'resolved';
+
+// Sample claims for developer builds only. Never shown in production.
+const SAMPLE_RETURNS: CustomerReturnRequest[] = [
   {
     returnId: 'RET-9908-1',
     orderId: 'GV-9908',
@@ -160,33 +164,59 @@ const INITIAL_RETURNS: CustomerReturnRequest[] = [
   },
 ];
 
+// Production starts empty until a returns API exists.
+const INITIAL_RETURNS: CustomerReturnRequest[] = __DEV__ ? SAMPLE_RETURNS : [];
+
+const REASON_FILTERS = ['All', 'Damaged', 'Incorrect Item', 'Leaking Seal', 'Expired Item', 'Customer Changed Mind'];
+
+const RAIL_ITEMS: { label: string; icon: keyof typeof Ionicons.glyphMap; route: Href }[] = [
+  { label: 'Home', icon: 'home-outline', route: '/(vendor)/home' },
+  { label: 'Orders', icon: 'clipboard-outline', route: '/(vendor)/orders' },
+  { label: 'Catalog', icon: 'cube-outline', route: '/(vendor)/catalog' },
+  { label: 'Returns', icon: 'return-up-back-outline', route: '/(vendor)/returns' },
+  { label: 'Reviews', icon: 'star-outline', route: '/(vendor)/reviews' },
+  { label: 'Messages', icon: 'chatbubble-outline', route: '/(vendor)/messages' },
+  { label: 'Earnings', icon: 'wallet-outline', route: '/(vendor)/earnings' },
+  { label: 'Settings', icon: 'settings-outline', route: '/(vendor)/profile' },
+];
+
+const STATUS_STYLE: Record<CustomerReturnRequest['status'], { bg: string; border: string; text: string }> = {
+  'Awaiting Review': { bg: Colors.warningLight, border: Colors.warningBorder, text: Colors.warning },
+  Escalated: { bg: Colors.dangerLight, border: Colors.dangerBorder, text: Colors.danger },
+  Resolved: { bg: Colors.successLight, border: Colors.successBorder, text: Colors.success },
+  'Refund Pending': { bg: Colors.primaryLight, border: Colors.primaryBorder, text: Colors.primary },
+};
+
 function ReturnsScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isExpanded = width >= 1024;
+  const gutter = isExpanded ? Spacing.xl : Spacing.lg;
+
+  // No live returns fetch exists yet. Wire loading and error here when the API lands.
+  const [isLoading] = useState(false);
 
   const [returnRequests, setReturnRequests] = useState<CustomerReturnRequest[]>(INITIAL_RETURNS);
   const [search, setSearch] = useState('');
   const [selectedReasonFilter, setSelectedReasonFilter] = useState<string>('All');
-  const [selectedTabFilter, setSelectedTabFilter] = useState<'action' | 'all' | 'escalated' | 'resolved'>('action');
+  const [selectedTabFilter, setSelectedTabFilter] = useState<TabFilter>('all');
 
   // Inspection Modal / Split Workspace State
   const [selectedReturn, setSelectedReturn] = useState<CustomerReturnRequest | null>(null);
   const [activePhotoIdx, setActivePhotoIdx] = useState(0);
   const [photoRotation, setPhotoRotation] = useState(0);
   const [photoZoom, setPhotoZoom] = useState(1);
-  const [merchantNotes, setMerchantNotes] = useState('');
-  const [submittingDecision, setSubmittingDecision] = useState(false);
+  const [internalNote, setInternalNote] = useState('');
 
-  // Confirmation Step State
+  // Decision Confirmation State (developer preview only, local state)
   const [confirmationModalOpen, setConfirmationModalOpen] = useState(false);
-  const [pendingDecisionType, setPendingDecisionType] = useState<'refund' | 'reject' | 'escalate'>('refund');
+  const [pendingDecisionType, setPendingDecisionType] = useState<'refund' | 'reject'>('refund');
   const [rejectionReason, setRejectionReason] = useState('Evidence insufficient or seal intact');
 
   // Toast
-  const [toastMessage, setToastMessage] = useState<{ text: string; undoAction?: () => void } | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // System Edge States
+  // Developer edge-state toggles (set only from the __DEV__ strip)
   const [isOffline, setIsOffline] = useState(false);
   const [missingPhotosDemo, setMissingPhotosDemo] = useState(false);
   const [unreadablePhotoDemo, setUnreadablePhotoDemo] = useState(false);
@@ -205,16 +235,19 @@ function ReturnsScreen() {
     }
   }, [toastMessage]);
 
-  // Counts
-  const openCount = useMemo(() => returnRequests.filter(r => r.status === 'Awaiting Review').length, [returnRequests]);
-  const awaitingReviewCount = openCount;
+  // Counts (derived from the data actually shown)
+  const totalCount = returnRequests.length;
+  const awaitingCount = useMemo(() => returnRequests.filter(r => r.status === 'Awaiting Review').length, [returnRequests]);
   const escalatedCount = useMemo(() => returnRequests.filter(r => r.status === 'Escalated').length, [returnRequests]);
-  const resolvedCount = useMemo(() => returnRequests.filter(r => r.status === 'Resolved').length, [returnRequests]);
+  const resolvedCount = useMemo(
+    () => returnRequests.filter(r => r.status === 'Resolved' || r.status === 'Refund Pending').length,
+    [returnRequests]
+  );
 
   // Filtered List
   const filteredRequests = useMemo(() => {
+    const query = search.trim().toLowerCase();
     return returnRequests.filter(req => {
-      const query = search.trim().toLowerCase();
       const matchSearch =
         query === '' ||
         req.orderId.toLowerCase().includes(query) ||
@@ -233,6 +266,22 @@ function ReturnsScreen() {
     });
   }, [returnRequests, search, selectedReasonFilter, selectedTabFilter]);
 
+  const hasActiveFilters = search.trim() !== '' || selectedReasonFilter !== 'All' || selectedTabFilter !== 'all';
+
+  const clearFilters = () => {
+    setSearch('');
+    setSelectedReasonFilter('All');
+    setSelectedTabFilter('all');
+  };
+
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(vendor)/home');
+    }
+  };
+
   const handleRotatePhoto = () => {
     setPhotoRotation(prev => (prev + 90) % 360);
   };
@@ -246,57 +295,103 @@ function ReturnsScreen() {
     setActivePhotoIdx(0);
     setPhotoRotation(0);
     setPhotoZoom(1);
-    setMerchantNotes('');
+    setInternalNote('');
   };
 
-  const handlePromptDecision = (type: 'refund' | 'reject' | 'escalate') => {
+  const handleCloseInspection = () => {
+    setConfirmationModalOpen(false);
+    setSelectedReturn(null);
+  };
+
+  const handlePromptDecision = (type: 'refund' | 'reject') => {
     setPendingDecisionType(type);
     setConfirmationModalOpen(true);
   };
 
+  // Developer preview only: updates local state, nothing is sent to a server.
   const handleConfirmFinalDecision = () => {
-    if (!selectedReturn) return;
-
-    setSubmittingDecision(true);
+    if (!selectedReturn || !__DEV__) return;
 
     const returnId = selectedReturn.returnId;
-    let newStatus: CustomerReturnRequest['status'] = 'Resolved';
-    let decisionText = '';
+    const decisionText =
+      pendingDecisionType === 'refund'
+        ? `Full refund of ₹${selectedReturn.refundRequestedAmount} recommended for order #${selectedReturn.orderId} (local preview)`
+        : `Claim ${returnId} rejected: ${rejectionReason} (local preview)`;
 
-    if (pendingDecisionType === 'refund') {
-      newStatus = 'Resolved';
-      decisionText = `✓ Full refund of ₹${selectedReturn.refundRequestedAmount} recommended for Order #${selectedReturn.orderId}`;
-    } else if (pendingDecisionType === 'escalate') {
-      newStatus = 'Escalated';
-      decisionText = `🛡️ Escalated return ${returnId} to GlowVAI Support Audit`;
-    } else {
-      newStatus = 'Resolved';
-      decisionText = `❌ Claim rejected: ${rejectionReason}`;
+    setReturnRequests(prev =>
+      prev.map(r => (r.returnId === returnId ? { ...r, status: 'Resolved' } : r))
+    );
+    setConfirmationModalOpen(false);
+    setSelectedReturn(null);
+    setToastMessage(decisionText);
+  };
+
+  // Photos actually shown in the inspection workspace
+  const visiblePhotos = selectedReturn && !missingPhotosDemo ? selectedReturn.photos : [];
+  const activePhoto = visiblePhotos[activePhotoIdx];
+  const photoUnreadable = unreadablePhotoDemo || !!selectedReturn?.hasUnreadablePhoto;
+  const showDuplicateWarning = duplicateClaimDemo || !!selectedReturn?.isDuplicateClaim;
+
+  const renderSummaryCard = (label: string, count: number, tab: TabFilter, color: string, borderColor?: string) => {
+    const active = selectedTabFilter === tab;
+    return (
+      <TouchableOpacity
+        key={tab}
+        style={[
+          s.summaryCard,
+          !isExpanded && s.summaryCardPhone,
+          active && s.summaryCardActive,
+          borderColor ? { borderColor } : null,
+        ]}
+        onPress={() => setSelectedTabFilter(tab)}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityState={{ selected: active }}
+      >
+        <Text style={[s.summaryCountText, { color }]}>{count}</Text>
+        <Text style={s.summaryLabelText}>{label}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderEmptyState = () => {
+    if (returnRequests.length === 0) {
+      return (
+        <View style={s.stateBox}>
+          <Ionicons name="return-up-back-outline" size={40} color={Colors.textMuted} />
+          <Text style={s.stateTitle}>No return requests yet</Text>
+          <Text style={s.stateSub}>
+            Return and damage claims on your orders will appear here, with unboxing photos and the inspection checklist.
+          </Text>
+          <TouchableOpacity style={s.primaryBtn} onPress={() => router.push('/(vendor)/orders')} activeOpacity={0.8}>
+            <Text style={s.primaryBtnText}>View orders</Text>
+          </TouchableOpacity>
+        </View>
+      );
     }
 
-    setTimeout(() => {
-      setReturnRequests(prev =>
-        prev.map(r => (r.returnId === returnId ? { ...r, status: newStatus } : r))
-      );
-
-      setSubmittingDecision(false);
-      setConfirmationModalOpen(false);
-      setSelectedReturn(null);
-
-      setToastMessage({ text: decisionText });
-    }, 500);
+    return (
+      <View style={s.stateBox}>
+        <Ionicons name="search-outline" size={40} color={Colors.textMuted} />
+        <Text style={s.stateTitle}>No claims match these filters</Text>
+        <Text style={s.stateSub}>Try a different order number, return ID or reason.</Text>
+        <TouchableOpacity style={s.secondaryBtn} onPress={clearFilters} activeOpacity={0.8}>
+          <Text style={s.secondaryBtnText}>Clear filters</Text>
+        </TouchableOpacity>
+      </View>
+    );
   };
 
   return (
     <SafeAreaView style={s.root}>
       <View style={s.desktopLayout}>
 
-        {/* ── Left Navigation Rail ─────────────────────────────────────────────── */}
+        {/* ── Left Navigation Rail (desktop only) ─────────────────────────────── */}
         {isExpanded && (
           <View style={s.navRail}>
             <View style={s.railBrandGroup}>
               <View style={s.railBrandLogo}>
-                <Ionicons name="sparkles" size={18} color="#FFFFFF" style={s.railBrandLogoIcon} />
+                <Ionicons name="sparkles" size={18} color="#FFFFFF" />
               </View>
               <View>
                 <Wordmark size={17} />
@@ -305,44 +400,38 @@ function ReturnsScreen() {
             </View>
 
             <View style={s.railNavGroup}>
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.replace('/(vendor)/home')} activeOpacity={0.8}>
-                <Ionicons name="home-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Home</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/orders')} activeOpacity={0.8}>
-                <Ionicons name="clipboard-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Orders</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/catalog')} activeOpacity={0.8}>
-                <Ionicons name="cube-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Catalog</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[s.railNavItem, s.railNavItemActive]} activeOpacity={0.8}>
-                <Text style={s.railNavIcon}>↩️</Text>
-                <Text style={[s.railNavLabel, s.railNavLabelActive]}>Returns</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/earnings')} activeOpacity={0.8}>
-                <Ionicons name="wallet-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Earnings</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <Ionicons name="settings-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Settings</Text>
-              </TouchableOpacity>
+              {RAIL_ITEMS.map(item => {
+                const active = item.route === '/(vendor)/returns';
+                return (
+                  <TouchableOpacity
+                    key={item.label}
+                    style={[s.railNavItem, active && s.railNavItemActive]}
+                    onPress={() => router.push(item.route)}
+                    disabled={active}
+                    activeOpacity={0.8}
+                    accessibilityRole="link"
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Ionicons
+                      name={item.icon}
+                      size={18}
+                      color={active ? '#FFFFFF' : Colors.textMuted}
+                    />
+                    <Text style={[s.railNavLabel, active && s.railNavLabelActive]}>{item.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
 
             <View style={s.railFooter}>
-              <TouchableOpacity style={s.storeSelectorPill} activeOpacity={0.8}>
-                <Text style={s.storeSelectorText} numberOfLines={1}>📍 Benz Circle Store ▼</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railHelpBtn} activeOpacity={0.8}>
-                <Text style={s.railHelpText}>Help & Support 💬</Text>
+              <TouchableOpacity
+                style={s.railHelpBtn}
+                onPress={() => router.push('/(vendor)/support')}
+                activeOpacity={0.8}
+                accessibilityRole="link"
+              >
+                <Ionicons name="help-circle-outline" size={16} color={Colors.primaryLight} />
+                <Text style={s.railHelpText}>Help & Support</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -352,15 +441,24 @@ function ReturnsScreen() {
         <View style={s.mainConsole}>
 
           {/* Top Breadcrumb & Header Bar */}
-          <View style={s.topHeader}>
+          <View style={[s.topHeader, { paddingHorizontal: gutter }]}>
             <View style={s.headerLeftGroup}>
-              <TouchableOpacity onPress={() => router.replace('/(vendor)/orders')} style={s.backBtn} activeOpacity={0.8}>
-                <Text style={s.backIcon}>‹</Text>
+              <TouchableOpacity
+                onPress={handleBack}
+                style={s.backBtn}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+              >
+                <Ionicons name="chevron-back" size={20} color={Colors.textPrimary} />
               </TouchableOpacity>
 
-              <View>
+              <View style={s.headerTextCol}>
                 <View style={s.breadcrumbRow}>
-                  <TouchableOpacity onPress={() => router.replace('/(vendor)/orders')}>
+                  <TouchableOpacity
+                    onPress={() => router.push('/(vendor)/orders')}
+                    hitSlop={{ top: 12, bottom: 12, left: 6, right: 6 }}
+                  >
                     <Text style={s.breadcrumbLink}>Orders</Text>
                   </TouchableOpacity>
                   <Text style={s.breadcrumbSep}>/</Text>
@@ -370,123 +468,115 @@ function ReturnsScreen() {
                 <View style={s.titleRow}>
                   <Text style={s.pageTitle}>Customer Returns & Inspection</Text>
                   <View style={s.policyPill}>
-                    <Text style={s.policyPillText}>🛡️ Privacy-Safe Customer Identity</Text>
+                    <Ionicons name="shield-checkmark-outline" size={12} color={Colors.primary} />
+                    <Text style={s.policyPillText}>Privacy-safe customer identity</Text>
                   </View>
                 </View>
               </View>
             </View>
 
             <View style={s.headerActionsRight}>
-              <CustomerAppRedirectButton storeName="Your store" />
+              <CustomerAppRedirectButton />
             </View>
           </View>
 
-          {/* System Edge Simulation Strip */}
+          {/* Developer tooling: sample data and edge states (dev builds only) */}
           {__DEV__ && (
-          <View style={s.simStripCard}>
-            <Text style={s.simTitle}>TEST RETURNS EDGE STATES:</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.simScrollContainer}>
-              <TouchableOpacity
-                style={[s.simChip, isOffline && s.simChipActive]}
-                onPress={() => setIsOffline(!isOffline)}
-              >
-                <Text style={[s.simChipText, isOffline && s.simChipTextActive]}>{isOffline ? 'Go Online' : 'Simulate Offline'}</Text>
-              </TouchableOpacity>
+            <View style={s.devStrip}>
+              <Text style={s.devStripTitle}>DEV TOOLING: EDGE STATES (NOT SHOWN IN PRODUCTION)</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.devScrollContainer}>
+                <TouchableOpacity
+                  style={[s.devChip, isOffline && s.devChipActive]}
+                  onPress={() => setIsOffline(!isOffline)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.devChipText, isOffline && s.devChipTextActive]}>Offline preview</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[s.simChip, missingPhotosDemo && s.simChipActive]}
-                onPress={() => setMissingPhotosDemo(!missingPhotosDemo)}
-              >
-                <Text style={[s.simChipText, missingPhotosDemo && s.simChipTextActive]}>Missing Photos Demo</Text>
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.devChip, missingPhotosDemo && s.devChipActive]}
+                  onPress={() => setMissingPhotosDemo(!missingPhotosDemo)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.devChipText, missingPhotosDemo && s.devChipTextActive]}>Missing photos</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[s.simChip, unreadablePhotoDemo && s.simChipActive]}
-                onPress={() => setUnreadablePhotoDemo(!unreadablePhotoDemo)}
-              >
-                <Text style={[s.simChipText, unreadablePhotoDemo && s.simChipTextActive]}>Unreadable Evidence</Text>
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={[s.devChip, unreadablePhotoDemo && s.devChipActive]}
+                  onPress={() => setUnreadablePhotoDemo(!unreadablePhotoDemo)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.devChipText, unreadablePhotoDemo && s.devChipTextActive]}>Unreadable photo</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[s.simChip, duplicateClaimDemo && s.simChipActive]}
-                onPress={() => setDuplicateClaimDemo(!duplicateClaimDemo)}
-              >
-                <Text style={[s.simChipText, duplicateClaimDemo && s.simChipTextActive]}>Duplicate Claim</Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
+                <TouchableOpacity
+                  style={[s.devChip, duplicateClaimDemo && s.devChipActive]}
+                  onPress={() => setDuplicateClaimDemo(!duplicateClaimDemo)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.devChipText, duplicateClaimDemo && s.devChipTextActive]}>Duplicate claim</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
           )}
 
           {/* Banners */}
-          {isOffline && (
+          {__DEV__ && isOffline && (
             <View style={s.systemBannerOffline}>
-              <Text style={s.systemBannerText}>📶 Offline Mode — Return inspection decisions queued locally</Text>
+              <Text style={s.systemBannerText}>Offline preview (dev tooling). Nothing is sent or saved.</Text>
             </View>
           )}
 
           {/* Scroll Content Area */}
-          <ScrollView style={s.scrollBody} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            style={s.scrollBody}
+            contentContainerStyle={[s.scrollContent, { paddingHorizontal: gutter }]}
+            showsVerticalScrollIndicator={false}
+          >
             <View style={s.maxContentContainer}>
 
-              {/* ── CLICKABLE SUMMARY METRICS STRIP (4 Cards) ────────────────── */}
+              {__DEV__ && returnRequests.length > 0 && (
+                <View style={s.sampleChipRow}>
+                  <View style={s.sampleChip}>
+                    <Text style={s.sampleChipText}>Sample data</Text>
+                  </View>
+                </View>
+              )}
+
+              {/* ── SUMMARY METRICS STRIP (derived from the claims shown) ────── */}
               <View style={s.summaryStripRow}>
-                <TouchableOpacity
-                  style={[s.summaryCard, selectedTabFilter === 'action' && s.summaryCardActive]}
-                  onPress={() => setSelectedTabFilter('action')}
-                  activeOpacity={0.7}
-                >
-                  <Text style={s.summaryCountText}>{openCount}</Text>
-                  <Text style={s.summaryLabelText}>Open Claims</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[s.summaryCard, selectedTabFilter === 'action' && s.summaryCardActive, { borderColor: Colors.warning }]}
-                  onPress={() => setSelectedTabFilter('action')}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[s.summaryCountText, { color: Colors.warning }]}>{awaitingReviewCount}</Text>
-                  <Text style={s.summaryLabelText}>Awaiting Review</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[s.summaryCard, selectedTabFilter === 'escalated' && s.summaryCardActive, { borderColor: Colors.danger }]}
-                  onPress={() => setSelectedTabFilter('escalated')}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[s.summaryCountText, { color: Colors.danger }]}>{escalatedCount}</Text>
-                  <Text style={s.summaryLabelText}>Escalated</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[s.summaryCard, selectedTabFilter === 'resolved' && s.summaryCardActive, { borderColor: Colors.success }]}
-                  onPress={() => setSelectedTabFilter('resolved')}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[s.summaryCountText, { color: Colors.success }]}>{resolvedCount}</Text>
-                  <Text style={s.summaryLabelText}>Resolved</Text>
-                </TouchableOpacity>
+                {renderSummaryCard('Total claims', totalCount, 'all', Colors.textPrimary)}
+                {renderSummaryCard('Awaiting review', awaitingCount, 'action', Colors.warning, Colors.warning)}
+                {renderSummaryCard('Escalated', escalatedCount, 'escalated', Colors.danger, Colors.danger)}
+                {renderSummaryCard('Resolved', resolvedCount, 'resolved', Colors.success, Colors.success)}
               </View>
 
               {/* ── SEARCH & RETURN REASON FILTER BAR ───────────────────────── */}
               <View style={s.toolbarCard}>
                 <View style={s.searchInputWrap}>
-                  <Ionicons name="search-outline" size={18} color="#475569" style={s.searchIcon} />
+                  <Ionicons name="search-outline" size={18} color={Colors.textSecondary} />
                   <TextInput
                     style={s.searchInput}
-                    placeholder="Search Order #, Return ID, or product name…"
+                    placeholder="Search order #, return ID or product"
                     placeholderTextColor={Colors.textMuted}
                     value={search}
                     onChangeText={setSearch}
+                    accessibilityLabel="Search return claims"
                   />
                   {search.length > 0 && (
-                    <TouchableOpacity onPress={() => setSearch('')}>
-                      <Ionicons name="close" size={18} style={{ color: '#475569' }} />
+                    <TouchableOpacity
+                      onPress={() => setSearch('')}
+                      style={s.iconBtn}
+                      accessibilityRole="button"
+                      accessibilityLabel="Clear search"
+                    >
+                      <Ionicons name="close" size={18} color={Colors.textSecondary} />
                     </TouchableOpacity>
                   )}
                 </View>
 
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filterScroll}>
-                  {['All', 'Damaged', 'Incorrect Item', 'Leaking Seal', 'Expired Item', 'Customer Changed Mind'].map(r => {
+                  {REASON_FILTERS.map(r => {
                     const active = selectedReasonFilter === r;
                     return (
                       <TouchableOpacity
@@ -494,6 +584,8 @@ function ReturnsScreen() {
                         style={[s.filterPill, active && s.filterPillActive]}
                         onPress={() => setSelectedReasonFilter(r)}
                         activeOpacity={0.8}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: active }}
                       >
                         <Text style={[s.filterPillText, active && s.filterPillTextActive]}>{r}</Text>
                       </TouchableOpacity>
@@ -502,63 +594,52 @@ function ReturnsScreen() {
                 </ScrollView>
               </View>
 
-              {/* ── DENSE DESKTOP RETURNS TABLE MATRIX ──────────────────────── */}
-              {filteredRequests.length === 0 ? (
-                <View style={s.emptyStateBox}>
-                  <Ionicons name="cube-outline" size={18} color="#475569" style={s.emptyIcon} />
-                  <Text style={s.emptyTitle}>No return requests found</Text>
-                  <Text style={s.emptySub}>
-                    {search.length > 0
-                      ? `No returns found matching "${search}".`
-                      : 'All customer return claims are up to date!'}
-                  </Text>
+              {/* ── CLAIM LIST ──────────────────────────────────────────────── */}
+              {isLoading ? (
+                <View style={s.stateBox}>
+                  <ActivityIndicator size="large" color={Colors.primary} />
+                  <Text style={s.stateSub}>Loading return requests…</Text>
                 </View>
+              ) : filteredRequests.length === 0 ? (
+                renderEmptyState()
               ) : (
                 <View style={s.requestList}>
                   {filteredRequests.map(req => {
-                    const isUrgent = req.slaHoursRemaining > 0 && req.slaHoursRemaining <= 2;
-                    const isEscalated = req.status === 'Escalated';
-                    const isResolved = req.status === 'Resolved';
+                    const isUrgent =
+                      req.slaHoursRemaining !== undefined && req.slaHoursRemaining > 0 && req.slaHoursRemaining <= 2;
+                    const tone = STATUS_STYLE[req.status];
+                    const thumbUri = req.photos[0];
 
                     return (
                       <View key={req.returnId} style={s.requestCard}>
                         {/* Header Row */}
                         <View style={s.cardHeaderRow}>
-                          <View style={{ flex: 1 }}>
+                          <View style={{ flex: 1, minWidth: 0 }}>
                             <View style={s.badgeMetaRow}>
                               <Text style={s.orderIdText}>Order #{req.orderId}</Text>
                               <Text style={s.returnIdText}>Claim #{req.returnId}</Text>
                             </View>
                             <Text style={s.customerMetaText}>
-                              Customer: {req.customerName} • {req.customerArea} (Privacy Safe — No Phone Displayed)
+                              Customer: {req.customerName} • {req.customerArea} (privacy safe, no phone shown)
                             </Text>
                           </View>
 
-                          {/* Status Pill */}
-                          <View style={[
-                            s.statusPillTag,
-                            isEscalated && s.statusPillEscalated,
-                            isResolved && s.statusPillResolved,
-                            req.status === 'Awaiting Review' && s.statusPillAwaiting,
-                          ]}>
-                            <Text style={[
-                              s.statusPillText,
-                              isEscalated && s.statusPillTextEscalated,
-                              isResolved && s.statusPillTextResolved,
-                              req.status === 'Awaiting Review' && s.statusPillTextAwaiting,
-                            ]}>
-                              {isEscalated ? '🛡️ Escalated' : isResolved ? '✓ Resolved' : '⌛ Awaiting Review'}
-                            </Text>
+                          <View style={[s.statusPill, { backgroundColor: tone.bg, borderColor: tone.border }]}>
+                            <Text style={[s.statusPillText, { color: tone.text }]}>{req.status}</Text>
                           </View>
                         </View>
 
                         {/* Product & Claim Info */}
                         <View style={s.productDetailsRow}>
                           <View style={s.thumbBox}>
-                            <Ionicons name="cube-outline" size={18} color="#475569" style={s.thumbEmoji} />
+                            {thumbUri ? (
+                              <Image source={{ uri: thumbUri }} style={s.thumbImage} resizeMode="cover" />
+                            ) : (
+                              <Ionicons name="cube-outline" size={20} color={Colors.textSecondary} />
+                            )}
                           </View>
 
-                          <View style={{ flex: 1 }}>
+                          <View style={{ flex: 1, minWidth: 0 }}>
                             <Text style={s.brandLabel}>{req.brand}</Text>
                             <Text style={s.productTitleText}>{req.productName}</Text>
 
@@ -571,30 +652,33 @@ function ReturnsScreen() {
                           </View>
 
                           <View style={s.refundAmountBox}>
-                            <Text style={s.refundLabel}>REFUND REQ</Text>
+                            <Text style={s.refundLabel}>Refund req.</Text>
                             <Text style={s.refundAmountText}>₹{req.refundRequestedAmount}</Text>
                           </View>
                         </View>
 
-                        {/* SLA Urgency Warning */}
+                        {/* Response deadline warning (only when the claim has a timer) */}
                         {isUrgent && (
                           <View style={s.slaWarningBanner}>
                             <Text style={s.slaWarningBannerText}>
-                              ⏱️ SLA Risk Warning: Policy response required within {req.slaHoursRemaining}h to prevent automated refund release.
+                              Policy response needed within {req.slaHoursRemaining}h.
                             </Text>
                           </View>
                         )}
 
                         {/* Action Footer */}
                         <View style={s.cardFooterRow}>
-                          <Text style={s.policyGuidanceHintText}>Inspect unboxing photo evidence & seal condition before authorizing decision</Text>
+                          <Text style={s.policyGuidanceHintText}>
+                            Check unboxing photos and seal condition before deciding.
+                          </Text>
 
                           <TouchableOpacity
                             style={s.reviewRequestBtn}
                             onPress={() => handleOpenInspection(req)}
                             activeOpacity={0.8}
                           >
-                            <Text style={s.reviewRequestBtnText}>Open Inspection →</Text>
+                            <Text style={s.reviewRequestBtnText}>Open inspection</Text>
+                            <Ionicons name="arrow-forward" size={14} color="#FFFFFF" />
                           </TouchableOpacity>
                         </View>
                       </View>
@@ -604,170 +688,221 @@ function ReturnsScreen() {
               )}
 
             </View>
-            <View style={{ height: 40 }} />
+            <View style={{ height: Spacing.xxl }} />
           </ScrollView>
         </View>
       </View>
 
-      {/* ── SPLIT INSPECTION WORKSPACE MODAL ───────────────────────────────────── */}
+      {/* ── INSPECTION WORKSPACE MODAL ─────────────────────────────────────────── */}
       {selectedReturn && (
         <Modal
           visible={!!selectedReturn}
           animationType="slide"
           transparent={true}
-          onRequestClose={() => setSelectedReturn(null)}
+          onRequestClose={handleCloseInspection}
         >
-          <View style={s.modalOverlay}>
-            <View style={s.splitModalCard}>
-              
+          <View style={[s.modalOverlay, { padding: isExpanded ? Spacing.xl : Spacing.sm }]}>
+            <View style={[s.splitModalCard, { padding: isExpanded ? Spacing.xl : Spacing.md }]}>
+
               {/* Top Header */}
               <View style={s.modalHeaderRow}>
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={s.modalTitleText}>Inspection Workspace: Order #{selectedReturn.orderId}</Text>
                   <Text style={s.modalSubText}>
                     Customer: {selectedReturn.customerName} • Purchased {selectedReturn.purchaseDate} • Claim #{selectedReturn.returnId}
                   </Text>
                 </View>
 
-                <TouchableOpacity onPress={() => setSelectedReturn(null)} style={s.closeModalBtn}>
-                  <Ionicons name="close" size={18} style={{ color: '#475569' }} />
+                <TouchableOpacity
+                  onPress={handleCloseInspection}
+                  style={s.iconBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="Close inspection"
+                >
+                  <Ionicons name="close" size={20} color={Colors.textSecondary} />
                 </TouchableOpacity>
               </View>
 
-              {/* 2-Column Inspection Content */}
-              <View style={s.splitWorkspaceBody}>
+              <ScrollView
+                style={{ flexShrink: 1 }}
+                contentContainerStyle={s.modalBodyContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {/* 2-Column Inspection Content (stacked on phone) */}
+                <View style={[s.splitWorkspaceBody, !isExpanded && s.splitWorkspaceStacked]}>
 
-                {/* LEFT COLUMN: Photo Viewer & Evidence (540px) */}
-                <View style={s.leftPhotoColumn}>
-                  <View style={s.photoViewerCard}>
-                    <View style={s.photoHeaderRow}>
-                      <Text style={s.photoViewerTitle}>UNBOXING PHOTO EVIDENCE</Text>
-                      <Text style={s.photoCounterText}>
-                        Photo {missingPhotosDemo ? 0 : activePhotoIdx + 1} of {missingPhotosDemo ? 0 : selectedReturn.photos.length}
-                      </Text>
-                    </View>
-
-                    {missingPhotosDemo || selectedReturn.photos.length === 0 ? (
-                      <View style={s.missingPhotosBox}>
-                        <Text style={s.missingPhotosText}>📷 No unboxing photo uploaded by customer</Text>
-                      </View>
-                    ) : (
-                      <View style={s.photoDisplayBox}>
-                        <Image
-                          source={{ uri: selectedReturn.photos[activePhotoIdx] }}
-                          style={[
-                            s.activeInspectionImage,
-                            {
-                              transform: [
-                                { rotate: `${photoRotation}deg` },
-                                { scale: photoZoom },
-                              ],
-                            },
-                          ]}
-                          resizeMode="contain"
-                        />
-
-                        {/* Image Controls Overlay */}
-                        <View style={s.imageControlsBar}>
-                          <TouchableOpacity style={s.imgCtrlBtn} onPress={handleRotatePhoto}>
-                            <Text style={s.imgCtrlBtnText}>🔄 Rotate</Text>
-                          </TouchableOpacity>
-
-                          <TouchableOpacity style={s.imgCtrlBtn} onPress={handleZoomToggle}>
-                            <Text style={s.imgCtrlBtnText}>{photoZoom > 1 ? '🔍 Reset Zoom' : '🔍 Zoom 1.5x'}</Text>
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    )}
-                  </View>
-
-                  {/* Written Customer Statement */}
-                  <View style={s.claimDetailsCard}>
-                    <Text style={s.claimHeaderTitle}>CLAIM REASON: {selectedReturn.reason.toUpperCase()}</Text>
-                    <Text style={s.claimNoteText}>"{selectedReturn.customerNote}"</Text>
-                  </View>
-                </View>
-
-                {/* RIGHT COLUMN: Policy Checklist & Notes (640px) */}
-                <View style={s.rightChecklistColumn}>
-                  
-                  {/* Policy Guidance Card */}
-                  <View style={s.policyGuidanceCard}>
-                    <Text style={s.policyGuidanceTitle}>🛡️ GlowVAI Beauty Return Policy Guidance</Text>
-                    <Text style={s.policyGuidanceText}>
-                      Beauty items damaged in transit or with broken seals upon arrival qualify for 100% full customer refund. Merchant payout is protected if transit damage is verified.
-                    </Text>
-                  </View>
-
-                  {/* Structured Evidence Checklist */}
-                  <View style={s.evidenceChecklistCard}>
-                    <Text style={s.evidenceChecklistTitle}>STRUCTURED INSPECTION EVIDENCE CHECKLIST</Text>
-
-                    <View style={s.checklistGrid}>
-                      <View style={s.checklistItemRow}>
-                        <Text style={s.checkLabel}>1. Seal Condition:</Text>
-                        <Text style={[s.checkVal, selectedReturn.evidenceChecklist.sealCondition === 'Broken' && { color: Colors.danger }]}>
-                          {selectedReturn.evidenceChecklist.sealCondition}
+                  {/* LEFT COLUMN: Photo Viewer & Evidence */}
+                  <View style={[s.leftPhotoColumn, !isExpanded && s.columnStacked]}>
+                    <View style={s.photoViewerCard}>
+                      <View style={s.photoHeaderRow}>
+                        <Text style={s.photoViewerTitle}>UNBOXING PHOTO EVIDENCE</Text>
+                        <Text style={s.photoCounterText}>
+                          {visiblePhotos.length > 0 ? `Photo ${activePhotoIdx + 1} of ${visiblePhotos.length}` : 'No photos'}
                         </Text>
                       </View>
 
-                      <View style={s.checklistItemRow}>
-                        <Text style={s.checkLabel}>2. Product Authenticity:</Text>
-                        <Text style={s.checkVal}>{selectedReturn.evidenceChecklist.authenticity}</Text>
-                      </View>
+                      {photoUnreadable ? (
+                        <View style={s.missingPhotosBox}>
+                          <Ionicons name="alert-circle-outline" size={20} color={Colors.warning} />
+                          <Text style={s.missingPhotosText}>This photo could not be read. Evidence may be insufficient.</Text>
+                        </View>
+                      ) : visiblePhotos.length === 0 || !activePhoto ? (
+                        <View style={s.missingPhotosBox}>
+                          <Ionicons name="image-outline" size={20} color={Colors.textMuted} />
+                          <Text style={s.missingPhotosText}>No unboxing photo uploaded by customer</Text>
+                        </View>
+                      ) : (
+                        <View style={s.photoDisplayBox}>
+                          <Image
+                            source={{ uri: activePhoto }}
+                            style={[
+                              s.activeInspectionImage,
+                              {
+                                transform: [
+                                  { rotate: `${photoRotation}deg` },
+                                  { scale: photoZoom },
+                                ],
+                              },
+                            ]}
+                            resizeMode="contain"
+                          />
 
-                      <View style={s.checklistItemRow}>
-                        <Text style={s.checkLabel}>3. Expiry Status:</Text>
-                        <Text style={s.checkVal}>{selectedReturn.evidenceChecklist.expiryStatus}</Text>
-                      </View>
+                          {/* Image Controls Overlay */}
+                          <View style={s.imageControlsBar}>
+                            <TouchableOpacity style={s.imgCtrlBtn} onPress={handleRotatePhoto} accessibilityRole="button" accessibilityLabel="Rotate photo">
+                              <Ionicons name="refresh" size={14} color="#FFFFFF" />
+                              <Text style={s.imgCtrlBtnText}>Rotate</Text>
+                            </TouchableOpacity>
 
-                      <View style={s.checklistItemRow}>
-                        <Text style={s.checkLabel}>4. Damage Type:</Text>
-                        <Text style={s.checkVal}>{selectedReturn.evidenceChecklist.damageType}</Text>
-                      </View>
+                            <TouchableOpacity style={s.imgCtrlBtn} onPress={handleZoomToggle} accessibilityRole="button" accessibilityLabel="Toggle zoom">
+                              <Ionicons name="search-outline" size={14} color="#FFFFFF" />
+                              <Text style={s.imgCtrlBtnText}>{photoZoom > 1 ? 'Reset zoom' : 'Zoom 1.5x'}</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
 
-                      <View style={s.checklistItemRow}>
-                        <Text style={s.checkLabel}>5. Original Packaging:</Text>
-                        <Text style={s.checkVal}>{selectedReturn.evidenceChecklist.packagingIncluded ? 'Included' : 'Missing'}</Text>
-                      </View>
+                      {!photoUnreadable && visiblePhotos.length > 1 && (
+                        <View style={s.thumbStrip}>
+                          {visiblePhotos.map((uri, idx) => (
+                            <TouchableOpacity
+                              key={`${uri}-${idx}`}
+                              onPress={() => setActivePhotoIdx(idx)}
+                              style={[s.photoThumbBtn, idx === activePhotoIdx && s.photoThumbBtnActive]}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Show photo ${idx + 1}`}
+                            >
+                              <Image source={{ uri }} style={s.photoThumbImg} resizeMode="cover" />
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+
+                    {/* Written Customer Statement */}
+                    <View style={s.claimDetailsCard}>
+                      <Text style={s.claimHeaderTitle}>CLAIM REASON: {selectedReturn.reason.toUpperCase()}</Text>
+                      <Text style={s.claimNoteText}>"{selectedReturn.customerNote}"</Text>
                     </View>
                   </View>
 
-                  {/* Internal Merchant Notes */}
-                  <View style={s.notesCard}>
-                    <Text style={s.notesTitle}>🔒 INTERNAL NOTE (VISIBLE TO GLOWVAI SUPPORT ONLY)</Text>
-                    <TextInput
-                      style={s.notesInput}
-                      placeholder="Add optional notes for platform audit records…"
-                      placeholderTextColor={Colors.textMuted}
-                      value={merchantNotes}
-                      onChangeText={setMerchantNotes}
-                      multiline
-                    />
+                  {/* RIGHT COLUMN: Policy Checklist & Notes */}
+                  <View style={[s.rightChecklistColumn, !isExpanded && s.columnStacked]}>
+
+                    {showDuplicateWarning && (
+                      <View style={s.duplicateBanner}>
+                        <Ionicons name="warning-outline" size={16} color={Colors.primary} />
+                        <Text style={s.duplicateBannerText}>
+                          Possible duplicate claim for this order. Check the claim history before deciding.
+                        </Text>
+                      </View>
+                    )}
+
+                    {/* Policy Guidance Card */}
+                    <View style={s.policyGuidanceCard}>
+                      <Text style={s.policyGuidanceTitle}>Return policy guidance</Text>
+                      <Text style={s.policyGuidanceText}>
+                        Beauty items damaged in transit or with broken seals upon arrival qualify for 100% full customer refund. Merchant payout is protected if transit damage is verified.
+                      </Text>
+                    </View>
+
+                    {/* Structured Evidence Checklist */}
+                    <View style={s.evidenceChecklistCard}>
+                      <Text style={s.evidenceChecklistTitle}>STRUCTURED INSPECTION EVIDENCE CHECKLIST</Text>
+
+                      <View style={s.checklistGrid}>
+                        <View style={s.checklistItemRow}>
+                          <Text style={s.checkLabel}>1. Seal condition:</Text>
+                          <Text style={[s.checkVal, selectedReturn.evidenceChecklist.sealCondition === 'Broken' && { color: Colors.danger }]}>
+                            {selectedReturn.evidenceChecklist.sealCondition}
+                          </Text>
+                        </View>
+
+                        <View style={s.checklistItemRow}>
+                          <Text style={s.checkLabel}>2. Product authenticity:</Text>
+                          <Text style={s.checkVal}>{selectedReturn.evidenceChecklist.authenticity}</Text>
+                        </View>
+
+                        <View style={s.checklistItemRow}>
+                          <Text style={s.checkLabel}>3. Expiry status:</Text>
+                          <Text style={s.checkVal}>{selectedReturn.evidenceChecklist.expiryStatus}</Text>
+                        </View>
+
+                        <View style={s.checklistItemRow}>
+                          <Text style={s.checkLabel}>4. Damage type:</Text>
+                          <Text style={s.checkVal}>{selectedReturn.evidenceChecklist.damageType}</Text>
+                        </View>
+
+                        <View style={s.checklistItemRow}>
+                          <Text style={s.checkLabel}>5. Original packaging:</Text>
+                          <Text style={s.checkVal}>{selectedReturn.evidenceChecklist.packagingIncluded ? 'Included' : 'Missing'}</Text>
+                        </View>
+                      </View>
+                    </View>
+
+                    {/* Internal Notes (local only) */}
+                    <View style={s.notesCard}>
+                      <Text style={s.notesTitle}>INTERNAL NOTE (NOT SAVED YET)</Text>
+                      <TextInput
+                        style={s.notesInput}
+                        placeholder="Optional notes for your records"
+                        placeholderTextColor={Colors.textMuted}
+                        value={internalNote}
+                        onChangeText={setInternalNote}
+                        multiline
+                        accessibilityLabel="Internal note"
+                      />
+                    </View>
                   </View>
+
                 </View>
+              </ScrollView>
 
-              </View>
-
-              {/* Differentiated Bottom Action Bar */}
+              {/* Action bar: decisions only exist in developer preview */}
               <View style={s.modalFooterActionBar}>
-                <TouchableOpacity
-                  style={s.rejectDangerBtn}
-                  onPress={() => handlePromptDecision('reject')}
-                  activeOpacity={0.85}
-                >
-                  <Text style={s.rejectDangerBtnText}>Reject / Escalate Claim</Text>
-                </TouchableOpacity>
+                {__DEV__ ? (
+                  <>
+                    <TouchableOpacity
+                      style={s.rejectDangerBtn}
+                      onPress={() => handlePromptDecision('reject')}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={s.rejectDangerBtnText}>Reject claim</Text>
+                    </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={s.recommendRefundPrimaryBtn}
-                  onPress={() => handlePromptDecision('refund')}
-                  activeOpacity={0.85}
-                >
-                  <Text style={s.recommendRefundPrimaryBtnText}>
-                    Recommend Full Refund (₹{selectedReturn.refundRequestedAmount}) →
-                  </Text>
-                </TouchableOpacity>
+                    <TouchableOpacity
+                      style={s.recommendRefundPrimaryBtn}
+                      onPress={() => handlePromptDecision('refund')}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={s.recommendRefundPrimaryBtnText}>
+                        Recommend full refund (₹{selectedReturn.refundRequestedAmount})
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <Text style={s.decisionUnavailableText}>Return decisions are not available yet.</Text>
+                )}
               </View>
 
             </View>
@@ -775,18 +910,18 @@ function ReturnsScreen() {
         </Modal>
       )}
 
-      {/* Confirmation Step Summary Modal */}
-      {confirmationModalOpen && selectedReturn && (
+      {/* Decision Confirmation Modal (developer preview only) */}
+      {__DEV__ && confirmationModalOpen && selectedReturn && (
         <Modal
           visible={confirmationModalOpen}
           animationType="fade"
           transparent={true}
           onRequestClose={() => setConfirmationModalOpen(false)}
         >
-          <View style={s.modalOverlay}>
+          <View style={[s.modalOverlay, { padding: isExpanded ? Spacing.xl : Spacing.lg }]}>
             <View style={s.confirmCard}>
-              <Text style={s.confirmTitle}>Confirm Decision Summary</Text>
-              <Text style={s.confirmSub}>Review decision details before submitting to platform audit engine.</Text>
+              <Text style={s.confirmTitle}>Confirm decision summary</Text>
+              <Text style={s.confirmSub}>Developer preview: this updates local state only.</Text>
 
               <View style={s.confirmDetailsBox}>
                 <View style={s.confirmRow}>
@@ -795,28 +930,28 @@ function ReturnsScreen() {
                 </View>
 
                 <View style={s.confirmRow}>
-                  <Text style={s.confirmRowLabel}>Decision Type:</Text>
+                  <Text style={s.confirmRowLabel}>Decision type:</Text>
                   <Text style={[s.confirmRowVal, pendingDecisionType === 'refund' ? { color: Colors.success } : { color: Colors.danger }]}>
-                    {pendingDecisionType === 'refund' ? 'Full Refund Recommendation' : 'Reject / Escalate Claim'}
+                    {pendingDecisionType === 'refund' ? 'Full refund recommendation' : 'Reject claim'}
                   </Text>
                 </View>
 
                 <View style={s.confirmRow}>
-                  <Text style={s.confirmRowLabel}>Refund Amount:</Text>
+                  <Text style={s.confirmRowLabel}>Refund amount:</Text>
                   <Text style={s.confirmRowVal}>
                     {pendingDecisionType === 'refund' ? `₹${selectedReturn.refundRequestedAmount}` : '₹0'}
                   </Text>
                 </View>
 
                 <View style={s.confirmRow}>
-                  <Text style={s.confirmRowLabel}>Final Decision Maker:</Text>
-                  <Text style={s.confirmRowVal}>GlowVAI Support Audit (within 2h)</Text>
+                  <Text style={s.confirmRowLabel}>Final decision maker:</Text>
+                  <Text style={s.confirmRowVal}>GlowVAI Support Audit</Text>
                 </View>
               </View>
 
               {pendingDecisionType === 'reject' && (
                 <View style={s.rejectionReasonBox}>
-                  <Text style={s.rejectionReasonLabel}>Select Rejection Reason:</Text>
+                  <Text style={s.rejectionReasonLabel}>Rejection reason:</Text>
                   <TextInput
                     style={s.rejectionInput}
                     value={rejectionReason}
@@ -829,20 +964,17 @@ function ReturnsScreen() {
                 <TouchableOpacity
                   style={s.cancelConfirmBtn}
                   onPress={() => setConfirmationModalOpen(false)}
+                  activeOpacity={0.8}
                 >
-                  <Text style={s.cancelConfirmBtnText}>Back to Review</Text>
+                  <Text style={s.cancelConfirmBtnText}>Back to review</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={s.submitConfirmBtn}
                   onPress={handleConfirmFinalDecision}
-                  disabled={submittingDecision}
+                  activeOpacity={0.8}
                 >
-                  {submittingDecision ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
-                  ) : (
-                    <Text style={s.submitConfirmBtnText}>Submit Decision →</Text>
-                  )}
+                  <Text style={s.submitConfirmBtnText}>Submit (preview)</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -850,15 +982,10 @@ function ReturnsScreen() {
         </Modal>
       )}
 
-      {/* Floating Action / Toast Banner */}
+      {/* Floating Toast Banner */}
       {toastMessage && (
-        <View style={s.toastBanner}>
-          <Text style={s.toastText}>{toastMessage.text}</Text>
-          {toastMessage.undoAction && (
-            <TouchableOpacity onPress={toastMessage.undoAction} style={s.toastUndoBtn}>
-              <Text style={s.toastUndoText}>Undo</Text>
-            </TouchableOpacity>
-          )}
+        <View style={[s.toastBanner, { left: gutter, right: gutter }]} accessibilityLiveRegion="polite">
+          <Text style={s.toastText}>{toastMessage}</Text>
         </View>
       )}
     </SafeAreaView>
@@ -868,7 +995,7 @@ function ReturnsScreen() {
 const s = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: Colors.surface, // Warm off-white #F8FAFC
+    backgroundColor: Colors.surface,
   },
   desktopLayout: {
     flex: 1,
@@ -878,7 +1005,7 @@ const s = StyleSheet.create({
   /* ── Desktop Navigation Rail ────────────────────────────────────────────────── */
   navRail: {
     width: 240,
-    backgroundColor: '#0F172A',
+    backgroundColor: Colors.textPrimary,
     paddingVertical: Spacing.lg,
     paddingHorizontal: Spacing.md,
     justifyContent: 'space-between',
@@ -897,16 +1024,6 @@ const s = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  railBrandLogoIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 20,
-  },
-  railBrandTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
   railBrandSub: {
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 12,
@@ -921,21 +1038,17 @@ const s = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    minHeight: 44,
     borderRadius: BorderRadii.input,
   },
   railNavItemActive: {
     backgroundColor: Colors.primary,
   },
-  railNavIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 16,
-  },
   railNavLabel: {
     fontSize: 13,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
-    color: '#94A3B8',
+    color: Colors.textMuted,
   },
   railNavLabelActive: {
     color: '#FFFFFF',
@@ -943,26 +1056,16 @@ const s = StyleSheet.create({
     fontWeight: '700',
   },
   railFooter: {
-    gap: 10,
     borderTopWidth: 1,
     borderTopColor: '#1E293B',
     paddingTop: 12,
   },
-  storeSelectorPill: {
-    backgroundColor: '#1E293B',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.input,
-  },
-  storeSelectorText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#CBD5E1',
-  },
   railHelpBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 6,
+    justifyContent: 'center',
+    gap: 6,
+    minHeight: 44,
   },
   railHelpText: {
     fontSize: 12,
@@ -981,38 +1084,39 @@ const s = StyleSheet.create({
     backgroundColor: Colors.card,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.md,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.sm,
   },
   headerLeftGroup: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
   },
+  headerTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
   backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: Colors.border,
     backgroundColor: Colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  backIcon: {
-    fontSize: 22,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginTop: -2,
-  },
   breadcrumbRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 6,
   },
   breadcrumbLink: {
@@ -1034,6 +1138,7 @@ const s = StyleSheet.create({
   },
   titleRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: Spacing.xs,
     marginTop: 2,
@@ -1045,7 +1150,10 @@ const s = StyleSheet.create({
     color: Colors.textPrimary,
   },
   policyPill: {
-    backgroundColor: '#EEF2FF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: Colors.primaryLight,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: BorderRadii.pill,
@@ -1062,15 +1170,15 @@ const s = StyleSheet.create({
     gap: Spacing.sm,
   },
 
-  /* System Simulation Strip */
-  simStripCard: {
+  /* Developer tooling strip (__DEV__ only) */
+  devStrip: {
     backgroundColor: Colors.card,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: 6,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.xs,
   },
-  simTitle: {
+  devStripTitle: {
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
@@ -1078,28 +1186,29 @@ const s = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: 4,
   },
-  simScrollContainer: {
+  devScrollContainer: {
     gap: Spacing.xs,
   },
-  simChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+  devChip: {
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: 12,
     borderRadius: BorderRadii.pill,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  simChipActive: {
+  devChipActive: {
     backgroundColor: Colors.primaryLight,
     borderColor: Colors.primaryBorder,
   },
-  simChipText: {
+  devChipText: {
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
     color: Colors.textSecondary,
   },
-  simChipTextActive: {
+  devChipTextActive: {
     color: Colors.primary,
     fontFamily: 'PlusJakartaSans_700Bold',
     fontWeight: '700',
@@ -1107,7 +1216,7 @@ const s = StyleSheet.create({
 
   systemBannerOffline: {
     backgroundColor: '#FEF3C7',
-    paddingHorizontal: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
     paddingVertical: 8,
   },
   systemBannerText: {
@@ -1122,28 +1231,56 @@ const s = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    padding: Spacing.xl,
+    paddingVertical: Spacing.xl,
   },
   maxContentContainer: {
     maxWidth: 1200,
     width: '100%',
     alignSelf: 'center',
   },
+  sampleChipRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginBottom: Spacing.sm,
+  },
+  sampleChip: {
+    backgroundColor: Colors.warningLight,
+    borderWidth: 1,
+    borderColor: Colors.warningBorder,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: BorderRadii.pill,
+  },
+  sampleChipText: {
+    fontSize: 12,
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontWeight: '600',
+    color: Colors.warning,
+  },
 
   /* Summary Strip */
   summaryStripRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: Spacing.md,
     marginBottom: Spacing.lg,
   },
   summaryCard: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    minHeight: 64,
     backgroundColor: Colors.card,
     borderWidth: 1,
     borderColor: Colors.border,
     borderRadius: BorderRadii.card,
     padding: Spacing.md,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summaryCardPhone: {
+    flexGrow: 0,
+    flexBasis: '47%',
   },
   summaryCardActive: {
     backgroundColor: '#FFFFFF',
@@ -1161,6 +1298,7 @@ const s = StyleSheet.create({
     fontWeight: '600',
     color: Colors.textMuted,
     marginTop: 2,
+    textAlign: 'center',
   },
 
   /* Toolbar Card */
@@ -1179,33 +1317,32 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     borderRadius: BorderRadii.input,
-    paddingHorizontal: Spacing.md,
-    height: 42,
+    paddingLeft: Spacing.md,
+    paddingRight: Spacing.xs,
+    minHeight: 44,
     gap: Spacing.xs,
     marginBottom: Spacing.md,
-  },
-  searchIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 14,
   },
   searchInput: {
     flex: 1,
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 13,
     color: Colors.textPrimary,
+    minHeight: 44,
   },
-  clearSearchText: {
-    fontSize: 14,
-    color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
+  iconBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   filterScroll: {
     gap: Spacing.xs,
   },
   filterPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    justifyContent: 'center',
+    minHeight: 44,
+    paddingHorizontal: 14,
     borderRadius: BorderRadii.pill,
     backgroundColor: Colors.surface,
     borderWidth: 1,
@@ -1227,6 +1364,61 @@ const s = StyleSheet.create({
     fontWeight: '700',
   },
 
+  /* Empty / Loading States */
+  stateBox: {
+    alignItems: 'center',
+    paddingVertical: Spacing.xxl,
+    paddingHorizontal: Spacing.lg,
+    gap: Spacing.sm,
+  },
+  stateTitle: {
+    fontSize: 16,
+    fontFamily: 'PlusJakartaSans_700Bold',
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    textAlign: 'center',
+  },
+  stateSub: {
+    fontFamily: 'PlusJakartaSans_400Regular',
+    fontSize: 13,
+    lineHeight: 19,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    maxWidth: 420,
+  },
+  primaryBtn: {
+    marginTop: Spacing.xs,
+    minHeight: 44,
+    paddingHorizontal: 18,
+    borderRadius: BorderRadii.input,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontWeight: '600',
+  },
+  secondaryBtn: {
+    marginTop: Spacing.xs,
+    minHeight: 44,
+    paddingHorizontal: 18,
+    borderRadius: BorderRadii.input,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryBtnText: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontWeight: '600',
+  },
+
   /* Request List */
   requestList: {
     gap: Spacing.md,
@@ -1242,10 +1434,12 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
+    gap: Spacing.sm,
     marginBottom: Spacing.md,
   },
   badgeMetaRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: Spacing.xs,
     alignItems: 'center',
   },
@@ -1259,7 +1453,6 @@ const s = StyleSheet.create({
     fontFamily: 'JetBrainsMono_500Medium',
     fontSize: 12,
     color: Colors.textMuted,
-    
   },
   customerMetaText: {
     fontFamily: 'PlusJakartaSans_400Regular',
@@ -1267,37 +1460,16 @@ const s = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 2,
   },
-  statusPillTag: {
+  statusPill: {
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: BorderRadii.pill,
     borderWidth: 1,
   },
-  statusPillAwaiting: {
-    backgroundColor: Colors.warningLight,
-    borderColor: Colors.warningBorder,
-  },
-  statusPillEscalated: {
-    backgroundColor: Colors.dangerLight,
-    borderColor: Colors.dangerBorder,
-  },
-  statusPillResolved: {
-    backgroundColor: '#DCFCE7',
-    borderColor: Colors.successBorder,
-  },
   statusPillText: {
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
-  },
-  statusPillTextAwaiting: {
-    color: Colors.warning,
-  },
-  statusPillTextEscalated: {
-    color: Colors.danger,
-  },
-  statusPillTextResolved: {
-    color: Colors.success,
   },
 
   productDetailsRow: {
@@ -1312,18 +1484,19 @@ const s = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   thumbBox: {
-    width: 44,
-    height: 44,
-    borderRadius: BorderRadii.card,
+    width: 48,
+    height: 48,
+    borderRadius: BorderRadii.input,
     backgroundColor: Colors.card,
     borderWidth: 1,
     borderColor: Colors.border,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
-  thumbEmoji: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 20,
+  thumbImage: {
+    width: '100%',
+    height: '100%',
   },
   brandLabel: {
     fontSize: 12,
@@ -1340,6 +1513,7 @@ const s = StyleSheet.create({
   },
   reasonRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: Spacing.xs,
     marginTop: 3,
@@ -1382,7 +1556,7 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.warningBorder,
     borderRadius: BorderRadii.input,
-    padding: Spacing.xs,
+    padding: Spacing.sm,
     marginBottom: Spacing.md,
   },
   slaWarningBannerText: {
@@ -1395,8 +1569,10 @@ const s = StyleSheet.create({
 
   cardFooterRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.sm,
     paddingTop: Spacing.sm,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
@@ -1405,12 +1581,15 @@ const s = StyleSheet.create({
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 12,
     color: Colors.textMuted,
-    flex: 1,
+    flexShrink: 1,
   },
   reviewRequestBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: Colors.primary,
+    minHeight: 44,
     paddingHorizontal: 16,
-    paddingVertical: 9,
     borderRadius: BorderRadii.pill,
   },
   reviewRequestBtnText: {
@@ -1420,37 +1599,12 @@ const s = StyleSheet.create({
     fontWeight: '600',
   },
 
-  /* Empty State */
-  emptyStateBox: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xxl,
-  },
-  emptyIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 44,
-    marginBottom: Spacing.sm,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  emptySub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    textAlign: 'center',
-  },
-
   /* Split Inspection Modal Workspace */
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.75)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: Spacing.xl,
   },
   splitModalCard: {
     width: '100%',
@@ -1458,16 +1612,16 @@ const s = StyleSheet.create({
     maxHeight: '92%',
     backgroundColor: Colors.card,
     borderRadius: BorderRadii.card,
-    padding: Spacing.xl,
   },
   modalHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: Spacing.lg,
+    gap: Spacing.sm,
+    marginBottom: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    paddingBottom: Spacing.md,
+    paddingBottom: Spacing.sm,
   },
   modalTitleText: {
     fontSize: 18,
@@ -1481,25 +1635,28 @@ const s = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 2,
   },
-  closeModalBtn: {
-    padding: 4,
-  },
-  closeModalText: {
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textMuted,
+  modalBodyContent: {
+    paddingBottom: Spacing.md,
   },
   splitWorkspaceBody: {
     flexDirection: 'row',
     gap: Spacing.xl,
-    flex: 1,
+  },
+  splitWorkspaceStacked: {
+    flexDirection: 'column',
+    gap: Spacing.md,
   },
   leftPhotoColumn: {
     flex: 5,
+    minWidth: 0,
   },
   rightChecklistColumn: {
     flex: 6,
+    minWidth: 0,
+  },
+  columnStacked: {
+    flex: 0,
+    width: '100%',
   },
 
   photoViewerCard: {
@@ -1528,23 +1685,26 @@ const s = StyleSheet.create({
     color: Colors.textSecondary,
   },
   missingPhotosBox: {
-    height: 180,
+    minHeight: 180,
     backgroundColor: Colors.card,
     borderRadius: BorderRadii.input,
     borderWidth: 1,
     borderColor: Colors.border,
     alignItems: 'center',
     justifyContent: 'center',
+    gap: Spacing.xs,
+    padding: Spacing.md,
   },
   missingPhotosText: {
     fontSize: 12,
     color: Colors.textMuted,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
+    textAlign: 'center',
   },
   photoDisplayBox: {
     height: 240,
-    backgroundColor: '#0F172A',
+    backgroundColor: Colors.textPrimary,
     borderRadius: BorderRadii.input,
     overflow: 'hidden',
     alignItems: 'center',
@@ -1561,19 +1721,42 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     gap: Spacing.xs,
     backgroundColor: 'rgba(15, 23, 42, 0.85)',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 6,
+    paddingHorizontal: Spacing.xs,
     borderRadius: BorderRadii.pill,
   },
   imgCtrlBtn: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minHeight: 44,
+    paddingHorizontal: 10,
   },
   imgCtrlBtnText: {
     color: '#FFFFFF',
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
+  },
+  thumbStrip: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+    marginTop: Spacing.sm,
+  },
+  photoThumbBtn: {
+    width: 56,
+    height: 56,
+    borderRadius: BorderRadii.input,
+    borderWidth: 2,
+    borderColor: Colors.border,
+    overflow: 'hidden',
+  },
+  photoThumbBtnActive: {
+    borderColor: Colors.primary,
+  },
+  photoThumbImg: {
+    width: '100%',
+    height: '100%',
   },
 
   claimDetailsCard: {
@@ -1597,11 +1780,31 @@ const s = StyleSheet.create({
     marginTop: 4,
   },
 
+  duplicateBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.xs,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primaryBorder,
+    borderRadius: BorderRadii.input,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  duplicateBannerText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontWeight: '600',
+    color: Colors.primary,
+    lineHeight: 16,
+  },
+
   policyGuidanceCard: {
-    backgroundColor: '#EFF6FF',
+    backgroundColor: Colors.primaryLight,
     borderRadius: BorderRadii.card,
     borderWidth: 1,
-    borderColor: '#BFDBFE',
+    borderColor: Colors.primaryBorder,
     padding: Spacing.md,
     marginBottom: Spacing.md,
   },
@@ -1639,7 +1842,9 @@ const s = StyleSheet.create({
   },
   checklistItemRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
+    gap: 4,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
     paddingBottom: 4,
@@ -1667,7 +1872,7 @@ const s = StyleSheet.create({
     marginBottom: 4,
   },
   notesInput: {
-    height: 60,
+    minHeight: 72,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -1681,6 +1886,9 @@ const s = StyleSheet.create({
 
   modalFooterActionBar: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: Spacing.md,
     paddingTop: Spacing.md,
     borderTopWidth: 1,
@@ -1688,7 +1896,7 @@ const s = StyleSheet.create({
   },
   rejectDangerBtn: {
     paddingHorizontal: 18,
-    height: 48,
+    minHeight: 48,
     borderRadius: BorderRadii.input,
     backgroundColor: Colors.surface,
     borderWidth: 1.5,
@@ -1703,10 +1911,11 @@ const s = StyleSheet.create({
     color: Colors.danger,
   },
   recommendRefundPrimaryBtn: {
-    flex: 1,
-    height: 48,
+    flexGrow: 1,
+    minHeight: 48,
+    paddingHorizontal: 18,
     borderRadius: BorderRadii.input,
-    backgroundColor: Colors.primary, // Royal Blue #1D4ED8
+    backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1716,8 +1925,16 @@ const s = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
   },
+  decisionUnavailableText: {
+    flex: 1,
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontWeight: '600',
+    fontSize: 12,
+    color: Colors.textSecondary,
+    textAlign: 'right',
+  },
 
-  /* Confirm Modal */
+  /* Confirm Modal (developer preview) */
   confirmCard: {
     backgroundColor: Colors.card,
     borderRadius: BorderRadii.card,
@@ -1750,6 +1967,7 @@ const s = StyleSheet.create({
   confirmRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    gap: Spacing.sm,
   },
   confirmRowLabel: {
     fontFamily: 'PlusJakartaSans_400Regular',
@@ -1757,10 +1975,12 @@ const s = StyleSheet.create({
     color: Colors.textSecondary,
   },
   confirmRowVal: {
+    flexShrink: 1,
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
     color: Colors.textPrimary,
+    textAlign: 'right',
   },
   rejectionReasonBox: {
     marginBottom: Spacing.md,
@@ -1773,7 +1993,7 @@ const s = StyleSheet.create({
     marginBottom: 4,
   },
   rejectionInput: {
-    height: 40,
+    minHeight: 44,
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
@@ -1789,7 +2009,7 @@ const s = StyleSheet.create({
   },
   cancelConfirmBtn: {
     flex: 1,
-    height: 46,
+    minHeight: 46,
     borderRadius: BorderRadii.input,
     backgroundColor: Colors.surface,
     borderWidth: 1,
@@ -1805,7 +2025,7 @@ const s = StyleSheet.create({
   },
   submitConfirmBtn: {
     flex: 1,
-    height: 46,
+    minHeight: 46,
     borderRadius: BorderRadii.input,
     backgroundColor: Colors.primary,
     alignItems: 'center',
@@ -1822,15 +2042,10 @@ const s = StyleSheet.create({
   toastBanner: {
     position: 'absolute',
     bottom: 24,
-    left: Spacing.lg,
-    right: Spacing.lg,
-    backgroundColor: '#0F172A',
+    backgroundColor: Colors.textPrimary,
     borderRadius: BorderRadii.input,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     elevation: 8,
   },
   toastText: {
@@ -1838,21 +2053,7 @@ const s = StyleSheet.create({
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
-    flex: 1,
-  },
-  toastUndoBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-    marginLeft: Spacing.md,
-  },
-  toastUndoText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
   },
 });
 
-export default withComingSoon(ReturnsScreen, 'Returns');
+export default ReturnsScreen;

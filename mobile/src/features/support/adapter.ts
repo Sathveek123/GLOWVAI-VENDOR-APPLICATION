@@ -4,7 +4,7 @@
  * Manages customer returns, reviews, rating analytics, and order-scoped chat threads
  */
 
-export const USE_MOCK_SUPPORT_EXTRAS = true;
+export const USE_MOCK_SUPPORT_EXTRAS = __DEV__;
 
 export interface ReturnItem {
   returnId: string;
@@ -189,6 +189,7 @@ const MOCK_MESSAGES: Record<string, ChatMessage[]> = {
 // ── Data Methods ─────────────────────────────────────────────────────────────
 
 export async function fetchReturns(): Promise<ReturnItem[]> {
+  if (!USE_MOCK_SUPPORT_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_RETURNS;
 }
 
@@ -201,6 +202,7 @@ export async function submitReturnDecision(returnId: string, decision: 'Approved
 }
 
 export async function fetchReviews(): Promise<ReviewItem[]> {
+  if (!USE_MOCK_SUPPORT_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_REVIEWS;
 }
 
@@ -216,6 +218,7 @@ export async function postReviewReply(reviewId: string, replyText: string): Prom
 }
 
 export async function fetchChatThreads(): Promise<ChatThread[]> {
+  if (!USE_MOCK_SUPPORT_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_THREADS;
 }
 

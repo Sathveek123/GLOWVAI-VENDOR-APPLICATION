@@ -4,7 +4,7 @@
  * Integrates real vendor inventory APIs with mock fallback flags for backend extensions
  */
 
-export const USE_MOCK_CATALOG_EXTRAS = true;
+export const USE_MOCK_CATALOG_EXTRAS = __DEV__;
 
 export interface ProductVariant {
   variantId: string;
@@ -255,9 +255,11 @@ export async function updateProductStock(productId: string, newOnHand: number): 
 }
 
 export async function fetchBatches(): Promise<BatchItem[]> {
+  if (!USE_MOCK_CATALOG_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_BATCHES;
 }
 
 export async function fetchDemandInsights(): Promise<DemandInsight[]> {
+  if (!USE_MOCK_CATALOG_EXTRAS) throw new Error('Not connected in this build');
   return MOCK_DEMAND;
 }

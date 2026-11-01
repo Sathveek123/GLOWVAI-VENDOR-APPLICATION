@@ -2,181 +2,267 @@
  * SCREEN 26: Notifications & Merchant Alerts Center
  * File: mobile/app/(vendor)/notifications.tsx
  *
- * Production-grade desktop alert center for GlowVAI Vendors.
- * Features:
- *   • Header with unread count badge, "Mark All as Read", preferences modal trigger & data freshness
- *   • Segmented Category Filters: "All", "Orders", "Inventory", "Payouts", "Compliance", "System"
- *   • Date Grouping: Today, Earlier, This Week
- *   • Desktop Two-Column List-Detail composition with 520px detail drawer
- *   • Notification Preferences Modal with Push/SMS/Email/WhatsApp toggles & locked mandatory security alerts
- *   • Complete edge states (Empty, Skeletons, Offline, Stale, Expired link, Permission denied, Sync error)
- *   • Strict privacy enforcement (masked customer phone numbers, bank details, tax IDs)
+ * Live alerts from GET /api/notifications/:vendorId. Marking an alert read calls
+ * PATCH /api/notifications/:id/read. Phone: one column, an alert opens inline with a back control.
+ * Desktop (width >= 1024): list on the left, detail drawer on the right.
+ * Sample alerts exist only in __DEV__ and are labelled "Sample data".
  */
 
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { withComingSoon } from '../../src/components/ComingSoon';
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   SafeAreaView,
   ScrollView,
-  TouchableOpacity,
+  Pressable,
   RefreshControl,
   Modal,
-  TextInput,
   ActivityIndicator,
-  Switch,
   Platform,
-  Alert,
+  Switch,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
+import { FontFamily } from '../../src/theme/typography';
 import AppHeader from '../../src/components/AppHeader';
-import useVendorStore from '../../src/store/useVendorStore';
-import { soundService } from '../../src/services/sound';
+import { useVendorSession } from '../../src/services/session';
+import { notificationsApi } from '../../src/services/api';
 
-const COLOR_ROYAL_BLUE = Colors.primary;
-const COLOR_EMERALD = Colors.success;
-const COLOR_AMBER = Colors.warning;
-const COLOR_DANGER = Colors.danger;
-const COLOR_SLATE = '#64748B';
+type Category = 'ORDERS' | 'INVENTORY' | 'PAYOUTS' | 'COMPLIANCE' | 'SYSTEM';
+const CATEGORIES: Category[] = ['ORDERS', 'INVENTORY', 'PAYOUTS', 'COMPLIANCE', 'SYSTEM'];
+
+/** Every screen an alert may open. Each one is a file in app/(vendor)/. */
+const VENDOR_ROUTES = [
+  '/(vendor)/add-sku',
+  '/(vendor)/analytics',
+  '/(vendor)/bank-edit',
+  '/(vendor)/catalog',
+  '/(vendor)/compliance',
+  '/(vendor)/earnings',
+  '/(vendor)/expiry',
+  '/(vendor)/home',
+  '/(vendor)/messages',
+  '/(vendor)/multi-store',
+  '/(vendor)/notifications',
+  '/(vendor)/order-detail',
+  '/(vendor)/orders',
+  '/(vendor)/pack-order',
+  '/(vendor)/payout-detail',
+  '/(vendor)/procurement',
+  '/(vendor)/profile',
+  '/(vendor)/promotions',
+  '/(vendor)/ready-pickup',
+  '/(vendor)/recommended-skus',
+  '/(vendor)/returns',
+  '/(vendor)/reviews',
+  '/(vendor)/security',
+  '/(vendor)/support',
+  '/(vendor)/tax-documents',
+  '/(vendor)/team',
+] as const;
+type VendorRoute = typeof VENDOR_ROUTES[number];
+
+function isVendorRoute(value: unknown): value is VendorRoute {
+  return typeof value === 'string' && (VENDOR_ROUTES as readonly string[]).includes(value);
+}
 
 export interface VendorNotification {
   id: string;
-  category: 'ORDERS' | 'INVENTORY' | 'PAYOUTS' | 'COMPLIANCE' | 'SYSTEM';
-  priority: 'URGENT' | 'HIGH' | 'INFO';
+  category: Category;
   title: string;
-  summary: string;
-  fullMessage: string;
-  createdAt: string;
-  timestampMs: number;
+  body: string;
+  /** Epoch milliseconds. 0 when the backend sent no usable time. */
+  createdAt: number;
   read: boolean;
-  actionRoute?: string;
-  actionText?: string;
-  targetRefId?: string;
-  sourceChannel: 'PUSH' | 'SMS' | 'EMAIL' | 'SYSTEM';
+  orderId?: string;
+  action?: { route: VendorRoute; params?: Record<string, string>; label: string };
 }
 
-const INITIAL_NOTIFICATIONS: VendorNotification[] = [
-  {
-    id: 'n-1',
-    category: 'ORDERS',
-    priority: 'URGENT',
-    title: 'New Order Offer Received (#GV-9912)',
-    summary: '3 items • Payout ₹1,054.24 • Benz Circle, Vijayawada',
-    fullMessage: 'Instant customer order offer received from Priya S. in Benz Circle. Prep SLA is 3 minutes packing time. Net payout after platform fee is ₹1,054.24.',
-    createdAt: '12m ago',
-    timestampMs: Date.now() - 12 * 60 * 1000,
-    read: false,
-    actionRoute: '/(vendor)/home',
-    actionText: 'Inspect Order Offer →',
-    targetRefId: '#GV-9912',
-    sourceChannel: 'PUSH',
-  },
-  {
-    id: 'n-2',
-    category: 'INVENTORY',
-    priority: 'HIGH',
-    title: 'Low Stock Alert: Cetaphil Gentle Cleanser',
-    summary: 'Only 3 units remaining in dark store inventory shelf',
-    fullMessage: 'Cetaphil Gentle Cleanser (125 ml) stock level reached safety threshold. Restock recommended to prevent out-of-stock order rejections.',
-    createdAt: '45m ago',
-    timestampMs: Date.now() - 45 * 60 * 1000,
-    read: false,
-    actionRoute: '/(vendor)/catalog',
-    actionText: 'Restock Inventory →',
-    targetRefId: 'SKU-CET-125',
-    sourceChannel: 'SYSTEM',
-  },
-  {
-    id: 'n-3',
-    category: 'PAYOUTS',
-    priority: 'INFO',
-    title: 'Weekly Payout Settled (₹35,570.00)',
-    summary: 'IMPS deposit settled to HDFC Bank ••••4589',
-    fullMessage: 'Net settlement of ₹35,570.00 for Week 40 orders was transferred to HDFC Bank ••••4589 under UTR reference code UTR-4021-8856-3321.',
-    createdAt: '2h ago',
-    timestampMs: Date.now() - 2 * 60 * 60 * 1000,
-    read: false,
-    actionRoute: '/(vendor)/payout-detail',
-    actionText: 'Download UTR Receipt →',
-    targetRefId: 'UTR-4021-8856-3321',
-    sourceChannel: 'SMS',
-  },
-  {
-    id: 'n-4',
-    category: 'COMPLIANCE',
-    priority: 'HIGH',
-    title: 'FSSAI License Expires in 28 Days',
-    summary: 'Renewal certificate upload required before Nov 5, 2026',
-    fullMessage: 'Your registered FSSAI Cosmetic Retail License 1152400••••891 will expire in 28 days. Upload the renewed license in your KYC dossier to maintain active merchant status.',
-    createdAt: '5h ago',
-    timestampMs: Date.now() - 5 * 60 * 60 * 1000,
-    read: false,
-    actionRoute: '/(vendor)/profile',
-    actionText: 'Upload KYC License →',
-    targetRefId: '11524009900891',
-    sourceChannel: 'EMAIL',
-  },
-  {
-    id: 'n-5',
-    category: 'ORDERS',
-    priority: 'INFO',
-    title: 'Customer Approved Item Substitution',
-    summary: 'Priya S. accepted Maybelline Fit Me Shade 128 substitute',
-    fullMessage: 'Customer Priya S. approved your proposed shade substitution for order #GV-9912 via the customer app chat channel. Proceed with order packing.',
-    createdAt: 'Yesterday',
-    timestampMs: Date.now() - 24 * 60 * 60 * 1000,
-    read: true,
-    actionRoute: '/(vendor)/order-detail',
-    actionText: 'View Substitution →',
-    targetRefId: '#GV-9912',
-    sourceChannel: 'PUSH',
-  },
-  {
-    id: 'n-6',
-    category: 'SYSTEM',
-    priority: 'INFO',
-    title: 'GlowVAI Platform Security Update',
-    summary: '256-bit AES encryption upgrade deployed to vendor portal',
-    fullMessage: 'Central security patch applied. Bank details, tax numbers, and merchant identity documents are now encrypted with enhanced key rotation.',
-    createdAt: '3 days ago',
-    timestampMs: Date.now() - 3 * 24 * 60 * 60 * 1000,
-    read: true,
-    actionRoute: '/(vendor)/profile',
-    actionText: 'Security Log →',
-    targetRefId: 'SEC-2026-PATCH',
-    sourceChannel: 'SYSTEM',
-  },
-];
+const CATEGORY_META: Record<Category, { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
+  ORDERS: { label: 'Orders', icon: 'bag-handle-outline' },
+  INVENTORY: { label: 'Inventory', icon: 'cube-outline' },
+  PAYOUTS: { label: 'Payouts', icon: 'wallet-outline' },
+  COMPLIANCE: { label: 'Compliance', icon: 'document-text-outline' },
+  SYSTEM: { label: 'System', icon: 'information-circle-outline' },
+};
+
+/** The backend stores a `type` per alert. The category is derived from it. */
+const CATEGORY_BY_TYPE: Record<string, Category> = {
+  NEW_ORDER: 'ORDERS',
+  ORDER_CANCELLED: 'ORDERS',
+  PAYOUT: 'PAYOUTS',
+  LOW_STOCK: 'INVENTORY',
+  INVENTORY: 'INVENTORY',
+  COMPLIANCE: 'COMPLIANCE',
+  KYC: 'COMPLIANCE',
+};
+
+// Dev-only sample alerts. They are never shown in a production build.
+const SAMPLE_NOTIFICATIONS: VendorNotification[] = __DEV__
+  ? [
+      {
+        id: 'sample-1',
+        category: 'ORDERS',
+        title: 'Sample: new order offer',
+        body: 'Sample alert text. Live order offers appear here when the backend sends them.',
+        createdAt: Date.now() - 12 * 60 * 1000,
+        read: false,
+        orderId: 'SAMPLE-0001',
+      },
+      {
+        id: 'sample-2',
+        category: 'INVENTORY',
+        title: 'Sample: low stock warning',
+        body: 'Sample alert text. Stock warnings appear here when an item runs low.',
+        createdAt: Date.now() - 45 * 60 * 1000,
+        read: false,
+      },
+      {
+        id: 'sample-3',
+        category: 'PAYOUTS',
+        title: 'Sample: payout settled',
+        body: 'Sample alert text. Payout updates appear here when a settlement is made.',
+        createdAt: Date.now() - 2 * 60 * 60 * 1000,
+        read: true,
+      },
+      {
+        id: 'sample-4',
+        category: 'SYSTEM',
+        title: 'Sample: platform update',
+        body: 'Sample alert text. Platform notices appear here.',
+        createdAt: Date.now() - 24 * 60 * 60 * 1000,
+        read: true,
+      },
+    ]
+  : [];
+
+/** Accepts a plain array, or an object with a list field. Anything else is an empty list. */
+function extractList(res: any): any[] {
+  if (Array.isArray(res)) return res;
+  for (const key of ['notifications', 'items', 'data']) {
+    if (Array.isArray(res?.[key])) return res[key];
+  }
+  return [];
+}
+
+/** Accepts epoch ms, numeric strings, ISO strings and Firestore-style { seconds }. */
+function toMs(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const asNumber = Number(value);
+    if (Number.isFinite(asNumber)) return asNumber;
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  if (value && typeof value === 'object' && typeof (value as any).seconds === 'number') {
+    return (value as any).seconds * 1000;
+  }
+  return 0;
+}
+
+/** Maps one raw backend record to the screen's shape. Returns null when it has no id. */
+function normalize(raw: any): VendorNotification | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = raw.id ?? raw.notificationId;
+  if (id === undefined || id === null || id === '') return null;
+
+  const type = typeof raw.type === 'string' ? raw.type : '';
+  const category: Category = (CATEGORIES as string[]).includes(raw.category)
+    ? raw.category
+    : CATEGORY_BY_TYPE[type] ?? 'SYSTEM';
+  const orderId = typeof raw.orderId === 'string' && raw.orderId ? raw.orderId : undefined;
+
+  // A route the backend sends is used only if it is a real vendor screen. Otherwise no action is shown.
+  // With no route from the backend, the action comes from the category.
+  let action: VendorNotification['action'];
+  if (raw.actionRoute !== undefined && raw.actionRoute !== null) {
+    if (isVendorRoute(raw.actionRoute)) {
+      action = { route: raw.actionRoute, label: typeof raw.actionText === 'string' && raw.actionText ? raw.actionText : 'Open' };
+    }
+  } else if (category === 'ORDERS' && orderId) {
+    action = { route: '/(vendor)/order-detail', params: { orderId }, label: 'Open order' };
+  } else if (category === 'PAYOUTS') {
+    action = { route: '/(vendor)/payout-detail', label: 'View payout' };
+  } else if (category === 'INVENTORY') {
+    action = { route: '/(vendor)/catalog', label: 'Open catalog' };
+  } else if (category === 'COMPLIANCE') {
+    action = { route: '/(vendor)/compliance', label: 'Open compliance' };
+  }
+
+  return {
+    id: String(id),
+    category,
+    title: String(raw.title || 'Alert'),
+    body: String(raw.body ?? raw.summary ?? raw.message ?? ''),
+    createdAt: toMs(raw.createdAt ?? raw.timestampMs),
+    read: raw.read === true,
+    orderId,
+    action,
+  };
+}
+
+/** "5m ago", "3h ago", "2d ago", then a date. Computed from the timestamp each render. */
+function formatRelative(ms: number, now: number): string {
+  if (!ms) return 'Time unknown';
+  const minutes = Math.floor(Math.max(0, now - ms) / 60000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Date(ms).toLocaleDateString([], { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
+function formatAbsolute(ms: number): string {
+  if (!ms) return '';
+  return new Date(ms).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
 
 function NotificationsScreen() {
   const router = useRouter();
+  const { width } = useWindowDimensions();
+  const isExpanded = width >= 1024;
 
-  // Screen State
-  const [notifList, setNotifList] = useState<VendorNotification[]>(INITIAL_NOTIFICATIONS);
-  const [activeCategory, setActiveCategory] = useState<'ALL' | 'ORDERS' | 'INVENTORY' | 'PAYOUTS' | 'COMPLIANCE' | 'SYSTEM'>('ALL');
-  const [selectedNotif, setSelectedNotif] = useState<VendorNotification | null>(INITIAL_NOTIFICATIONS[0]);
-  const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
+  // The signed-in vendor. Same pattern as home.tsx and orders.tsx.
+  const vendorSession = useVendorSession();
+  const vendorId = vendorSession.vendorId || '';
 
-  // Preference Toggles State
-  const [prefPush, setPrefPush] = useState<boolean>(true);
-  const [prefSms, setPrefSms] = useState<boolean>(true);
-  const [prefEmail, setPrefEmail] = useState<boolean>(true);
-  const [prefWhatsapp, setPrefWhatsapp] = useState<boolean>(true);
-  const [prefOrderOffers, setPrefOrderOffers] = useState<boolean>(true);
-  const [prefPayouts, setPrefPayouts] = useState<boolean>(true);
-  const [prefInventory, setPrefInventory] = useState<boolean>(true);
+  // Live data
+  const [items, setItems] = useState<VendorNotification[]>([]);
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [loadError, setLoadError] = useState('');
+  const [usingSample, setUsingSample] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // Dev Edge States
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [isOffline, setIsOffline] = useState<boolean>(false);
-  const [isPermissionDenied, setIsPermissionDenied] = useState<boolean>(false);
-  const [showExpiredLinkModal, setShowExpiredLinkModal] = useState<boolean>(false);
-  const [forceEmptyState, setForceEmptyState] = useState<boolean>(false);
+  // Screen state
+  const [activeCategory, setActiveCategory] = useState<'ALL' | Category>('ALL');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showExpiredLinkModal, setShowExpiredLinkModal] = useState(false);
+
+  // Dev-only edge-state toggles. Each one changes what is on screen.
+  const [devLoading, setDevLoading] = useState(false);
+  const [devEmpty, setDevEmpty] = useState(false);
+  const [devOffline, setDevOffline] = useState(false);
+  const [devPermissionDenied, setDevPermissionDenied] = useState(false);
+
+  // Dev-only preference switches. They are never saved.
+  const [prefPush, setPrefPush] = useState(true);
+  const [prefSms, setPrefSms] = useState(true);
+  const [prefEmail, setPrefEmail] = useState(true);
+  const [prefWhatsapp, setPrefWhatsapp] = useState(true);
+
+  const itemsRef = useRef<VendorNotification[]>([]);
+  const requestRef = useRef(0);
+
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
@@ -184,815 +270,776 @@ function NotificationsScreen() {
     }
   }, []);
 
-  const unreadCount = useMemo(() => {
-    return notifList.filter((n) => !n.read).length;
-  }, [notifList]);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
-  const filteredNotifs = useMemo(() => {
-    if (forceEmptyState) return [];
-    return notifList.filter((n) => {
-      if (activeCategory === 'ALL') return true;
-      return n.category === activeCategory;
-    });
-  }, [notifList, activeCategory, forceEmptyState]);
+  // Fetch once the session has loaded, and again if the vendor changes.
+  useEffect(() => {
+    if (!vendorSession.loaded) return;
+    if (!vendorId) {
+      setItems([]);
+      setUsingSample(false);
+      setStatus('idle');
+      return;
+    }
+    setStatus('loading');
+    loadNotifications(vendorId);
+  }, [vendorSession.loaded, vendorId]);
+
+  const loadNotifications = async (id: string) => {
+    const reqId = ++requestRef.current;
+    setLoadError('');
+    try {
+      const res = await notificationsApi.getAll(id);
+      if (reqId !== requestRef.current) return;
+      const list = extractList(res)
+        .map(normalize)
+        .filter((n): n is VendorNotification => n !== null)
+        .sort((a, b) => b.createdAt - a.createdAt);
+
+      if (list.length === 0 && __DEV__) {
+        setItems(__DEV__ ? SAMPLE_NOTIFICATIONS : []);
+        setUsingSample(true);
+      } else {
+        setItems(list);
+        setUsingSample(false);
+      }
+      setStatus('ready');
+    } catch (err: any) {
+      if (reqId !== requestRef.current) return;
+      setLoadError(err?.message || 'We could not reach the server.');
+      if (__DEV__ && itemsRef.current.length === 0) {
+        setItems(__DEV__ ? SAMPLE_NOTIFICATIONS : []);
+        setUsingSample(true);
+      }
+      setStatus('error');
+    }
+  };
 
   const onRefresh = async () => {
+    if (!vendorId) return;
     setRefreshing(true);
-    soundService.playSuccessDing();
-    setTimeout(() => setRefreshing(false), 800);
+    await loadNotifications(vendorId);
+    setRefreshing(false);
   };
 
-  const handleMarkAllRead = () => {
-    soundService.playSuccessDing();
-    setNotifList((prev) => prev.map((n) => ({ ...n, read: true })));
-    Alert.alert('Marked as Read', 'All notifications have been marked as read.');
+  const retry = async () => {
+    if (!vendorId) return;
+    setStatus('loading');
+    await loadNotifications(vendorId);
   };
 
-  const handleSelectNotif = (notif: VendorNotification) => {
-    soundService.playSuccessDing();
-    setSelectedNotif(notif);
-    if (!notif.read) {
-      setNotifList((prev) => prev.map((n) => (n.id === notif.id ? { ...n, read: true } : n)));
+  const now = Date.now();
+  const unreadCount = useMemo(() => items.filter((n) => !n.read).length, [items]);
+  const visibleItems = useMemo(
+    () => items.filter((n) => activeCategory === 'ALL' || n.category === activeCategory),
+    [items, activeCategory]
+  );
+  const listItems = devEmpty ? [] : visibleItems;
+  const selectedNotif = items.find((n) => n.id === selectedId) || null;
+
+  const noVendor = vendorSession.loaded && !vendorId;
+  const showSpinner = !noVendor && (devLoading || ((status === 'idle' || status === 'loading') && items.length === 0));
+  const showErrorPanel = !noVendor && !devLoading && status === 'error' && items.length === 0;
+  const showStaleBanner = !noVendor && status === 'error' && items.length > 0 && !usingSample;
+
+  const subtitle = noVendor
+    ? 'Sign in to see your alerts'
+    : showSpinner
+    ? 'Loading alerts'
+    : showErrorPanel
+    ? 'Alerts unavailable'
+    : `${unreadCount} unread • Merchant alerts`;
+
+  const showToast = (message: string) => setToast(message);
+
+  /** Marks one alert read. The change shows at once and is undone if the server call fails. */
+  const markOneRead = async (item: VendorNotification) => {
+    if (item.read) return;
+    setItems((prev) => prev.map((n) => (n.id === item.id ? { ...n, read: true } : n)));
+    if (usingSample) return;
+    try {
+      await notificationsApi.markRead(item.id);
+    } catch (_) {
+      setItems((prev) => prev.map((n) => (n.id === item.id ? { ...n, read: false } : n)));
+      showToast('Could not mark this alert as read. Try again.');
     }
   };
 
-  const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case 'ORDERS':
-        return '🛍️';
-      case 'INVENTORY':
-        return '📦';
-      case 'PAYOUTS':
-        return '💰';
-      case 'COMPLIANCE':
-        return '📜';
-      case 'SYSTEM':
-        return 'ℹ️';
-      default:
-        return '🔔';
+  const handleSelect = (item: VendorNotification) => {
+    setSelectedId(item.id);
+    markOneRead(item);
+  };
+
+  /** Marks every unread alert read on the server. Alerts that fail are put back as unread. */
+  const handleMarkAllRead = async () => {
+    const unreadIds = items.filter((n) => !n.read).map((n) => n.id);
+    if (unreadIds.length === 0) return;
+    setItems((prev) => prev.map((n) => ({ ...n, read: true })));
+    if (usingSample) return;
+    const failedIds = (
+      await Promise.all(
+        unreadIds.map((id) => notificationsApi.markRead(id).then(() => null, () => id))
+      )
+    ).filter((id): id is string => id !== null);
+    if (failedIds.length > 0) {
+      setItems((prev) => prev.map((n) => (failedIds.includes(n.id) ? { ...n, read: false } : n)));
+      showToast(`${failedIds.length} ${failedIds.length === 1 ? 'alert' : 'alerts'} could not be marked as read.`);
     }
   };
+
+  const openAction = (action: NonNullable<VendorNotification['action']>) => {
+    if (action.params) {
+      router.push({ pathname: action.route, params: action.params } as any);
+    } else {
+      router.push(action.route as any);
+    }
+  };
+
+  const closeSettings = () => setShowSettingsModal(false);
+
+  // ── Pieces ─────────────────────────────────────────────────────────────────
+
+  const renderDetail = (notif: VendorNotification, showBack: boolean) => {
+    const meta = CATEGORY_META[notif.category];
+    return (
+      <ScrollView style={s.detailScroll} contentContainerStyle={s.drawerContent}>
+        {showBack && (
+          <Pressable
+            onPress={() => setSelectedId(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Back to alerts"
+            style={({ pressed }) => [s.backRow, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="chevron-back" size={20} color={Colors.primary} />
+            <Text style={s.backRowText}>Back to alerts</Text>
+          </Pressable>
+        )}
+
+        <View style={s.drawerHeader}>
+          <View style={s.drawerIconBox}>
+            <Ionicons name={meta.icon} size={22} color={Colors.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={s.drawerCategoryText}>{meta.label.toUpperCase()} ALERT</Text>
+            <Text style={s.drawerTitleText}>{notif.title}</Text>
+            <Text style={s.drawerTimeText}>
+              {formatRelative(notif.createdAt, now)}
+              {notif.createdAt ? ` • ${formatAbsolute(notif.createdAt)}` : ''}
+            </Text>
+          </View>
+        </View>
+
+        <View style={s.messageBox}>
+          <Text style={s.messageHeading}>Message</Text>
+          <Text style={s.messageBodyText}>{notif.body || 'No details were included with this alert.'}</Text>
+        </View>
+
+        {!!notif.orderId && (
+          <View style={s.refBox}>
+            <Text style={s.refLabel}>ORDER REFERENCE</Text>
+            <Text style={s.refCode}>{notif.orderId}</Text>
+          </View>
+        )}
+
+        {notif.action && (
+          <Pressable
+            onPress={() => openAction(notif.action!)}
+            accessibilityRole="button"
+            accessibilityLabel={notif.action.label}
+            style={({ pressed }) => [s.actionRouteBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Text style={s.actionRouteBtnText}>{notif.action.label}</Text>
+          </Pressable>
+        )}
+      </ScrollView>
+    );
+  };
+
+  const renderListBody = () => {
+    if (noVendor) {
+      return (
+        <View style={s.stateWrap}>
+          <Ionicons name="lock-closed-outline" size={32} color={Colors.textSubtle} />
+          <Text style={s.stateTitle}>Sign in to see your alerts</Text>
+          <Text style={s.stateSub}>We could not find your vendor session on this device. Sign in again to load your alerts.</Text>
+        </View>
+      );
+    }
+
+    if (showSpinner) {
+      return (
+        <View style={s.stateWrap}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+          <Text style={s.stateSub}>Fetching merchant alerts...</Text>
+        </View>
+      );
+    }
+
+    if (showErrorPanel) {
+      return (
+        <View style={s.stateWrap}>
+          <Ionicons name="cloud-offline-outline" size={32} color={Colors.danger} />
+          <Text style={s.stateTitle}>We could not load your alerts</Text>
+          <Text style={s.stateSub}>{loadError || 'Check your connection and try again.'}</Text>
+          <Pressable
+            onPress={retry}
+            accessibilityRole="button"
+            accessibilityLabel="Retry loading alerts"
+            style={({ pressed }) => [s.primaryBtn, pressed && { opacity: 0.85 }]}
+          >
+            <Text style={s.primaryBtnText}>Retry</Text>
+          </Pressable>
+        </View>
+      );
+    }
+
+    if (listItems.length === 0) {
+      const filtered = activeCategory !== 'ALL' && items.length > 0 && !devEmpty;
+      return (
+        <View style={s.stateWrap}>
+          <Ionicons name="notifications-outline" size={32} color={Colors.textSubtle} />
+          <Text style={s.stateTitle}>{filtered ? `No ${CATEGORY_META[activeCategory as Category].label.toLowerCase()} alerts` : 'No alerts yet'}</Text>
+          <Text style={s.stateSub}>
+            {filtered
+              ? 'Nothing in this category yet.'
+              : 'New order offers, stock warnings and payout updates will show up here.'}
+          </Text>
+        </View>
+      );
+    }
+
+    return listItems.map((item) => {
+      const meta = CATEGORY_META[item.category];
+      const isSelected = selectedId === item.id;
+      return (
+        <Pressable
+          key={item.id}
+          onPress={() => handleSelect(item)}
+          accessibilityRole="button"
+          accessibilityLabel={`${item.read ? '' : 'Unread. '}${item.title}`}
+          accessibilityState={{ selected: isSelected }}
+          style={({ pressed }) => [
+            s.notifCard,
+            !item.read && s.notifCardUnread,
+            isSelected && s.notifCardSelected,
+            pressed && { opacity: 0.85 },
+          ]}
+        >
+          <View style={s.iconCircle}>
+            <Ionicons name={meta.icon} size={18} color={Colors.textSecondary} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <View style={s.notifTopLine}>
+              <Text style={[s.notifTitle, !item.read && s.notifTitleUnread]} numberOfLines={2}>
+                {item.title}
+              </Text>
+              {!item.read && <View style={s.unreadDot} />}
+            </View>
+            {!!item.body && (
+              <Text style={s.notifSummary} numberOfLines={2}>
+                {item.body}
+              </Text>
+            )}
+            <Text style={s.notifMeta}>
+              {meta.label} • {formatRelative(item.createdAt, now)}
+            </Text>
+          </View>
+        </Pressable>
+      );
+    });
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      {/* ── Top Header ────────────────────────────────────────────────────────── */}
+    <SafeAreaView style={s.safeArea}>
       <AppHeader
         title="Notifications"
-        subtitle={`${unreadCount} Unread • Merchant Alerts & Log`}
+        subtitle={subtitle}
         showBack={true}
         rightActions={
-          <TouchableOpacity
-            style={[styles.headerActionBtn, { backgroundColor: '#EFF6FF', borderColor: COLOR_ROYAL_BLUE }]}
-            onPress={() => {
-              soundService.playSuccessDing();
-              setShowSettingsModal(true);
-            }}
+          <Pressable
+            style={({ pressed }) => [s.headerActionBtn, pressed && { opacity: 0.85 }]}
+            onPress={() => setShowSettingsModal(true)}
+            accessibilityRole="button"
+            accessibilityLabel="Notification preferences"
           >
-            <Text style={[styles.headerActionBtnText, { color: COLOR_ROYAL_BLUE }]}>Preferences</Text>
-          </TouchableOpacity>
+            <Text style={s.headerActionBtnText}>Preferences</Text>
+          </Pressable>
         }
       />
 
-      {/* Edge State Banners */}
-      {isOffline && (
-        <View style={styles.offlineBanner}>
-          <Text style={styles.offlineBannerText}>
-            ⚡ Offline Mode — Displaying cached notifications. Online sync paused.
-          </Text>
-        </View>
-      )}
-
-      {isPermissionDenied && (
-        <View style={styles.deniedBanner}>
-          <Text style={styles.deniedBannerText}>
-            🔒 Push Notification Permission Denied — Enable browser/device notifications to receive instant order offers.
-          </Text>
-        </View>
-      )}
-
-      <View style={styles.mainContainer}>
-        {/* DEV TESTING STRIP */}
+      <View style={s.mainContainer}>
+        {/* DEV TESTING STRIP: each toggle changes what is on screen */}
         {__DEV__ && (
-        <View style={styles.devStrip}>
-          <Text style={styles.devTitle}>TEST NOTIFICATION EDGE STATES:</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.devPillRow}>
-            <TouchableOpacity
-              style={[styles.devPill, isLoading && styles.devPillActive]}
-              onPress={() => setIsLoading(!isLoading)}
-            >
-              <Text style={styles.devPillText}>Loading Skeletons</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, forceEmptyState && styles.devPillActive]}
-              onPress={() => setForceEmptyState(!forceEmptyState)}
-            >
-              <Text style={styles.devPillText}>No Notifications</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, isOffline && styles.devPillActive]}
-              onPress={() => setIsOffline(!isOffline)}
-            >
-              <Text style={styles.devPillText}>Offline</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.devPill, isPermissionDenied && styles.devPillActive]}
-              onPress={() => setIsPermissionDenied(!isPermissionDenied)}
-            >
-              <Text style={styles.devPillText}>Permission Denied</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.devPill}
-              onPress={() => setShowExpiredLinkModal(true)}
-            >
-              <Text style={styles.devPillText}>Expired Deep Link</Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
+          <View style={s.devStrip}>
+            <Text style={s.devTitle}>DEV ONLY: NOTIFICATION EDGE STATES</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.devPillRow}>
+              <Pressable style={[s.devPill, devLoading && s.devPillActive]} onPress={() => setDevLoading(!devLoading)}>
+                <Text style={[s.devPillText, devLoading && s.devPillTextActive]}>Loading</Text>
+              </Pressable>
+              <Pressable style={[s.devPill, devEmpty && s.devPillActive]} onPress={() => setDevEmpty(!devEmpty)}>
+                <Text style={[s.devPillText, devEmpty && s.devPillTextActive]}>No alerts</Text>
+              </Pressable>
+              <Pressable style={[s.devPill, devOffline && s.devPillActive]} onPress={() => setDevOffline(!devOffline)}>
+                <Text style={[s.devPillText, devOffline && s.devPillTextActive]}>Offline banner</Text>
+              </Pressable>
+              <Pressable style={[s.devPill, devPermissionDenied && s.devPillActive]} onPress={() => setDevPermissionDenied(!devPermissionDenied)}>
+                <Text style={[s.devPillText, devPermissionDenied && s.devPillTextActive]}>Permission banner</Text>
+              </Pressable>
+              <Pressable style={s.devPill} onPress={() => setShowExpiredLinkModal(true)}>
+                <Text style={s.devPillText}>Expired link</Text>
+              </Pressable>
+            </ScrollView>
+          </View>
         )}
 
-        {/* ── CATEGORY FILTER TABS BAR ─────────────────────────────────────── */}
-        <View style={styles.categoryBar}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryBarContent}>
-            {(['ALL', 'ORDERS', 'INVENTORY', 'PAYOUTS', 'COMPLIANCE', 'SYSTEM'] as const).map((cat) => (
-              <TouchableOpacity
-                key={cat}
-                style={[styles.categoryTab, activeCategory === cat && styles.categoryTabActive]}
-                onPress={() => setActiveCategory(cat)}
-              >
-                <Text style={[styles.categoryTabText, activeCategory === cat && styles.categoryTabTextActive]}>
-                  {cat === 'ALL' ? '🔔 All' : `${getCategoryIcon(cat)} ${cat.charAt(0) + cat.slice(1).toLowerCase()}`}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+        {__DEV__ && devOffline && (
+          <View style={s.offlineBanner}>
+            <Ionicons name="cloud-offline-outline" size={16} color={Colors.warning} />
+            <Text style={s.offlineBannerText}>Offline (dev preview). Showing the last loaded alerts.</Text>
+          </View>
+        )}
+
+        {__DEV__ && devPermissionDenied && (
+          <View style={s.deniedBanner}>
+            <Ionicons name="lock-closed-outline" size={16} color={Colors.danger} />
+            <Text style={s.deniedBannerText}>Push permission denied (dev preview). Enable device notifications to get order offers.</Text>
+          </View>
+        )}
+
+        {/* Category filter and mark-all */}
+        <View style={s.toolbarRow}>
+          <View style={s.categoryBar}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.categoryBarContent}>
+              {(['ALL', ...CATEGORIES] as const).map((cat) => {
+                const active = activeCategory === cat;
+                return (
+                  <Pressable
+                    key={cat}
+                    onPress={() => setActiveCategory(cat)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: active }}
+                    style={({ pressed }) => [s.categoryTab, active && s.categoryTabActive, pressed && { opacity: 0.85 }]}
+                  >
+                    <Text style={[s.categoryTabText, active && s.categoryTabTextActive]}>
+                      {cat === 'ALL' ? 'All' : CATEGORY_META[cat].label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </View>
+          {unreadCount > 0 && !showSpinner && !noVendor && (
+            <Pressable
+              onPress={handleMarkAllRead}
+              accessibilityRole="button"
+              accessibilityLabel="Mark all alerts as read"
+              style={({ pressed }) => [s.markAllBtn, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={s.markAllBtnText}>Mark all read</Text>
+            </Pressable>
+          )}
         </View>
 
-        {/* ── TWO-COLUMN LIST / DETAIL LAYOUT ───────────────────────────────── */}
-        <View style={styles.twoColumnGrid}>
-          {/* Left Column: Notifications List */}
-          <ScrollView
-            style={styles.leftList}
-            contentContainerStyle={styles.leftListContent}
-            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[COLOR_ROYAL_BLUE]} />}
-          >
-            {isLoading ? (
-              <View style={styles.loadingWrap}>
-                <ActivityIndicator size="large" color={COLOR_ROYAL_BLUE} />
-                <Text style={styles.loadingText}>Fetching merchant alerts...</Text>
-              </View>
-            ) : filteredNotifs.length === 0 ? (
-              <View style={styles.emptyWrap}>
-                <Ionicons name="sparkles-outline" size={34} style={{ color: '#475569' }} />
-                <Text style={styles.emptyTitle}>All caught up!</Text>
-                <Text style={styles.emptySub}>No alerts match the selected category filter.</Text>
-                {forceEmptyState && (
-                  <TouchableOpacity style={styles.resetBtn} onPress={() => setForceEmptyState(false)}>
-                    <Text style={styles.resetBtnText}>Restore Alerts</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            ) : (
-              filteredNotifs.map((item) => {
-                const isSelected = selectedNotif?.id === item.id;
-                return (
-                  <TouchableOpacity
-                    key={item.id}
-                    style={[
-                      styles.notifCard,
-                      !item.read && styles.notifCardUnread,
-                      isSelected && styles.notifCardSelected,
-                    ]}
-                    onPress={() => handleSelectNotif(item)}
-                    activeOpacity={0.8}
-                  >
-                    <View style={styles.notifTopRow}>
-                      <View style={styles.iconCircle}>
-                        <Text style={{ fontFamily: 'PlusJakartaSans_400Regular', fontSize: 16 }}>{getCategoryIcon(item.category)}</Text>
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <Text style={[styles.notifTitle, !item.read && styles.notifTitleUnread]}>
-                            {item.title}
-                          </Text>
-                          <Text style={styles.notifTime}>{item.createdAt}</Text>
-                        </View>
-                        <Text style={styles.notifSummary} numberOfLines={2}>
-                          {item.summary}
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.notifFooterRow}>
-                      <View
-                        style={[
-                          styles.priorityPill,
-                          item.priority === 'URGENT'
-                            ? styles.priorityUrgent
-                            : item.priority === 'HIGH'
-                            ? styles.priorityHigh
-                            : styles.priorityInfo,
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.priorityPillText,
-                            item.priority === 'URGENT'
-                              ? styles.priorityTextUrgent
-                              : item.priority === 'HIGH'
-                              ? styles.priorityTextHigh
-                              : styles.priorityTextInfo,
-                          ]}
-                        >
-                          {item.priority}
-                        </Text>
-                      </View>
-
-                      {!item.read && <View style={styles.blueUnreadDot} />}
-                    </View>
-                  </TouchableOpacity>
-                );
-              })
-            )}
-          </ScrollView>
-
-          {/* Right Column: Inspection Detail Drawer (520px) */}
-          <View style={styles.rightDetailDrawer}>
-            {selectedNotif ? (
-              <ScrollView contentContainerStyle={styles.drawerContent}>
-                <View style={styles.drawerHeader}>
-                  <View style={styles.drawerIconBox}>
-                    <Text style={{ fontFamily: 'PlusJakartaSans_400Regular', fontSize: 24 }}>{getCategoryIcon(selectedNotif.category)}</Text>
-                  </View>
-
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.drawerCategoryText}>{selectedNotif.category} ALERT</Text>
-                    <Text style={styles.drawerTitleText}>{selectedNotif.title}</Text>
-                    <Text style={styles.drawerTimeText}>{selectedNotif.createdAt} • Channel: {selectedNotif.sourceChannel}</Text>
-                  </View>
-                </View>
-
-                <View style={styles.messageBox}>
-                  <Text style={styles.messageHeading}>Message Body</Text>
-                  <Text style={styles.messageBodyText}>{selectedNotif.fullMessage}</Text>
-                </View>
-
-                {selectedNotif.targetRefId && (
-                  <View style={styles.refBox}>
-                    <Text style={styles.refLabel}>REFERENCE IDENTIFIER</Text>
-                    <Text style={styles.refCode}>{selectedNotif.targetRefId}</Text>
-                  </View>
-                )}
-
-                {selectedNotif.actionRoute && (
-                  <TouchableOpacity
-                    style={styles.actionRouteBtn}
-                    onPress={() => {
-                      soundService.playSuccessDing();
-                      router.push(selectedNotif.actionRoute as any);
-                    }}
-                  >
-                    <Text style={styles.actionRouteBtnText}>{selectedNotif.actionText || 'Open Target Workspace →'}</Text>
-                  </TouchableOpacity>
-                )}
-
-                <View style={styles.privacyNoteBox}>
-                  <Text style={styles.privacyNoteText}>
-                    🔒 Privacy Protection Active: Customer personal phone numbers, full addresses, and raw bank credentials are masked in accordance with Indian IT Act rules.
-                  </Text>
-                </View>
-              </ScrollView>
-            ) : (
-              <View style={styles.noSelectionWrap}>
-                <Ionicons name="hand-left-outline" size={32} style={{ color: '#475569' }} />
-                <Text style={styles.noSelectionText}>Select any notification from the left list to inspect full details and action links.</Text>
-              </View>
-            )}
+        {showStaleBanner && (
+          <View style={s.bannerError} accessibilityRole="alert">
+            <Ionicons name="alert-circle-outline" size={18} color={Colors.danger} />
+            <View style={{ flex: 1 }}>
+              <Text style={s.bannerErrorTitle}>Showing the last loaded alerts</Text>
+              <Text style={s.bannerErrorText}>{loadError}</Text>
+            </View>
+            <Pressable onPress={retry} accessibilityRole="button" accessibilityLabel="Retry" style={s.bannerRetry}>
+              <Text style={s.bannerRetryText}>Retry</Text>
+            </Pressable>
           </View>
+        )}
+
+        {usingSample && __DEV__ && (
+          <View style={s.sampleBanner}>
+            <Ionicons name="flask-outline" size={16} color="#92400E" />
+            <Text style={s.sampleBannerText}>
+              {loadError ? `Could not load alerts (${loadError}). ` : ''}Sample data. These are not your alerts.
+            </Text>
+          </View>
+        )}
+
+        {/* List and detail: two columns on desktop, one column on phone */}
+        <View style={[s.bodyRow, isExpanded && s.bodyRowWide]}>
+          {!isExpanded && selectedNotif ? (
+            <View style={s.detailFull}>{renderDetail(selectedNotif, true)}</View>
+          ) : (
+            <ScrollView
+              style={s.leftList}
+              contentContainerStyle={s.leftListContent}
+              showsVerticalScrollIndicator={false}
+              refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} colors={[Colors.primary]} />}
+            >
+              {renderListBody()}
+            </ScrollView>
+          )}
+
+          {isExpanded && (
+            <View style={s.rightDetailDrawer}>
+              {selectedNotif ? (
+                renderDetail(selectedNotif, false)
+              ) : (
+                <View style={s.noSelectionWrap}>
+                  <Ionicons name="hand-left-outline" size={32} color={Colors.textSubtle} />
+                  <Text style={s.noSelectionText}>Select an alert on the left to see its details.</Text>
+                </View>
+              )}
+            </View>
+          )}
         </View>
       </View>
 
-      {/* ── NOTIFICATION PREFERENCES SETTINGS MODAL ───────────────────────── */}
-      <Modal visible={showSettingsModal} transparent animationType="slide">
-        <SafeAreaView style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Notification Channels & Preferences</Text>
-              <TouchableOpacity onPress={() => setShowSettingsModal(false)}>
-                <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-              </TouchableOpacity>
+      {toast && (
+        <View style={s.toast} accessibilityRole="alert">
+          <Ionicons name="alert-circle-outline" size={18} color="#FFFFFF" />
+          <Text style={s.toastText}>{toast}</Text>
+        </View>
+      )}
+
+      {/* PREFERENCES: production shows that they are not available. Switches are dev-only and not saved. */}
+      <Modal visible={showSettingsModal} transparent animationType="slide" onRequestClose={closeSettings}>
+        <View style={s.modalOverlay}>
+          <View style={s.modalSheet}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>Notification preferences</Text>
+              <Pressable onPress={closeSettings} accessibilityRole="button" accessibilityLabel="Close preferences" style={s.modalClose}>
+                <Ionicons name="close" size={20} color={Colors.textSecondary} />
+              </Pressable>
             </View>
 
-            <ScrollView style={{ maxHeight: 420 }} contentContainerStyle={{ gap: 14, paddingVertical: 10 }}>
-              <Text style={styles.prefSectionTitle}>DELIVERY CHANNELS</Text>
-
-              <View style={styles.prefSwitchRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.prefSwitchTitle}>Browser Push Notifications</Text>
-                  <Text style={styles.prefSwitchSub}>Real-time audio alerts for instant order offers</Text>
-                </View>
-                <Switch value={prefPush} onValueChange={setPrefPush} trackColor={{ false: '#CBD5E1', true: '#BFDBFE' }} thumbColor={prefPush ? COLOR_ROYAL_BLUE : '#94A3B8'} />
+            {__DEV__ ? (
+              <View style={{ gap: 6 }}>
+                <Text style={s.devNote}>Dev preview only. These switches are not saved.</Text>
+                {[
+                  { key: 'push', title: 'Browser push', sub: 'Instant order offers', value: prefPush, set: setPrefPush },
+                  { key: 'sms', title: 'SMS', sub: 'Payout and account updates', value: prefSms, set: setPrefSms },
+                  { key: 'email', title: 'Email', sub: 'Statements and invoices', value: prefEmail, set: setPrefEmail },
+                  { key: 'wa', title: 'WhatsApp', sub: 'Restock reminders', value: prefWhatsapp, set: setPrefWhatsapp },
+                ].map((p) => (
+                  <View key={p.key} style={s.prefSwitchRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.prefSwitchTitle}>{p.title}</Text>
+                      <Text style={s.prefSwitchSub}>{p.sub}</Text>
+                    </View>
+                    <Switch
+                      value={p.value}
+                      onValueChange={p.set}
+                      trackColor={{ false: '#CBD5E1', true: '#BFDBFE' }}
+                      thumbColor={p.value ? Colors.primary : '#94A3B8'}
+                    />
+                  </View>
+                ))}
               </View>
-
-              <View style={styles.prefSwitchRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.prefSwitchTitle}>SMS Alerts (+91 Mobile)</Text>
-                  <Text style={styles.prefSwitchSub}>Weekly bank settlement UTR updates</Text>
-                </View>
-                <Switch value={prefSms} onValueChange={setPrefSms} trackColor={{ false: '#CBD5E1', true: '#BFDBFE' }} thumbColor={prefSms ? COLOR_ROYAL_BLUE : '#94A3B8'} />
+            ) : (
+              <View style={s.unavailableBox}>
+                <Ionicons name="information-circle-outline" size={20} color={Colors.primary} />
+                <Text style={s.unavailableText}>Preferences are not available yet.</Text>
               </View>
+            )}
 
-              <View style={styles.prefSwitchRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.prefSwitchTitle}>Email Statements</Text>
-                  <Text style={styles.prefSwitchSub}>Monthly GST invoices & TCS/TDS reports</Text>
-                </View>
-                <Switch value={prefEmail} onValueChange={setPrefEmail} trackColor={{ false: '#CBD5E1', true: '#BFDBFE' }} thumbColor={prefEmail ? COLOR_ROYAL_BLUE : '#94A3B8'} />
-              </View>
-
-              <View style={styles.prefSwitchRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.prefSwitchTitle}>WhatsApp Business Notifications</Text>
-                  <Text style={styles.prefSwitchSub}>Urgent inventory restock reminders</Text>
-                </View>
-                <Switch value={prefWhatsapp} onValueChange={setPrefWhatsapp} trackColor={{ false: '#CBD5E1', true: '#BFDBFE' }} thumbColor={prefWhatsapp ? COLOR_ROYAL_BLUE : '#94A3B8'} />
-              </View>
-
-              <Text style={[styles.prefSectionTitle, { marginTop: 10 }]}>MANDATORY SECURITY ALERTS</Text>
-              <View style={styles.lockedAlertBox}>
-                <Text style={styles.lockedAlertText}>
-                  🔒 Account security alerts (Bank detail changes, 2FA OTPs, session logins) are mandatory and cannot be disabled.
-                </Text>
-              </View>
-
-              <TouchableOpacity
-                style={styles.modalPrimaryBtn}
-                onPress={() => {
-                  soundService.playSuccessDing();
-                  setShowSettingsModal(false);
-                  Alert.alert('Preferences Saved ✅', 'Your notification settings have been updated.');
-                }}
-              >
-                <Text style={styles.modalPrimaryBtnText}>Save Preferences</Text>
-              </TouchableOpacity>
-            </ScrollView>
-          </View>
-        </SafeAreaView>
-      </Modal>
-
-      {/* EXPIRED DEEP LINK ALERT MODAL */}
-      <Modal visible={showExpiredLinkModal} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalSheet, { padding: 20 }]}>
-            <Text style={[styles.modalTitle, { color: COLOR_DANGER }]}>⚠️ Target Workspace Link Expired</Text>
-            <Text style={{ fontFamily: 'PlusJakartaSans_400Regular', fontSize: 13, color: COLOR_SLATE, marginVertical: 12 }}>
-              The target order offer or document referenced in this notification is no longer active.
-            </Text>
-            <TouchableOpacity style={styles.modalPrimaryBtn} onPress={() => setShowExpiredLinkModal(false)}>
-              <Text style={styles.modalPrimaryBtnText}>Dismiss</Text>
-            </TouchableOpacity>
+            <Pressable onPress={closeSettings} accessibilityRole="button" style={({ pressed }) => [s.modalPrimaryBtn, pressed && { opacity: 0.85 }]}>
+              <Text style={s.modalPrimaryBtnText}>Close</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
+
+      {/* EXPIRED DEEP LINK: dev only */}
+      {__DEV__ && (
+        <Modal visible={showExpiredLinkModal} transparent animationType="fade" onRequestClose={() => setShowExpiredLinkModal(false)}>
+          <View style={s.modalOverlay}>
+            <View style={[s.modalSheet, { padding: 20 }]}>
+              <View style={s.expiredTitleRow}>
+                <Ionicons name="warning-outline" size={20} color={Colors.danger} />
+                <Text style={[s.modalTitle, { color: Colors.danger }]}>Target link expired</Text>
+              </View>
+              <Text style={s.expiredBody}>The item this alert refers to is no longer active. (Dev preview.)</Text>
+              <Pressable onPress={() => setShowExpiredLinkModal(false)} accessibilityRole="button" style={({ pressed }) => [s.modalPrimaryBtn, pressed && { opacity: 0.85 }]}>
+                <Text style={s.modalPrimaryBtnText}>Dismiss</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
+const s = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    gap: 12,
-  },
-  backBtn: {
-    padding: 6,
-  },
-  backBtnText: {
-    fontSize: 22,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  headerTitleWrap: {
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  unreadBadge: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  unreadBadgeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  headerSubTitle: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  headerActionBtn: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-  },
-  headerActionBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
+    backgroundColor: Colors.surface,
   },
 
+  headerActionBtn: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    borderRadius: BorderRadii.input,
+    borderWidth: 1,
+    borderColor: Colors.primaryBorder,
+    backgroundColor: Colors.primaryLight,
+  },
+  headerActionBtnText: {
+    fontSize: 13,
+    fontFamily: FontFamily.semibold,
+    color: Colors.primary,
+  },
+
+  // Banners (dev toggles and real errors)
   offlineBanner: {
-    backgroundColor: COLOR_AMBER,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.warningLight,
+    borderWidth: 1,
+    borderColor: Colors.warningBorder,
+    borderRadius: BorderRadii.input,
+    padding: 10,
   },
-  offlineBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-    textAlign: 'center',
-  },
+  offlineBannerText: { flex: 1, fontSize: 12, fontFamily: FontFamily.semibold, color: Colors.warning },
   deniedBanner: {
-    backgroundColor: '#FEF2F2',
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#FCA5A5',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.dangerLight,
+    borderWidth: 1,
+    borderColor: Colors.dangerBorder,
+    borderRadius: BorderRadii.input,
+    padding: 10,
   },
-  deniedBannerText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_DANGER,
-    textAlign: 'center',
+  deniedBannerText: { flex: 1, fontSize: 12, fontFamily: FontFamily.semibold, color: Colors.danger },
+  bannerError: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.dangerLight,
+    borderWidth: 1,
+    borderColor: Colors.dangerBorder,
+    borderRadius: BorderRadii.card,
+    padding: Spacing.md,
   },
+  bannerErrorTitle: { fontFamily: FontFamily.semibold, fontSize: 14, color: '#7F1D1D' },
+  bannerErrorText: { fontFamily: FontFamily.regular, fontSize: 12, lineHeight: 16, color: '#7F1D1D' },
+  bannerRetry: { minHeight: 44, minWidth: 44, paddingHorizontal: 10, justifyContent: 'center', alignItems: 'center' },
+  bannerRetryText: { fontFamily: FontFamily.bold, fontSize: 14, color: Colors.danger },
+  sampleBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF3C7',
+    borderRadius: BorderRadii.input,
+    padding: 10,
+  },
+  sampleBannerText: { flex: 1, fontSize: 12, fontFamily: FontFamily.semibold, color: '#92400E' },
 
   mainContainer: {
     flex: 1,
-    padding: 16,
+    padding: Spacing.lg,
     gap: 12,
   },
 
+  // Dev strip
   devStrip: {
-    backgroundColor: '#F1F5F9',
+    backgroundColor: Colors.border,
     padding: 8,
     borderRadius: 10,
   },
   devTitle: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
+    fontFamily: FontFamily.semibold,
+    color: Colors.textSubtle,
     marginBottom: 4,
   },
-  devPillRow: {
-    gap: 6,
-  },
+  devPillRow: { gap: 6 },
   devPill: {
-    backgroundColor: '#FFFFFF',
+    minHeight: 32,
+    justifyContent: 'center',
+    backgroundColor: Colors.background,
     paddingHorizontal: 10,
-    paddingVertical: 4,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#CBD5E1',
   },
-  devPillActive: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    borderColor: COLOR_ROYAL_BLUE,
-  },
-  devPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#334155',
-  },
+  devPillActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  devPillText: { fontSize: 12, fontFamily: FontFamily.semibold, color: '#334155' },
+  devPillTextActive: { color: '#FFFFFF' },
+  devNote: { fontFamily: FontFamily.regular, fontSize: 12, color: Colors.textSubtle, marginBottom: 6 },
 
+  // Category filter
+  toolbarRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   categoryBar: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
+    flex: 1,
+    minWidth: 0,
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadii.card,
     padding: 4,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: Colors.border,
   },
-  categoryBarContent: {
-    gap: 6,
-  },
+  categoryBarContent: { gap: 6, alignItems: 'center' },
   categoryTab: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  categoryTabActive: {
-    backgroundColor: '#EFF6FF',
+    borderRadius: BorderRadii.input,
     borderWidth: 1,
-    borderColor: COLOR_ROYAL_BLUE,
+    borderColor: 'transparent',
   },
-  categoryTabText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
+  categoryTabActive: { backgroundColor: Colors.primaryLight, borderColor: Colors.primary },
+  categoryTabText: { fontSize: 13, fontFamily: FontFamily.semibold, color: Colors.textSubtle },
+  categoryTabTextActive: { color: Colors.primary, fontFamily: FontFamily.bold },
+  markAllBtn: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
   },
-  categoryTabTextActive: {
-    color: COLOR_ROYAL_BLUE,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
+  markAllBtnText: { fontSize: 13, fontFamily: FontFamily.bold, color: Colors.primary },
 
-  twoColumnGrid: {
-    flex: 1,
-    flexDirection: 'row' as const,
-    gap: 16,
-  },
-  leftList: {
-    flex: 1,
-  },
-  leftListContent: {
-    gap: 10,
-  },
+  // Body layout
+  bodyRow: { flex: 1 },
+  bodyRowWide: { flexDirection: 'row', gap: 16, alignItems: 'stretch' },
+  leftList: { flex: 1 },
+  leftListContent: { gap: 10, paddingBottom: 24, flexGrow: 1 },
+  detailFull: { flex: 1 },
+  detailScroll: { flex: 1 },
 
+  // List cards
   notifCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 8,
-  },
-  notifCardUnread: {
-    borderLeftWidth: 4,
-    borderLeftColor: COLOR_ROYAL_BLUE,
-    backgroundColor: '#FAFCFF',
-  },
-  notifCardSelected: {
-    borderColor: COLOR_ROYAL_BLUE,
-    backgroundColor: '#EFF6FF',
-  },
-  notifTopRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
+    backgroundColor: Colors.background,
+    borderRadius: BorderRadii.card,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  notifCardUnread: {
+    borderLeftWidth: 4,
+    borderLeftColor: Colors.primary,
+    backgroundColor: '#FAFCFF',
+  },
+  notifCardSelected: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
   },
   iconCircle: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: Colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  notifTitle: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-    flex: 1,
-  },
-  notifTitleUnread: {
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  notifTime: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#94A3B8',
-  },
-  notifSummary: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-    lineHeight: 15,
-  },
-  notifFooterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 4,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  priorityPill: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  priorityUrgent: {
-    backgroundColor: '#FEF2F2',
-  },
-  priorityHigh: {
-    backgroundColor: '#FEF3C7',
-  },
-  priorityInfo: {
-    backgroundColor: '#EFF6FF',
-  },
-  priorityPillText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  priorityTextUrgent: {
-    color: COLOR_DANGER,
-  },
-  priorityTextHigh: {
-    color: '#92400E',
-  },
-  priorityTextInfo: {
-    color: COLOR_ROYAL_BLUE,
-  },
-  blueUnreadDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: COLOR_ROYAL_BLUE,
-  },
+  notifTopLine: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  notifTitle: { flex: 1, fontSize: 14, fontFamily: FontFamily.semibold, lineHeight: 20, color: Colors.textPrimary },
+  notifTitleUnread: { fontFamily: FontFamily.bold },
+  unreadDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.primary },
+  notifSummary: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle, marginTop: 2 },
+  notifMeta: { fontFamily: FontFamily.regular, fontSize: 12, lineHeight: 16, color: Colors.textSubtle, marginTop: 6 },
 
+  // Detail drawer (desktop) and detail view (phone)
   rightDetailDrawer: {
     width: 420,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: Colors.background,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: Colors.border,
     padding: 16,
   },
-  drawerContent: {
-    gap: 14,
-  },
+  drawerContent: { gap: 14, paddingBottom: 8 },
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 44, alignSelf: 'flex-start' },
+  backRowText: { fontSize: 15, fontFamily: FontFamily.semibold, color: Colors.primary },
   drawerHeader: {
     flexDirection: 'row',
     gap: 12,
     alignItems: 'flex-start',
     borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+    borderBottomColor: Colors.border,
     paddingBottom: 12,
   },
   drawerIconBox: {
     width: 44,
     height: 44,
     borderRadius: 12,
-    backgroundColor: '#EFF6FF',
+    backgroundColor: Colors.primaryLight,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  drawerCategoryText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: COLOR_ROYAL_BLUE,
-    letterSpacing: 0.5,
-  },
-  drawerTitleText: {
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-    marginTop: 2,
-  },
-  drawerTimeText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
+  drawerCategoryText: { fontSize: 12, fontFamily: FontFamily.semibold, color: Colors.primary, letterSpacing: 0.5 },
+  drawerTitleText: { fontSize: 16, fontFamily: FontFamily.bold, lineHeight: 22, color: Colors.textPrimary, marginTop: 2 },
+  drawerTimeText: { fontFamily: FontFamily.regular, fontSize: 12, lineHeight: 16, color: Colors.textSubtle, marginTop: 2 },
   messageBox: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: Colors.surface,
     padding: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: Colors.border,
   },
   messageHeading: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
+    fontFamily: FontFamily.semibold,
+    color: Colors.textSubtle,
     marginBottom: 4,
-    textTransform: 'uppercase' as const,
   },
-  messageBodyText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: '#0F172A',
-    lineHeight: 18,
-  },
-  refBox: {
-    backgroundColor: '#F1F5F9',
-    padding: 10,
-    borderRadius: 8,
-  },
-  refLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  refCode: {
-    fontSize: 12.5,
-    fontFamily: 'JetBrainsMono_500Medium',
-    fontWeight: '600',
-    color: '#0F172A',
-    
-    marginTop: 2,
-  },
+  messageBodyText: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 20, color: Colors.textPrimary },
+  refBox: { backgroundColor: Colors.border, padding: 10, borderRadius: 8 },
+  refLabel: { fontSize: 12, fontFamily: FontFamily.semibold, color: Colors.textSubtle },
+  refCode: { fontSize: 13, fontFamily: FontFamily.mono, color: Colors.textPrimary, marginTop: 2 },
   actionRouteBtn: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    paddingVertical: 10,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  actionRouteBtnText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  privacyNoteBox: {
-    backgroundColor: '#EFF6FF',
-    padding: 10,
-    borderRadius: 8,
-  },
-  privacyNoteText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: COLOR_ROYAL_BLUE,
-    lineHeight: 14,
-  },
-  noSelectionWrap: {
-    flex: 1,
+    minHeight: 48,
+    backgroundColor: Colors.primary,
+    borderRadius: BorderRadii.input,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 30,
+    paddingHorizontal: 16,
   },
-  noSelectionText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: '#64748B',
-    textAlign: 'center',
-  },
+  actionRouteBtnText: { fontSize: 15, fontFamily: FontFamily.semibold, color: '#FFFFFF' },
+  noSelectionWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 30, gap: 8 },
+  noSelectionText: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle, textAlign: 'center' },
 
-  loadingWrap: {
+  // States (loading, error, empty, sign-in)
+  stateWrap: { alignItems: 'center', paddingVertical: 40, paddingHorizontal: 16, gap: 8 },
+  stateTitle: { fontSize: 16, fontFamily: FontFamily.bold, color: Colors.textPrimary, textAlign: 'center' },
+  stateSub: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle, textAlign: 'center', maxWidth: 360 },
+  primaryBtn: {
+    minHeight: 48,
+    minWidth: 160,
+    paddingHorizontal: 16,
+    borderRadius: BorderRadii.input,
+    backgroundColor: Colors.primary,
     alignItems: 'center',
-    paddingVertical: 40,
-    gap: 10,
-  },
-  loadingText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: COLOR_SLATE,
-  },
-  emptyWrap: {
-    alignItems: 'center',
-    paddingVertical: 40,
-    gap: 6,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  emptySub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: COLOR_SLATE,
-  },
-  resetBtn: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+    justifyContent: 'center',
     marginTop: 8,
   },
-  resetBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
+  primaryBtnText: { fontSize: 15, fontFamily: FontFamily.bold, color: '#FFFFFF' },
 
+  // Toast
+  toast: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.textPrimary,
+    borderRadius: BorderRadii.card,
+    padding: 14,
+  },
+  toastText: { flex: 1, fontSize: 14, fontFamily: FontFamily.semibold, color: '#FFFFFF' },
+
+  // Preferences and expired-link modals
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(15, 23, 42, 0.6)',
@@ -1000,80 +1047,55 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   modalSheet: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: Colors.background,
     borderRadius: 16,
     padding: 20,
+    gap: 12,
+    maxWidth: 480,
+    width: '100%',
+    alignSelf: 'center',
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: Colors.border,
     paddingBottom: 12,
   },
-  modalTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: '#0F172A',
+  modalTitle: { fontSize: 16, fontFamily: FontFamily.bold, color: Colors.textPrimary },
+  modalClose: { minWidth: 44, minHeight: 44, alignItems: 'flex-end', justifyContent: 'center' },
+  modalPrimaryBtn: {
+    minHeight: 48,
+    backgroundColor: Colors.primary,
+    borderRadius: BorderRadii.input,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
   },
-  modalCloseText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-    color: COLOR_SLATE,
+  modalPrimaryBtnText: { fontSize: 15, fontFamily: FontFamily.semibold, color: '#FFFFFF' },
+  unavailableBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: Colors.primaryLight,
+    borderWidth: 1,
+    borderColor: Colors.primaryBorder,
+    borderRadius: BorderRadii.input,
+    padding: 12,
   },
-  prefSectionTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748B',
-    letterSpacing: 0.5,
-  },
+  unavailableText: { flex: 1, fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: Colors.primary },
   prefSwitchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 6,
+    gap: 12,
+    minHeight: 48,
+    paddingVertical: 4,
   },
-  prefSwitchTitle: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#0F172A',
-  },
-  prefSwitchSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: COLOR_SLATE,
-    marginTop: 2,
-  },
-  lockedAlertBox: {
-    backgroundColor: '#EFF6FF',
-    padding: 10,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-  },
-  lockedAlertText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: COLOR_ROYAL_BLUE,
-    lineHeight: 15,
-  },
-  modalPrimaryBtn: {
-    backgroundColor: COLOR_ROYAL_BLUE,
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginTop: 10,
-  },
-  modalPrimaryBtnText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
+  prefSwitchTitle: { fontSize: 14, fontFamily: FontFamily.semibold, color: Colors.textPrimary },
+  prefSwitchSub: { fontFamily: FontFamily.regular, fontSize: 12, color: Colors.textSubtle, marginTop: 2 },
+  expiredTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  expiredBody: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle },
 });
 
-export default withComingSoon(NotificationsScreen, 'Notifications');
+export default NotificationsScreen;

@@ -3,7 +3,6 @@
  * Desktop 1440x1024 Store Quality Analytics & Merchant Reply Workstation
  * File: mobile/app/(vendor)/reviews.tsx
  */
-import { withComingSoon } from '../../src/components/ComingSoon';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Wordmark from '../../src/components/Wordmark';
 import React, { useState, useEffect, useMemo } from 'react';
@@ -43,7 +42,8 @@ export interface CustomerReviewItem {
   draftReply?: string;
 }
 
-const INITIAL_REVIEWS: CustomerReviewItem[] = [
+// Sample data for dev builds only. Production starts empty until a reviews API exists.
+const SAMPLE_REVIEWS: CustomerReviewItem[] = [
   {
     reviewId: 'REV-101',
     customerFirstName: 'Priya S.',
@@ -106,7 +106,7 @@ const INITIAL_REVIEWS: CustomerReviewItem[] = [
   },
 ];
 
-const WEEKLY_TREND_DATA = [
+const SAMPLE_TREND_DATA = [
   { period: 'Week 1 (Sep 1-7)', avg: 4.72, reviews: 10, direction: '▲ +0.05' },
   { period: 'Week 2 (Sep 8-14)', avg: 4.78, reviews: 12, direction: '▲ +0.06' },
   { period: 'Week 3 (Sep 15-21)', avg: 4.81, reviews: 14, direction: '▲ +0.03' },
@@ -114,17 +114,20 @@ const WEEKLY_TREND_DATA = [
   { period: 'Current (Oct 1-8)', avg: 4.88, reviews: 18, direction: '▲ +0.04' },
 ];
 
+const INITIAL_REVIEWS: CustomerReviewItem[] = __DEV__ ? SAMPLE_REVIEWS : [];
+const TREND_DATA = __DEV__ ? SAMPLE_TREND_DATA : [];
+
 function ReviewsScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isExpanded = width >= 1024;
+  const isCompact = width < 768;
+  const gutter = isCompact ? Spacing.lg : Spacing.xl;
 
   const [reviews, setReviews] = useState<CustomerReviewItem[]>(INITIAL_REVIEWS);
   const [loading, setLoading] = useState(false);
-  const [dateRange, setDateRange] = useState('Last 30 Days');
   const [selectedFilter, setSelectedFilter] = useState<string>('All');
   const [viewTrendTable, setViewTrendTable] = useState(false);
-  const [selectedMetric, setSelectedMetric] = useState<'Overall' | 'Product quality' | 'Packaging' | 'Order accuracy'>('Overall');
 
   // Reply Drawer / Modal State
   const [replyModalOpen, setReplyModalOpen] = useState(false);
@@ -134,9 +137,9 @@ function ReviewsScreen() {
   const [submittingReply, setSubmittingReply] = useState(false);
 
   // Toast
-  const [toastMessage, setToastMessage] = useState<{ text: string; undoAction?: () => void } | null>(null);
+  const [toastText, setToastText] = useState<string | null>(null);
 
-  // System Edge States
+  // Dev-only edge states (test strip)
   const [failedFetch, setFailedFetch] = useState(false);
   const [moderationPendingDemo, setModerationPendingDemo] = useState(false);
   const [rejectedReplyDemo, setRejectedReplyDemo] = useState(false);
@@ -149,19 +152,29 @@ function ReviewsScreen() {
   }, []);
 
   useEffect(() => {
-    if (toastMessage) {
-      const timer = setTimeout(() => setToastMessage(null), 4000);
+    if (toastText) {
+      const timer = setTimeout(() => setToastText(null), 4000);
       return () => clearTimeout(timer);
     }
-  }, [toastMessage]);
+  }, [toastText]);
 
-  // Dynamic Rating Calculations
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(vendor)/home');
+    }
+  };
+
+  // Rating calculations, derived only from the reviews shown
   const totalVerifiedCount = reviews.length;
+  const hasReviews = totalVerifiedCount > 0;
   const overallAvgRating = useMemo(() => {
-    if (totalVerifiedCount === 0) return '0.0';
+    if (totalVerifiedCount === 0) return null;
     const sum = reviews.reduce((acc, r) => acc + r.stars, 0);
     return (sum / totalVerifiedCount).toFixed(2);
   }, [reviews, totalVerifiedCount]);
+  const starCount = overallAvgRating ? Math.round(parseFloat(overallAvgRating)) : 0;
 
   const unrepliedCount = useMemo(() => {
     return reviews.filter(r => !r.vendorReply).length;
@@ -169,9 +182,10 @@ function ReviewsScreen() {
 
   // Breakdown metrics
   const categoryBreakdown = useMemo(() => {
-    const calc = (cat: CustomerReviewItem['categoryTag']) => {
+    type Breakdown = { avg: string | null; percent: number; count: number };
+    const calc = (cat: CustomerReviewItem['categoryTag']): Breakdown => {
       const catReviews = reviews.filter(r => r.categoryTag === cat);
-      if (catReviews.length === 0) return { avg: '5.0', percent: 100, count: 0 };
+      if (catReviews.length === 0) return { avg: null, percent: 0, count: 0 };
       const sum = catReviews.reduce((acc, r) => acc + r.stars, 0);
       const avg = (sum / catReviews.length).toFixed(1);
       const percent = Math.round((parseFloat(avg) / 5) * 100);
@@ -213,7 +227,7 @@ function ReviewsScreen() {
       return false;
     }
     if (contactGuardRegex.test(text)) {
-      setReplyValidationError('🚫 Policy Violation: Replies must NOT contain phone numbers, emails, external links, or UPI handles.');
+      setReplyValidationError('Policy violation: replies must NOT contain phone numbers, emails, external links, or UPI handles.');
       return false;
     }
     setReplyValidationError('');
@@ -233,12 +247,12 @@ function ReviewsScreen() {
       prev.map(r => (r.reviewId === selectedReview.reviewId ? { ...r, draftReply: replyText } : r))
     );
     setReplyModalOpen(false);
-    setToastMessage({ text: '💾 Reply draft saved locally' });
+    setToastText('Draft saved on this screen only.');
   };
 
   const handlePostReply = () => {
     if (permissionDeniedDemo) {
-      setReplyValidationError('🔒 Permissions Error: Your merchant role (Store Operator) does not have reply privileges. Contact store manager.');
+      setReplyValidationError('Permissions error: your merchant role (Store Operator) does not have reply privileges. Contact store manager.');
       return;
     }
 
@@ -273,14 +287,22 @@ function ReviewsScreen() {
       setReplyModalOpen(false);
 
       if (isRejected) {
-        setToastMessage({ text: '❌ Reply rejected by moderation engine: Contained contact details.' });
+        setToastText('Reply rejected by moderation: it contained contact details.');
       } else if (isPending) {
-        setToastMessage({ text: '⏳ Reply posted! Pending GlowVAI moderation review (Est. 15 mins).' });
+        setToastText('Reply submitted. It is pending GlowVAI moderation review.');
       } else {
-        setToastMessage({ text: '✓ Public reply posted successfully!' });
+        setToastText('Sample reply saved on this screen only. Nothing was sent to customers.');
       }
     }, 500);
   };
+
+  const edgeChips = [
+    { label: 'Skeleton Loaders', active: loading, toggle: () => setLoading(v => !v) },
+    { label: 'Failed Fetch Error', active: failedFetch, toggle: () => setFailedFetch(v => !v) },
+    { label: 'Pending Moderation', active: moderationPendingDemo, toggle: () => setModerationPendingDemo(v => !v) },
+    { label: 'Rejected Reply', active: rejectedReplyDemo, toggle: () => setRejectedReplyDemo(v => !v) },
+    { label: 'Permission Denied', active: permissionDeniedDemo, toggle: () => setPermissionDeniedDemo(v => !v) },
+  ];
 
   return (
     <SafeAreaView style={s.root}>
@@ -291,7 +313,7 @@ function ReviewsScreen() {
           <View style={s.navRail}>
             <View style={s.railBrandGroup}>
               <View style={s.railBrandLogo}>
-                <Ionicons name="sparkles" size={18} color="#FFFFFF" style={s.railBrandLogoIcon} />
+                <Ionicons name="sparkles" size={18} color={Colors.background} style={s.railBrandLogoIcon} />
               </View>
               <View>
                 <Wordmark size={17} />
@@ -301,48 +323,50 @@ function ReviewsScreen() {
 
             <View style={s.railNavGroup}>
               <TouchableOpacity style={s.railNavItem} onPress={() => router.replace('/(vendor)/home')} activeOpacity={0.8}>
-                <Ionicons name="home-outline" size={18} color="#475569" style={s.railNavIcon} />
+                <Ionicons name="home-outline" size={18} color={Colors.textSecondary} />
                 <Text style={s.railNavLabel}>Home</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/orders')} activeOpacity={0.8}>
-                <Ionicons name="clipboard-outline" size={18} color="#475569" style={s.railNavIcon} />
+                <Ionicons name="clipboard-outline" size={18} color={Colors.textSecondary} />
                 <Text style={s.railNavLabel}>Orders</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/catalog')} activeOpacity={0.8}>
-                <Ionicons name="cube-outline" size={18} color="#475569" style={s.railNavIcon} />
+                <Ionicons name="cube-outline" size={18} color={Colors.textSecondary} />
                 <Text style={s.railNavLabel}>Catalog</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/returns')} activeOpacity={0.8}>
-                <Text style={s.railNavIcon}>↩️</Text>
+                <Ionicons name="arrow-undo-outline" size={18} color={Colors.textSecondary} />
                 <Text style={s.railNavLabel}>Returns</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity style={[s.railNavItem, s.railNavItemActive]} activeOpacity={0.8}>
-                <Text style={s.railNavIcon}>⭐</Text>
+              <View style={[s.railNavItem, s.railNavItemActive]}>
+                <Ionicons name="star-outline" size={18} color={Colors.primary} />
                 <Text style={[s.railNavLabel, s.railNavLabelActive]}>Reviews</Text>
+              </View>
+
+              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/messages')} activeOpacity={0.8}>
+                <Ionicons name="chatbubble-outline" size={18} color={Colors.textSecondary} />
+                <Text style={s.railNavLabel}>Messages</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/earnings')} activeOpacity={0.8}>
-                <Ionicons name="wallet-outline" size={18} color="#475569" style={s.railNavIcon} />
+                <Ionicons name="wallet-outline" size={18} color={Colors.textSecondary} />
                 <Text style={s.railNavLabel}>Earnings</Text>
               </TouchableOpacity>
 
               <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <Ionicons name="settings-outline" size={18} color="#475569" style={s.railNavIcon} />
+                <Ionicons name="settings-outline" size={18} color={Colors.textSecondary} />
                 <Text style={s.railNavLabel}>Settings</Text>
               </TouchableOpacity>
             </View>
 
             <View style={s.railFooter}>
-              <TouchableOpacity style={s.storeSelectorPill} activeOpacity={0.8}>
-                <Text style={s.storeSelectorText} numberOfLines={1}>📍 Benz Circle Store ▼</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railHelpBtn} activeOpacity={0.8}>
-                <Text style={s.railHelpText}>Help & Support 💬</Text>
+              <TouchableOpacity style={s.railHelpBtn} onPress={() => router.push('/(vendor)/support')} activeOpacity={0.8}>
+                <Ionicons name="help-circle-outline" size={16} color={Colors.textMuted} />
+                <Text style={s.railHelpText}>Help & Support</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -352,15 +376,15 @@ function ReviewsScreen() {
         <View style={s.mainConsole}>
 
           {/* Top Breadcrumb & Header Bar */}
-          <View style={s.topHeader}>
+          <View style={[s.topHeader, { paddingHorizontal: gutter }]}>
             <View style={s.headerLeftGroup}>
-              <TouchableOpacity onPress={() => router.replace('/(vendor)/home')} style={s.backBtn} activeOpacity={0.8}>
-                <Text style={s.backIcon}>‹</Text>
+              <TouchableOpacity onPress={handleBack} style={s.backBtn} activeOpacity={0.8} accessibilityLabel="Go back">
+                <Ionicons name="chevron-back" size={20} color={Colors.textPrimary} />
               </TouchableOpacity>
 
-              <View>
+              <View style={s.headerTitleBlock}>
                 <View style={s.breadcrumbRow}>
-                  <TouchableOpacity onPress={() => router.replace('/(vendor)/home')}>
+                  <TouchableOpacity onPress={() => router.replace('/(vendor)/home')} style={s.breadcrumbHit} activeOpacity={0.8}>
                     <Text style={s.breadcrumbLink}>Home</Text>
                   </TouchableOpacity>
                   <Text style={s.breadcrumbSep}>/</Text>
@@ -370,339 +394,308 @@ function ReviewsScreen() {
                 <View style={s.titleRow}>
                   <Text style={s.pageTitle}>Ratings & reviews</Text>
                   <View style={s.verifiedPill}>
-                    <Text style={s.verifiedPillText}>✓ 100% Verified Customer Orders</Text>
+                    <Text style={s.verifiedPillText}>Verified orders only</Text>
                   </View>
                 </View>
               </View>
             </View>
 
             <View style={s.headerActionsRight}>
-              {/* Date Range Selector */}
-              <TouchableOpacity style={s.dateRangeDropdown} activeOpacity={0.8}>
-                <Text style={s.dateRangeDropdownText}>📅 {dateRange} ▾</Text>
-              </TouchableOpacity>
-
               <CustomerAppRedirectButton storeName="Your store" />
             </View>
           </View>
 
-          {/* System Edge State Simulation Strip */}
+          {/* Dev-only edge state strip (sample data and simulated states) */}
           {__DEV__ && (
           <View style={s.simStripCard}>
-            <Text style={s.simTitle}>TEST REVIEWS EDGE STATES:</Text>
+            <View style={s.simTitleRow}>
+              <Text style={s.simTitle}>TEST REVIEWS EDGE STATES:</Text>
+              <View style={s.sampleChip}>
+                <Text style={s.sampleChipText}>Sample data (dev only)</Text>
+              </View>
+            </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.simScrollContainer}>
-              <TouchableOpacity
-                style={[s.simChip, loading && s.simChipActive]}
-                onPress={() => setLoading(!loading)}
-              >
-                <Text style={[s.simChipText, loading && s.simChipTextActive]}>Skeleton Loaders</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, failedFetch && s.simChipActive]}
-                onPress={() => setFailedFetch(!failedFetch)}
-              >
-                <Text style={[s.simChipText, failedFetch && s.simChipTextActive]}>Failed Fetch Error</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, moderationPendingDemo && s.simChipActive]}
-                onPress={() => setModerationPendingDemo(!moderationPendingDemo)}
-              >
-                <Text style={[s.simChipText, moderationPendingDemo && s.simChipTextActive]}>Pending Moderation</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, rejectedReplyDemo && s.simChipActive]}
-                onPress={() => setRejectedReplyDemo(!rejectedReplyDemo)}
-              >
-                <Text style={[s.simChipText, rejectedReplyDemo && s.simChipTextActive]}>Rejected Reply</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.simChip, permissionDeniedDemo && s.simChipActive]}
-                onPress={() => setPermissionDeniedDemo(!permissionDeniedDemo)}
-              >
-                <Text style={[s.simChipText, permissionDeniedDemo && s.simChipTextActive]}>Permission Denied</Text>
-              </TouchableOpacity>
+              {edgeChips.map(chip => (
+                <TouchableOpacity
+                  key={chip.label}
+                  style={[s.simChip, chip.active && s.simChipActive]}
+                  onPress={chip.toggle}
+                  activeOpacity={0.8}
+                >
+                  <Text style={[s.simChipText, chip.active && s.simChipTextActive]}>{chip.label}</Text>
+                </TouchableOpacity>
+              ))}
             </ScrollView>
           </View>
           )}
 
-          {failedFetch && (
+          {__DEV__ && failedFetch && (
             <View style={s.errorBanner}>
-              <Text style={s.errorBannerText}>⚠️ Failed to fetch customer reviews from GlowVAI central API. Check network connection.</Text>
-              <TouchableOpacity onPress={() => setFailedFetch(false)}>
-                <Text style={s.errorBannerLink}>Retry Sync</Text>
+              <Ionicons name="warning-outline" size={16} color={Colors.danger} />
+              <Text style={s.errorBannerText}>Sample error state: customer reviews could not be loaded.</Text>
+              <TouchableOpacity onPress={() => setFailedFetch(false)} style={s.errorBannerDismiss} activeOpacity={0.8}>
+                <Text style={s.errorBannerLink}>Dismiss</Text>
               </TouchableOpacity>
             </View>
           )}
 
           {/* Scroll Content Area */}
-          <ScrollView style={s.scrollBody} contentContainerStyle={s.scrollContent} showsVerticalScrollIndicator={false}>
+          <ScrollView style={s.scrollBody} contentContainerStyle={[s.scrollContent, { padding: gutter }]} showsVerticalScrollIndicator={false}>
             <View style={s.maxContentContainer}>
 
-              {/* ── 1. DYNAMIC WIDE RATING SUMMARY CARD ───────────────────────── */}
               {loading ? (
-                <View style={s.summaryCardSkeleton}>
-                  <View style={s.skeletonCircle} />
-                  <View style={{ flex: 1, gap: 8 }}>
-                    <View style={s.skeletonLineShort} />
-                    <View style={s.skeletonLineLong} />
-                  </View>
+                <View style={s.loadingBox}>
+                  <ActivityIndicator color={Colors.primary} />
+                  <Text style={s.loadingText}>Loading customer reviews…</Text>
                 </View>
               ) : (
-                <View style={s.summaryCard}>
-                  <View style={s.scoreBox}>
-                    <Text style={s.scoreValText}>{overallAvgRating}</Text>
-                    <Text style={s.starsRow}>★ ★ ★ ★ ★</Text>
-                    <Text style={s.countSubText}>based on {totalVerifiedCount} verified customer ratings</Text>
-                    <View style={s.periodCompareTag}>
-                      <Text style={s.periodCompareText}>▲ +0.12 vs previous 30d</Text>
-                    </View>
-                  </View>
-
-                  <View style={s.breakdownCol}>
-                    <Text style={s.breakdownHeaderTitle}>STORE QUALITY BENCHMARK BREAKDOWN</Text>
-
-                    <View style={s.barRow}>
-                      <Text style={s.barLabel}>Product Quality</Text>
-                      <View style={s.barBg}>
-                        <View style={[s.barFill, { width: `${categoryBreakdown.productQuality.percent}%` }]} />
-                      </View>
-                      <Text style={s.barScore}>{categoryBreakdown.productQuality.avg}</Text>
-                      <Text style={s.barCount}>({categoryBreakdown.productQuality.count} reviews)</Text>
+                <>
+                  {/* ── 1. RATING SUMMARY CARD ─────────────────────────────────── */}
+                  <View style={[s.summaryCard, isCompact && s.cardCompact, isCompact && s.stackCompact]}>
+                    <View style={[s.scoreBox, isCompact && s.scoreBoxCompact]}>
+                      {overallAvgRating ? (
+                        <>
+                          <Text style={s.scoreValText}>{overallAvgRating}</Text>
+                          <Text style={s.starsRow}>{'★'.repeat(starCount)}{'☆'.repeat(5 - starCount)}</Text>
+                          <Text style={s.countSubText}>
+                            based on {totalVerifiedCount} verified customer {totalVerifiedCount === 1 ? 'rating' : 'ratings'}
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <Text style={s.scoreEmptyText}>No ratings yet</Text>
+                          <Text style={s.countSubText}>Ratings appear after customers review delivered orders.</Text>
+                        </>
+                      )}
                     </View>
 
-                    <View style={s.barRow}>
-                      <Text style={s.barLabel}>Packaging</Text>
-                      <View style={s.barBg}>
-                        <View style={[s.barFill, { width: `${categoryBreakdown.packaging.percent}%` }]} />
-                      </View>
-                      <Text style={s.barScore}>{categoryBreakdown.packaging.avg}</Text>
-                      <Text style={s.barCount}>({categoryBreakdown.packaging.count} reviews)</Text>
-                    </View>
+                    <View style={s.breakdownCol}>
+                      <Text style={s.breakdownHeaderTitle}>QUALITY BREAKDOWN</Text>
 
-                    <View style={s.barRow}>
-                      <Text style={s.barLabel}>Order Accuracy</Text>
-                      <View style={s.barBg}>
-                        <View style={[s.barFill, { width: `${categoryBreakdown.orderAccuracy.percent}%` }]} />
-                      </View>
-                      <Text style={s.barScore}>{categoryBreakdown.orderAccuracy.avg}</Text>
-                      <Text style={s.barCount}>({categoryBreakdown.orderAccuracy.count} reviews)</Text>
-                    </View>
-
-                    <View style={s.barRow}>
-                      <Text style={s.barLabel}>Delivery Readiness</Text>
-                      <View style={s.barBg}>
-                        <View style={[s.barFill, { width: `${categoryBreakdown.deliveryReadiness.percent}%` }]} />
-                      </View>
-                      <Text style={s.barScore}>{categoryBreakdown.deliveryReadiness.avg}</Text>
-                      <Text style={s.barCount}>({categoryBreakdown.deliveryReadiness.count} reviews)</Text>
-                    </View>
-                  </View>
-                </View>
-              )}
-
-              {/* ── 2. TREND SECTION WITH CHART / TABLE TOGGLE ───────────────── */}
-              <View style={s.trendCard}>
-                <View style={s.trendHeaderRow}>
-                  <View>
-                    <View style={s.trendTitleRow}>
-                      <Text style={s.trendTitle}>RATING MOVEMENT TREND ({dateRange.toUpperCase()})</Text>
-                      <Text style={s.metricBadge}>Metric: {selectedMetric}</Text>
-                    </View>
-                    <Text style={s.trendSub}>▲ +0.12 rating improvement over 30 days based on dark store fulfillment</Text>
-                  </View>
-
-                  <View style={s.trendControlsRight}>
-                    {/* Metric Selectors */}
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.metricChipGroup}>
-                      {(['Overall', 'Product quality', 'Packaging', 'Order accuracy'] as const).map(m => (
-                        <TouchableOpacity
-                          key={m}
-                          style={[s.metricChip, selectedMetric === m && s.metricChipActive]}
-                          onPress={() => setSelectedMetric(m)}
-                        >
-                          <Text style={[s.metricChipText, selectedMetric === m && s.metricChipTextActive]}>{m}</Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
-
-                    {/* Chart / Table View Switcher */}
-                    <TouchableOpacity
-                      style={s.viewTableToggleBtn}
-                      onPress={() => setViewTrendTable(!viewTrendTable)}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={s.viewTableToggleBtnText}>
-                        {viewTrendTable ? '📊 View Chart' : '📋 View as Table'}
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                {viewTrendTable ? (
-                  <View style={s.trendTable}>
-                    <View style={s.tableHeaderRow}>
-                      <Text style={s.tableHeaderCell}>Period</Text>
-                      <Text style={s.tableHeaderCell}>Average Rating</Text>
-                      <Text style={s.tableHeaderCell}>Verified Reviews</Text>
-                      <Text style={s.tableHeaderCell}>Period Movement</Text>
-                    </View>
-                    {WEEKLY_TREND_DATA.map((row, idx) => (
-                      <View key={idx} style={s.tableDataRow}>
-                        <Text style={s.tableCell}>{row.period}</Text>
-                        <Text style={s.tableCellBold}>{row.avg}</Text>
-                        <Text style={s.tableCell}>{row.reviews} orders</Text>
-                        <Text style={s.tableCellTrend}>{row.direction}</Text>
-                      </View>
-                    ))}
-                  </View>
-                ) : (
-                  <View style={s.compactTrendChartBox}>
-                    {WEEKLY_TREND_DATA.map((w, idx) => (
-                      <View key={idx} style={s.chartCol}>
-                        <Text style={s.chartValText}>{w.avg}</Text>
-                        <View style={s.chartBarTrack}>
-                          <View style={[s.chartBarFill, { height: `${(w.avg / 5) * 100}%` }]} />
+                      {[
+                        { label: 'Product Quality', data: categoryBreakdown.productQuality },
+                        { label: 'Packaging', data: categoryBreakdown.packaging },
+                        { label: 'Order Accuracy', data: categoryBreakdown.orderAccuracy },
+                        { label: 'Delivery Readiness', data: categoryBreakdown.deliveryReadiness },
+                      ].map(b => (
+                        <View key={b.label} style={s.barRow}>
+                          <Text style={s.barLabel} numberOfLines={1}>{b.label}</Text>
+                          <View style={s.barBg}>
+                            <View style={[s.barFill, { width: `${b.data.percent}%` }]} />
+                          </View>
+                          <Text style={s.barScore}>{b.data.avg ?? '—'}</Text>
+                          <Text style={s.barCount}>({b.data.count} {b.data.count === 1 ? 'review' : 'reviews'})</Text>
                         </View>
-                        <Text style={s.chartLabelText}>{w.period}</Text>
-                        <Text style={s.chartTrendText}>{w.direction}</Text>
-                      </View>
-                    ))}
+                      ))}
+                    </View>
                   </View>
-                )}
-              </View>
 
-              {/* ── 3. REVIEWS FILTER TOOLBAR WITH CLEAR COUNTS ────────────────── */}
-              <View style={s.filterBarContainer}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filterScroll}>
-                  {[
-                    { label: 'All', count: totalVerifiedCount },
-                    { label: 'Unreplied', count: unrepliedCount },
-                    { label: '5 star', count: reviews.filter(r => r.stars === 5).length },
-                    { label: '4 star', count: reviews.filter(r => r.stars === 4).length },
-                    { label: '3 star and below', count: reviews.filter(r => r.stars <= 3).length },
-                    { label: 'Product quality', count: categoryBreakdown.productQuality.count },
-                    { label: 'Packaging', count: categoryBreakdown.packaging.count },
-                    { label: 'Order accuracy', count: categoryBreakdown.orderAccuracy.count },
-                  ].map(f => {
-                    const active = selectedFilter === f.label;
-                    return (
+                  {hasReviews && (
+                    <>
+                      {/* ── 2. TREND SECTION WITH CHART / TABLE TOGGLE ───────────── */}
+                      <View style={[s.trendCard, isCompact && s.cardCompact]}>
+                        <View style={[s.trendHeaderRow, isCompact && s.stackCompact]}>
+                          <Text style={s.trendTitle}>RATING MOVEMENT TREND</Text>
+                          {TREND_DATA.length > 0 && (
+                            <TouchableOpacity
+                              style={s.viewTableToggleBtn}
+                              onPress={() => setViewTrendTable(!viewTrendTable)}
+                              activeOpacity={0.8}
+                            >
+                              <Text style={s.viewTableToggleBtnText}>
+                                {viewTrendTable ? 'View chart' : 'View as table'}
+                              </Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+
+                        {TREND_DATA.length === 0 ? (
+                          <Text style={s.trendEmptyText}>The rating trend appears here once verified reviews come in.</Text>
+                        ) : viewTrendTable ? (
+                          <View style={s.trendTable}>
+                            <View style={s.tableHeaderRow}>
+                              <Text style={s.tableHeaderCell}>Period</Text>
+                              <Text style={s.tableHeaderCell}>Average Rating</Text>
+                              <Text style={s.tableHeaderCell}>Verified Reviews</Text>
+                              <Text style={s.tableHeaderCell}>Period Movement</Text>
+                            </View>
+                            {TREND_DATA.map((row, idx) => (
+                              <View key={idx} style={s.tableDataRow}>
+                                <Text style={s.tableCell}>{row.period}</Text>
+                                <Text style={s.tableCellBold}>{row.avg}</Text>
+                                <Text style={s.tableCell}>{row.reviews} reviews</Text>
+                                <Text style={s.tableCellTrend}>{row.direction}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        ) : (
+                          <View style={s.compactTrendChartBox}>
+                            {TREND_DATA.map((w, idx) => (
+                              <View key={idx} style={s.chartCol}>
+                                <Text style={s.chartValText}>{w.avg}</Text>
+                                <View style={s.chartBarTrack}>
+                                  <View style={[s.chartBarFill, { height: `${(w.avg / 5) * 100}%` }]} />
+                                </View>
+                                <Text style={s.chartLabelText}>{w.period}</Text>
+                                <Text style={s.chartTrendText}>{w.direction}</Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+
+                      {/* ── 3. REVIEWS FILTER TOOLBAR WITH CLEAR COUNTS ──────────── */}
+                      <View style={s.filterBarContainer}>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filterScroll}>
+                          {[
+                            { label: 'All', count: totalVerifiedCount },
+                            { label: 'Unreplied', count: unrepliedCount },
+                            { label: '5 star', count: reviews.filter(r => r.stars === 5).length },
+                            { label: '4 star', count: reviews.filter(r => r.stars === 4).length },
+                            { label: '3 star and below', count: reviews.filter(r => r.stars <= 3).length },
+                            { label: 'Product quality', count: categoryBreakdown.productQuality.count },
+                            { label: 'Packaging', count: categoryBreakdown.packaging.count },
+                            { label: 'Order accuracy', count: categoryBreakdown.orderAccuracy.count },
+                          ].map(f => {
+                            const active = selectedFilter === f.label;
+                            return (
+                              <TouchableOpacity
+                                key={f.label}
+                                style={[s.filterPill, active && s.filterPillActive]}
+                                onPress={() => setSelectedFilter(f.label)}
+                                activeOpacity={0.8}
+                              >
+                                <Text style={[s.filterPillText, active && s.filterPillTextActive]}>
+                                  {f.label} ({f.count})
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </ScrollView>
+                      </View>
+                    </>
+                  )}
+
+                  {/* ── 4. REVIEW CARDS LIST / EMPTY STATES ──────────────────────── */}
+                  {!hasReviews ? (
+                    <View style={s.emptyStateBox}>
+                      <Ionicons name="star-outline" size={40} color={Colors.textMuted} />
+                      <Text style={s.emptyTitle}>No reviews yet</Text>
+                      <Text style={s.emptySub}>
+                        Customer reviews appear here after delivered orders. Only verified customers can review.
+                      </Text>
                       <TouchableOpacity
-                        key={f.label}
-                        style={[s.filterPill, active && s.filterPillActive]}
-                        onPress={() => setSelectedFilter(f.label)}
+                        style={s.emptyActionBtn}
+                        onPress={() => router.push('/(vendor)/orders')}
                         activeOpacity={0.8}
                       >
-                        <Text style={[s.filterPillText, active && s.filterPillTextActive]}>
-                          {f.label} ({f.count})
-                        </Text>
+                        <Text style={s.emptyActionBtnText}>View orders</Text>
                       </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-
-              {/* ── 4. DESKTOP REVIEW CARDS LIST / MATRIX ──────────────────────── */}
-              {filteredReviews.length === 0 ? (
-                <View style={s.emptyStateBox}>
-                  <Text style={s.emptyIcon}>⭐</Text>
-                  <Text style={s.emptyTitle}>
-                    {selectedFilter === 'Unreplied'
-                      ? '🎉 All customer reviews have been answered!'
-                      : 'No customer reviews found'}
-                  </Text>
-                  <Text style={s.emptySub}>
-                    {selectedFilter === 'Unreplied'
-                      ? 'Great job maintaining store responsiveness!'
-                      : 'Try selecting another rating or category filter.'}
-                  </Text>
-                </View>
-              ) : (
-                <View style={s.reviewsList}>
-                  {filteredReviews.map(r => (
-                    <View key={r.reviewId} style={s.reviewCard}>
-                      {/* Card Header Row */}
-                      <View style={s.cardHeaderRow}>
-                        <View style={{ flex: 1 }}>
-                          <View style={s.customerMetaRow}>
-                            <Text style={s.customerNameText}>{r.customerFirstName}</Text>
-                            <Text style={s.orderIdTag}>Order #{r.orderId}</Text>
-                            {r.verifiedPurchase && (
-                              <View style={s.verifiedMarkerChip}>
-                                <Text style={s.verifiedMarkerChipText}>✓ Verified Customer Purchase</Text>
+                    </View>
+                  ) : filteredReviews.length === 0 ? (
+                    <View style={s.emptyStateBox}>
+                      <Ionicons
+                        name={selectedFilter === 'Unreplied' ? 'checkmark-done-outline' : 'funnel-outline'}
+                        size={40}
+                        color={Colors.textMuted}
+                      />
+                      <Text style={s.emptyTitle}>
+                        {selectedFilter === 'Unreplied'
+                          ? 'All customer reviews have been answered'
+                          : 'No customer reviews found'}
+                      </Text>
+                      <Text style={s.emptySub}>
+                        {selectedFilter === 'Unreplied'
+                          ? 'Keep responding promptly to maintain store trust.'
+                          : 'Try selecting another rating or category filter.'}
+                      </Text>
+                    </View>
+                  ) : (
+                    <View style={s.reviewsList}>
+                      {filteredReviews.map(r => (
+                        <View key={r.reviewId} style={[s.reviewCard, isCompact && s.cardCompact]}>
+                          {/* Card Header Row */}
+                          <View style={s.cardHeaderRow}>
+                            <View style={s.cardHeaderMain}>
+                              <View style={s.customerMetaRow}>
+                                <Text style={s.customerNameText}>{r.customerFirstName}</Text>
+                                <Text style={s.orderIdTag}>Order #{r.orderId}</Text>
+                                {r.verifiedPurchase && (
+                                  <View style={s.verifiedMarkerChip}>
+                                    <Text style={s.verifiedMarkerChipText}>Verified customer purchase</Text>
+                                  </View>
+                                )}
                               </View>
-                            )}
-                          </View>
 
-                          <Text style={s.orderedItemText}>Product: {r.productName}</Text>
-                        </View>
+                              <Text style={s.orderedItemText}>Product: {r.productName}</Text>
+                            </View>
 
-                        <View style={s.starsDateCol}>
-                          <Text style={s.starsText}>{'★'.repeat(r.stars)}</Text>
-                          <Text style={s.dateText}>{r.date}</Text>
-                        </View>
-                      </View>
-
-                      {/* Review Quote Text */}
-                      <Text style={s.reviewQuoteText}>"{r.reviewText}"</Text>
-
-                      {/* Category Tag */}
-                      <View style={s.categoryTagBox}>
-                        <Text style={s.categoryTagText}>Quality Dimension: {r.categoryTag}</Text>
-                      </View>
-
-                      {/* Vendor Reply Thread / Action Footer */}
-                      {r.vendorReply ? (
-                        <View style={[
-                          s.vendorReplyCard,
-                          r.vendorReply.status === 'Pending Moderation' && { backgroundColor: Colors.warningLight, borderColor: Colors.warningBorder },
-                          r.vendorReply.status === 'Rejected' && { backgroundColor: Colors.dangerLight, borderColor: Colors.dangerBorder },
-                        ]}>
-                          <View style={s.replyHeaderRow}>
-                            <Text style={s.replyTitleText}>STORE OWNER PUBLIC REPLY ({r.vendorReply.postedAt}):</Text>
-
-                            <View style={s.moderationStatusPill}>
-                              <Text style={[
-                                s.moderationStatusText,
-                                r.vendorReply.status === 'Pending Moderation' && { color: Colors.warning },
-                                r.vendorReply.status === 'Rejected' && { color: Colors.danger },
-                              ]}>
-                                {r.vendorReply.status === 'Pending Moderation' ? '⏳ Pending Moderation' : r.vendorReply.status === 'Rejected' ? '❌ Rejected' : '🟢 Live Public Reply'}
-                              </Text>
+                            <View style={s.starsDateCol}>
+                              <Text style={s.starsText}>{'★'.repeat(r.stars)}</Text>
+                              <Text style={s.dateText}>{r.date}</Text>
                             </View>
                           </View>
 
-                          <Text style={s.replyBodyText}>{r.vendorReply.text}</Text>
+                          {/* Review Quote Text */}
+                          <Text style={s.reviewQuoteText}>"{r.reviewText}"</Text>
 
-                          {r.vendorReply.moderationReason && (
-                            <Text style={s.moderationReasonText}>
-                              Moderation Note: {r.vendorReply.moderationReason}
-                            </Text>
-                          )}
-                        </View>
-                      ) : (
-                        <View style={s.cardFooterRow}>
-                          {r.draftReply ? (
-                            <Text style={s.draftSavedHintText}>💾 Draft saved locally</Text>
+                          {/* Category Tag */}
+                          <View style={s.categoryTagBox}>
+                            <Text style={s.categoryTagText}>Quality Dimension: {r.categoryTag}</Text>
+                          </View>
+
+                          {/* Vendor Reply Thread / Action Footer */}
+                          {r.vendorReply ? (
+                            <View style={[
+                              s.vendorReplyCard,
+                              r.vendorReply.status === 'Pending Moderation' && { backgroundColor: Colors.warningLight, borderColor: Colors.warningBorder },
+                              r.vendorReply.status === 'Rejected' && { backgroundColor: Colors.dangerLight, borderColor: Colors.dangerBorder },
+                            ]}>
+                              <View style={s.replyHeaderRow}>
+                                <Text style={s.replyTitleText}>STORE OWNER PUBLIC REPLY ({r.vendorReply.postedAt}):</Text>
+
+                                <View style={s.moderationStatusPill}>
+                                  <Text style={[
+                                    s.moderationStatusText,
+                                    r.vendorReply.status === 'Pending Moderation' && { color: Colors.warning },
+                                    r.vendorReply.status === 'Rejected' && { color: Colors.danger },
+                                  ]}>
+                                    {r.vendorReply.status === 'Pending Moderation' ? 'Pending moderation' : r.vendorReply.status === 'Rejected' ? 'Rejected' : 'Live public reply'}
+                                  </Text>
+                                </View>
+                              </View>
+
+                              <Text style={s.replyBodyText}>{r.vendorReply.text}</Text>
+
+                              {r.vendorReply.moderationReason && (
+                                <Text style={s.moderationReasonText}>
+                                  Moderation note: {r.vendorReply.moderationReason}
+                                </Text>
+                              )}
+                            </View>
                           ) : (
-                            <Text style={s.replyPolicyHintText}>Constructive merchant replies build customer trust & repeat orders</Text>
-                          )}
+                            <View style={s.cardFooterRow}>
+                              {r.draftReply ? (
+                                <Text style={s.draftSavedHintText}>Draft saved on this screen</Text>
+                              ) : (
+                                <Text style={s.replyPolicyHintText}>Constructive replies build customer trust and repeat orders.</Text>
+                              )}
 
-                          <TouchableOpacity
-                            style={s.replyActionBtn}
-                            onPress={() => handleOpenReplyDrawer(r)}
-                            activeOpacity={0.8}
-                          >
-                            <Text style={s.replyActionBtnText}>💬 Reply to Customer →</Text>
-                          </TouchableOpacity>
+                              <TouchableOpacity
+                                style={s.replyActionBtn}
+                                onPress={() => handleOpenReplyDrawer(r)}
+                                activeOpacity={0.8}
+                              >
+                                <Ionicons name="chatbubble-outline" size={14} color={Colors.background} />
+                                <Text style={s.replyActionBtnText}>Reply to customer</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
                         </View>
-                      )}
+                      ))}
                     </View>
-                  ))}
-                </View>
+                  )}
+                </>
               )}
 
             </View>
@@ -723,19 +716,23 @@ function ReviewsScreen() {
             <View style={s.modalCard}>
               <View style={s.modalHeaderRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={s.modalTitleText}>Merchant Reply Composer: {selectedReview.customerFirstName}</Text>
+                  <Text style={s.modalTitleText}>Reply to {selectedReview.customerFirstName}</Text>
                   <Text style={s.modalSubText}>Order #{selectedReview.orderId} • Product: {selectedReview.productName}</Text>
                 </View>
 
-                <TouchableOpacity onPress={() => setReplyModalOpen(false)} style={s.closeModalBtn}>
-                  <Ionicons name="close" size={18} style={{ color: '#475569' }} />
+                <TouchableOpacity
+                  onPress={() => setReplyModalOpen(false)}
+                  style={s.closeModalBtn}
+                  accessibilityLabel="Close reply composer"
+                >
+                  <Ionicons name="close" size={20} color={Colors.textSecondary} />
                 </TouchableOpacity>
               </View>
 
               <ScrollView style={s.modalScroll} showsVerticalScrollIndicator={false}>
                 {/* Original Review Context Quote */}
                 <View style={s.quoteCard}>
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                  <View style={s.quoteHeaderRow}>
                     <Text style={s.quoteStarsText}>{'★'.repeat(selectedReview.stars)}</Text>
                     <Text style={s.quoteTagText}>{selectedReview.categoryTag}</Text>
                   </View>
@@ -744,7 +741,7 @@ function ReviewsScreen() {
 
                 {/* Reply Input Field */}
                 <View style={s.fieldGroup}>
-                  <Text style={s.fieldLabel}>Your Public Store Reply Message *</Text>
+                  <Text style={s.fieldLabel}>Your public store reply *</Text>
                   <TextInput
                     style={s.replyInput}
                     placeholder="Write a professional, constructive reply to customer feedback…"
@@ -760,7 +757,7 @@ function ReviewsScreen() {
                   />
 
                   <View style={s.charCountRow}>
-                    <Text style={s.charCountText}>{replyText.length} / 500 characters guidance</Text>
+                    <Text style={s.charCountText}>{replyText.length} / 500 characters</Text>
                   </View>
 
                   {replyValidationError !== '' && (
@@ -771,7 +768,7 @@ function ReviewsScreen() {
                 {/* Prohibited Content Reminder Banner */}
                 <View style={s.reminderCard}>
                   <Text style={s.reminderText}>
-                    🛡️ Policy Guidance: Replies are visible publicly on your store page. Do NOT include phone numbers, email addresses, external URLs, UPI handles, or personal customer information.
+                    Policy guidance: replies are visible publicly on your store page. Do NOT include phone numbers, email addresses, external URLs, UPI handles, or personal customer information.
                   </Text>
                 </View>
               </ScrollView>
@@ -779,7 +776,7 @@ function ReviewsScreen() {
               {/* Modal Actions */}
               <View style={s.modalActionsRow}>
                 <TouchableOpacity style={s.saveDraftBtn} onPress={handleSaveDraft}>
-                  <Text style={s.saveDraftBtnText}>Save Draft</Text>
+                  <Text style={s.saveDraftBtnText}>Save draft</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -788,9 +785,9 @@ function ReviewsScreen() {
                   disabled={submittingReply}
                 >
                   {submittingReply ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
+                    <ActivityIndicator color={Colors.background} size="small" />
                   ) : (
-                    <Text style={s.postReplyPrimaryBtnText}>Post Reply →</Text>
+                    <Text style={s.postReplyPrimaryBtnText}>Post reply</Text>
                   )}
                 </TouchableOpacity>
               </View>
@@ -800,14 +797,9 @@ function ReviewsScreen() {
       )}
 
       {/* Floating Toast */}
-      {toastMessage && (
+      {toastText !== null && (
         <View style={s.toastBanner}>
-          <Text style={s.toastText}>{toastMessage.text}</Text>
-          {toastMessage.undoAction && (
-            <TouchableOpacity onPress={toastMessage.undoAction} style={s.toastUndoBtn}>
-              <Text style={s.toastUndoText}>Undo</Text>
-            </TouchableOpacity>
-          )}
+          <Text style={s.toastText}>{toastText}</Text>
         </View>
       )}
     </SafeAreaView>
@@ -817,7 +809,7 @@ function ReviewsScreen() {
 const s = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: Colors.surface, // Warm off-white #F8FAFC
+    backgroundColor: Colors.surface,
   },
   desktopLayout: {
     flex: 1,
@@ -845,19 +837,13 @@ const s = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 8,
-    backgroundColor: Colors.primaryLight,
+    backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   railBrandLogoIcon: {
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 20,
-  },
-  railBrandTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
   },
   railBrandSub: {
     fontSize: 12,
@@ -873,16 +859,12 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
+    minHeight: 44,
     paddingHorizontal: Spacing.md,
-    paddingVertical: 10,
     borderRadius: BorderRadii.input,
   },
   railNavItemActive: {
     backgroundColor: Colors.primaryLight,
-  },
-  railNavIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 16,
   },
   railNavLabel: {
     fontSize: 13,
@@ -901,23 +883,12 @@ const s = StyleSheet.create({
     borderTopColor: Colors.border,
     paddingTop: Spacing.md,
   },
-  storeSelectorPill: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.input,
-  },
-  storeSelectorText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
   railHelpBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    minHeight: 44,
     paddingHorizontal: Spacing.sm,
-    paddingVertical: 6,
   },
   railHelpText: {
     fontSize: 12,
@@ -935,40 +906,42 @@ const s = StyleSheet.create({
     backgroundColor: Colors.card,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.md,
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.sm,
   },
   headerLeftGroup: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.md,
+    flexShrink: 1,
+    minWidth: 0,
+  },
+  headerTitleBlock: {
+    flexShrink: 1,
   },
   backBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: Colors.border,
     backgroundColor: Colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  backIcon: {
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginTop: -2,
-  },
   breadcrumbRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginBottom: 2,
+  },
+  breadcrumbHit: {
+    minHeight: 44,
+    justifyContent: 'center',
   },
   breadcrumbLink: {
     fontSize: 12,
@@ -989,6 +962,7 @@ const s = StyleSheet.create({
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: Spacing.xs,
   },
   pageTitle: {
@@ -998,9 +972,9 @@ const s = StyleSheet.create({
     color: Colors.textPrimary,
   },
   verifiedPill: {
-    backgroundColor: '#DCFCE7',
+    backgroundColor: Colors.successLight,
     borderWidth: 1,
-    borderColor: '#BBF7D0',
+    borderColor: Colors.successBorder,
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: BorderRadii.pill,
@@ -1014,30 +988,24 @@ const s = StyleSheet.create({
   headerActionsRight: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: Spacing.md,
   },
-  dateRangeDropdown: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: BorderRadii.pill,
-  },
-  dateRangeDropdownText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
 
-  /* Edge State Simulation Strip */
+  /* Dev-only Edge State Strip */
   simStripCard: {
     backgroundColor: Colors.card,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.xs,
+  },
+  simTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+    marginBottom: 4,
   },
   simTitle: {
     fontSize: 12,
@@ -1045,14 +1013,28 @@ const s = StyleSheet.create({
     fontWeight: '600',
     color: Colors.textMuted,
     letterSpacing: 0.5,
-    marginBottom: 4,
+  },
+  sampleChip: {
+    backgroundColor: Colors.warningLight,
+    borderWidth: 1,
+    borderColor: Colors.warningBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: BorderRadii.pill,
+  },
+  sampleChipText: {
+    fontSize: 12,
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontWeight: '600',
+    color: Colors.warning,
   },
   simScrollContainer: {
     gap: Spacing.xs,
   },
   simChip: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 12,
     borderRadius: BorderRadii.pill,
     backgroundColor: Colors.surface,
     borderWidth: 1,
@@ -1076,17 +1058,24 @@ const s = StyleSheet.create({
 
   errorBanner: {
     backgroundColor: Colors.dangerLight,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: 8,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: 4,
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexWrap: 'wrap',
     alignItems: 'center',
+    gap: Spacing.xs,
   },
   errorBannerText: {
+    flex: 1,
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
     color: Colors.danger,
+  },
+  errorBannerDismiss: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xs,
   },
   errorBannerLink: {
     fontSize: 12,
@@ -1108,8 +1097,29 @@ const s = StyleSheet.create({
     alignSelf: 'center',
     width: '100%',
   },
+  cardCompact: {
+    padding: Spacing.lg,
+  },
+  stackCompact: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: Spacing.md,
+  },
 
-  /* Dynamic Wide Summary Card */
+  loadingBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    paddingVertical: Spacing.xxl,
+  },
+  loadingText: {
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontWeight: '600',
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+
+  /* Rating Summary Card */
   summaryCard: {
     flexDirection: 'row',
     backgroundColor: Colors.card,
@@ -1121,36 +1131,6 @@ const s = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.xl,
   },
-  summaryCardSkeleton: {
-    flexDirection: 'row',
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.xl,
-    marginBottom: Spacing.xl,
-    alignItems: 'center',
-    gap: Spacing.xl,
-  },
-  skeletonCircle: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: Colors.border,
-  },
-  skeletonLineShort: {
-    width: '40%',
-    height: 14,
-    backgroundColor: Colors.border,
-    borderRadius: 4,
-  },
-  skeletonLineLong: {
-    width: '80%',
-    height: 18,
-    backgroundColor: Colors.border,
-    borderRadius: 4,
-  },
-
   scoreBox: {
     alignItems: 'center',
     minWidth: 160,
@@ -1158,11 +1138,27 @@ const s = StyleSheet.create({
     borderRightColor: Colors.border,
     paddingRight: Spacing.lg,
   },
+  scoreBoxCompact: {
+    minWidth: 0,
+    width: '100%',
+    borderRightWidth: 0,
+    paddingRight: 0,
+    paddingBottom: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
   scoreValText: {
     fontSize: 42,
     fontFamily: 'PlusJakartaSans_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary,
+  },
+  scoreEmptyText: {
+    fontSize: 16,
+    fontFamily: 'PlusJakartaSans_700Bold',
+    fontWeight: '700',
+    color: Colors.textPrimary,
+    marginBottom: 4,
   },
   starsRow: {
     fontFamily: 'PlusJakartaSans_400Regular',
@@ -1175,20 +1171,7 @@ const s = StyleSheet.create({
     fontSize: 12,
     color: Colors.textMuted,
     textAlign: 'center',
-    lineHeight: 15,
-  },
-  periodCompareTag: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: BorderRadii.pill,
-    marginTop: 6,
-  },
-  periodCompareText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
+    lineHeight: 16,
   },
 
   breakdownCol: {
@@ -1232,13 +1215,13 @@ const s = StyleSheet.create({
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
     color: Colors.textPrimary,
-    width: 24,
+    width: 28,
   },
   barCount: {
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 12,
     color: Colors.textMuted,
-    width: 70,
+    width: 80,
   },
 
   /* Trend Card */
@@ -1256,11 +1239,6 @@ const s = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.lg,
   },
-  trendTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
   trendTitle: {
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
@@ -1268,60 +1246,18 @@ const s = StyleSheet.create({
     color: Colors.textMuted,
     letterSpacing: 0.5,
   },
-  metricBadge: {
-    backgroundColor: Colors.primaryLight,
-    color: Colors.primary,
+  trendEmptyText: {
+    fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: BorderRadii.pill,
-  },
-  trendSub: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-    marginTop: 2,
-  },
-  trendControlsRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  metricChipGroup: {
-    gap: 4,
-  },
-  metricChip: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  metricChipActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
-  },
-  metricChipText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
     color: Colors.textSecondary,
   },
-  metricChipTextActive: {
-    color: '#FFFFFF',
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
   viewTableToggleBtn: {
+    minHeight: 44,
+    justifyContent: 'center',
     backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 14,
     borderRadius: BorderRadii.pill,
   },
   viewTableToggleBtnText: {
@@ -1334,7 +1270,7 @@ const s = StyleSheet.create({
   compactTrendChartBox: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    height: 140,
+    minHeight: 160,
     alignItems: 'flex-end',
     backgroundColor: Colors.surface,
     borderRadius: BorderRadii.input,
@@ -1372,6 +1308,7 @@ const s = StyleSheet.create({
     fontWeight: '600',
     color: Colors.textSecondary,
     marginTop: 6,
+    textAlign: 'center',
   },
   chartTrendText: {
     fontSize: 12,
@@ -1438,8 +1375,9 @@ const s = StyleSheet.create({
     gap: Spacing.xs,
   },
   filterPill: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 14,
-    paddingVertical: 7,
     borderRadius: BorderRadii.pill,
     backgroundColor: Colors.card,
     borderWidth: 1,
@@ -1456,7 +1394,7 @@ const s = StyleSheet.create({
     color: Colors.textSecondary,
   },
   filterPillTextActive: {
-    color: '#FFFFFF',
+    color: Colors.background,
     fontFamily: 'PlusJakartaSans_700Bold',
     fontWeight: '700',
   },
@@ -1476,11 +1414,17 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
+    gap: Spacing.sm,
     marginBottom: Spacing.xs,
+  },
+  cardHeaderMain: {
+    flex: 1,
+    minWidth: 0,
   },
   customerMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: Spacing.xs,
   },
   customerNameText: {
@@ -1496,7 +1440,9 @@ const s = StyleSheet.create({
     fontWeight: '600',
   },
   verifiedMarkerChip: {
-    backgroundColor: '#DCFCE7',
+    backgroundColor: Colors.successLight,
+    borderWidth: 1,
+    borderColor: Colors.successBorder,
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: BorderRadii.pill,
@@ -1563,8 +1509,10 @@ const s = StyleSheet.create({
   },
   replyHeaderRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 4,
     marginBottom: 4,
   },
   replyTitleText: {
@@ -1600,8 +1548,10 @@ const s = StyleSheet.create({
 
   cardFooterRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.sm,
     paddingTop: Spacing.sm,
     borderTopWidth: 1,
     borderTopColor: Colors.border,
@@ -1609,82 +1559,83 @@ const s = StyleSheet.create({
   replyPolicyHintText: {
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 12,
-    color: Colors.textMuted,
+    color: Colors.textSubtle,
+    flexShrink: 1,
   },
   draftSavedHintText: {
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
     color: Colors.primary,
+    flexShrink: 1,
   },
   replyActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 44,
     backgroundColor: Colors.primary,
     paddingHorizontal: 14,
-    paddingVertical: 8,
     borderRadius: BorderRadii.pill,
   },
   replyActionBtnText: {
-    color: '#FFFFFF',
+    color: Colors.background,
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
   },
 
-  /* Empty State */
+  /* Empty States */
   emptyStateBox: {
     alignItems: 'center',
     paddingVertical: Spacing.xxl,
-  },
-  emptyIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 48,
-    marginBottom: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    gap: Spacing.xs,
   },
   emptyTitle: {
     fontSize: 17,
     fontFamily: 'PlusJakartaSans_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary,
-    marginBottom: 4,
+    marginTop: Spacing.xs,
+    textAlign: 'center',
   },
   emptySub: {
     fontFamily: 'PlusJakartaSans_400Regular',
     fontSize: 12,
+    lineHeight: 17,
     color: Colors.textSecondary,
     textAlign: 'center',
+  },
+  emptyActionBtn: {
+    marginTop: Spacing.sm,
+    minHeight: 44,
+    justifyContent: 'center',
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 20,
+    borderRadius: BorderRadii.input,
+  },
+  emptyActionBtnText: {
+    color: Colors.background,
+    fontSize: 13,
+    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontWeight: '600',
   },
 
   /* Toast Banner */
   toastBanner: {
     position: 'absolute',
     bottom: 24,
-    left: Spacing.xl,
-    right: Spacing.xl,
-    backgroundColor: '#0F172A',
+    left: Spacing.lg,
+    right: Spacing.lg,
+    backgroundColor: Colors.textPrimary,
     borderRadius: BorderRadii.input,
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     elevation: 8,
   },
   toastText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    flex: 1,
-  },
-  toastUndoBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-    marginLeft: Spacing.md,
-  },
-  toastUndoText: {
-    color: '#FFFFFF',
+    color: Colors.background,
     fontSize: 12,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
@@ -1725,16 +1676,15 @@ const s = StyleSheet.create({
     marginTop: 2,
   },
   closeModalBtn: {
-    padding: 4,
-  },
-  closeModalText: {
-    fontSize: 22,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textMuted,
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: -10,
+    marginRight: -10,
   },
   modalScroll: {
-    flex: 1,
+    flexShrink: 1,
   },
 
   quoteCard: {
@@ -1744,6 +1694,11 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
     marginBottom: Spacing.lg,
+  },
+  quoteHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 4,
   },
   quoteStarsText: {
     fontFamily: 'PlusJakartaSans_400Regular',
@@ -1854,8 +1809,8 @@ const s = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'PlusJakartaSans_600SemiBold',
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: Colors.background,
   },
 });
 
-export default withComingSoon(ReviewsScreen, 'Reviews');
+export default ReviewsScreen;

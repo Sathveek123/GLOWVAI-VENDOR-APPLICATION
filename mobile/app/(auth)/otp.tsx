@@ -28,6 +28,8 @@ import { FontFamily } from '../../src/theme/typography';
 const CODE_LENGTH = 4;
 const RESEND_SECONDS = 30;
 const MAX_ATTEMPTS = 3;
+// Dev builds only: the backend accepts this fixed code outside production, so the screen can skip typing it.
+const DEV_BYPASS_CODE = '4892';
 const LOCK_SECONDS = 60;
 
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -135,6 +137,12 @@ export default function OtpScreen() {
       setLoading(false);
     }
   };
+
+  // Dev builds only: verify straight away with the dev code. Release builds never run this.
+  useEffect(() => {
+    if (__DEV__ && phone) verify(DEV_BYPASS_CODE);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phone]);
 
   const onChange = (v: string) => {
     const digits = v.replace(/\D/g, '').slice(0, CODE_LENGTH);

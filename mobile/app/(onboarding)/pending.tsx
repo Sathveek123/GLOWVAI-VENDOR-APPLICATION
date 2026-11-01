@@ -23,6 +23,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import AppHeader from '../../src/components/AppHeader';
 import useVendorStore from '../../src/store/useVendorStore';
+import { vendorApi } from '../../src/services/api';
+import { getSession, clearSession } from '../../src/services/session';
 
 type StatusType = 'under_review' | 'action_needed' | 'rejected' | 'approved' | 'maintenance';
 
@@ -46,6 +48,7 @@ export default function PendingVerification() {
   const [isOffline, setIsOffline] = useState(false);
   const [showSubmittedDetails, setShowSubmittedDetails] = useState(false);
   const [submittedData, setSubmittedData] = useState<any>(null);
+  const [kycRejectionReason, setKycRejectionReason] = useState<string | null>(null);
 
   // Timeline Steps Configuration
   const [timeline, setTimeline] = useState<TimelineStep[]>([
@@ -113,7 +116,22 @@ export default function PendingVerification() {
       const now = new Date();
       setLastCheckedTime(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 
-      const storedStatus = await AsyncStorage.getItem('vendor_onboarding_status');
+      // Ask the backend for the vendor's KYC status; fall back to the stored value offline.
+      let storedStatus = await AsyncStorage.getItem('vendor_onboarding_status');
+      try {
+        const res: any = await vendorApi.me();
+        const kyc = res?.vendor?.kycStatus;
+        if (kyc) {
+          storedStatus = kyc === 'APPROVED' ? 'approved' : kyc === 'REJECTED' ? 'rejected' : 'pending';
+          await AsyncStorage.multiSet([
+            ['vendor_onboarding_status', storedStatus],
+            ['vendor_kyc_status', kyc],
+          ]);
+          setKycRejectionReason(res.vendor.kycRejectionReason || null);
+        }
+      } catch (_) {
+        setIsOffline(true);
+      }
       if (storedStatus === 'approved') {
         setStatus('approved');
       } else if (storedStatus === 'action_needed') {
@@ -132,13 +150,24 @@ export default function PendingVerification() {
 
   const autoRouteApproved = async () => {
     await AsyncStorage.setItem('vendor_registered', 'true');
-    await AsyncStorage.setItem('vendor_session_token', 'TOKEN_VND_AUTH_ACTIVE');
+    // Use the vendor the backend issued at onboarding; the session token already carries it.
+    const session = await getSession();
+    if (!session.token || !session.vendorId || !session.storeId) {
+      await clearSession();
+      router.replace('/(auth)/login');
+      return;
+    }
+    let profile: any = null;
+    try {
+      profile = (await vendorApi.me() as any)?.vendor;
+    } catch (_) {}
     setVendor({
-      vendorId: 'VND-001',
-      name: submittedData?.stepA?.storeName || 'Your store',
-      storeId: 'DS-VIJ-01',
-      phone: '9876543210',
-      email: 'vendor@glowvai.com',
+      vendorId: session.vendorId,
+      storeId: session.storeId,
+      name: profile?.name || submittedData?.stepA?.ownerName || 'Your store',
+      shopName: profile?.shopName || submittedData?.stepA?.storeName,
+      phone: profile?.phone || (await AsyncStorage.getItem('vendor_phone')) || '',
+      email: profile?.email,
       isOnline: true,
     });
     router.replace('/(vendor)/home');
@@ -428,7 +457,7 @@ export default function PendingVerification() {
               </View>
 
               <Text style={s.rejectedBodyText}>
-                The compliance audit could not be approved due to invalid business license records or unverified storefront address.
+                {kycRejectionReason || 'The compliance audit could not be approved due to invalid business license records or unverified storefront address.'}
               </Text>
 
               <TouchableOpacity

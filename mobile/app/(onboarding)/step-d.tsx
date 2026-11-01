@@ -21,6 +21,8 @@ import {
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { onboardingApi } from '../../src/services/api';
+import { saveSession } from '../../src/services/session';
+import { resetSocket } from '../../src/services/socket';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import AppHeader from '../../src/components/AppHeader';
 
@@ -219,7 +221,9 @@ export default function OnboardingStepD() {
 
       // The full bank account number is intentionally not stored on the device.
       // The server must receive it through a secure channel (see audit section 2, C6/C7).
-      await onboardingApi.submit({
+      // The backend takes the phone from the verified session and returns the new
+      // vendorId/storeId with a session token that carries them.
+      const result: any = await onboardingApi.submit({
         ownerName: stepA.ownerName,
         shopName: stepA.storeName,
         phone: phone ?? '',
@@ -244,6 +248,16 @@ export default function OnboardingStepD() {
         seedSkus: selectedSkus,
       });
 
+      if (result?.token) {
+        await saveSession({
+          token: result.token,
+          vendorId: result.vendorId,
+          storeId: result.storeId,
+          kycStatus: result.kycStatus || 'PENDING',
+        });
+        resetSocket();
+      }
+      await AsyncStorage.setItem('vendor_registered', 'true');
       await AsyncStorage.setItem('vendor_onboarding_status', 'pending');
 
       setShowConfirmModal(false);

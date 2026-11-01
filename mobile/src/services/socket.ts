@@ -9,6 +9,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { io, Socket } from 'socket.io-client';
+import { getSessionToken } from './session';
 
 const BACKEND_URL = process.env.EXPO_PUBLIC_VENDOR_API_URL || 'http://localhost:4000';
 
@@ -25,6 +26,10 @@ export function getSocket(): Socket {
       randomizationFactor: 0.5,
       timeout: 10000,
       autoConnect: true,
+      // The backend takes the vendor's identity from this token, not from event payloads.
+      auth: (cb: (data: object) => void) => {
+        getSessionToken().then(token => cb({ token })).catch(() => cb({}));
+      },
     });
 
     socket.on('connect', () => {
@@ -78,6 +83,11 @@ export function acceptOrderOffer(orderId: string, vendorId: string) {
 export function declineOrderOffer(orderId: string, vendorId: string) {
   const s = getSocket();
   s.emit('DECLINE_ORDER', { orderId, vendorId });
+}
+
+/** Call after sign-in or onboarding so the next connection carries the new session token. */
+export function resetSocket() {
+  disconnectSocket();
 }
 
 export function disconnectSocket() {

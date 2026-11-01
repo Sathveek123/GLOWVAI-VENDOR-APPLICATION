@@ -22,12 +22,11 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import useVendorStore from '../../src/store/useVendorStore';
-import { inventoryApi } from '../../src/services/api';
+import * as DocumentPicker from 'expo-document-picker';
+import { inventoryApi, uploadsApi } from '../../src/services/api';
 import type { InventoryItem } from '../../src/store/useVendorStore';
 import AppHeader from '../../src/components/AppHeader';
 import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
-
-const STORE_ID = process.env.EXPO_PUBLIC_STORE_ID || 'DS-VIJ-01';
 
 const CATEGORIES = [
   'Skincare',
@@ -37,6 +36,11 @@ const CATEGORIES = [
   'Bath & Body',
   'Tools & Brushes',
 ];
+
+// Categories used by the GlowVAI shop. Only Skincare products with one of these are listed there for now.
+const SHOP_CATEGORIES = ['Serums', 'Moisturizers', 'Suncare', 'Cleansers', 'Treatments'];
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 const GST_SLABS = [
   { label: '5% GST (Essential Oils & Soaps)', value: 5 },
@@ -69,12 +73,14 @@ export default function AddSkuScreen() {
   const [brand, setBrand] = useState(existingItem?.brand || '');
   const [category, setCategory] = useState(existingItem?.category || 'Skincare');
   const [description, setDescription] = useState(existingItem?.description || '');
+  const [shopCategory, setShopCategory] = useState<string>(existingItem?.shopCategory || '');
+  const [keyActivesText, setKeyActivesText] = useState((existingItem?.keyActives || []).join(', '));
 
   // Variant Management State
   const [shadeVariants, setShadeVariants] = useState(INITIAL_MAKEUP_SHADES);
   const [activeVariantId, setActiveVariantId] = useState('v1');
   const [selectedShadeName, setSelectedShadeName] = useState('120 Classic Ivory');
-  const [selectedVolume, setSelectedVolume] = useState('30 ml');
+  const [selectedVolume, setSelectedVolume] = useState(existingItem?.packSize || '30 ml');
   const [newShadeInput, setNewShadeInput] = useState('');
   const [newShadeHex, setNewShadeHex] = useState('#E0A899');
   const [showAddVariantForm, setShowAddVariantForm] = useState(false);
@@ -92,11 +98,7 @@ export default function AddSkuScreen() {
   const [batchExpiry, setBatchExpiry] = useState(existingItem?.expiryDate || '2027-04-30');
 
   // Images State
-  const [images, setImages] = useState<string[]>(
-    existingItem?.images && existingItem.images.length > 0
-      ? existingItem.images
-      : ['https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=400']
-  );
+  const [images, setImages] = useState<string[]>(existingItem?.images || []);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [imageUploadProgress, setImageUploadProgress] = useState(0);
   const [imageScanError, setImageScanError] = useState(false);
@@ -149,6 +151,9 @@ export default function AddSkuScreen() {
 
     if (!productName.trim()) errors.productName = 'Product name is required.';
     if (!brand.trim()) errors.brand = 'Brand name is required.';
+    if (category === 'Skincare' && !SHOP_CATEGORIES.includes(shopCategory)) {
+      errors.shopCategory = 'Choose the shop category for this Skincare product.';
+    }
     if (!skuCode.trim()) errors.skuCode = 'SKU code is required.';
     if (isDuplicateSku) errors.skuCode = 'Duplicate SKU code detected in catalog.';
 
@@ -205,30 +210,40 @@ export default function AddSkuScreen() {
     }
   };
 
-  // Image Upload Simulation Handler
-  const handleSimulateImageUpload = () => {
+  // Picks a photo and uploads it to the backend (Firebase Storage in production).
+  const handlePickImage = async () => {
     if (images.length >= 3) {
       setApiErrorMsg('Maximum 3 product images allowed.');
       return;
     }
-    setUploadingImage(true);
+    setApiErrorMsg('');
     setImageScanError(false);
-    setImageUploadProgress(10);
-
-    const interval = setInterval(() => {
-      setImageUploadProgress(prev => {
-        if (prev >= 90) {
-          clearInterval(interval);
-          setUploadingImage(false);
-          setImages(curr => [
-            ...curr,
-            'https://images.unsplash.com/photo-1556228720-195a672e8a03?w=400',
-          ]);
-          return 100;
-        }
-        return prev + 25;
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['image/jpeg', 'image/png', 'image/webp'],
+        copyToCacheDirectory: true,
       });
-    }, 250);
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      if ((asset.size ?? 0) > MAX_IMAGE_BYTES) {
+        setApiErrorMsg('This photo is larger than 5 MB. Choose a smaller one.');
+        return;
+      }
+      setUploadingImage(true);
+      setImageUploadProgress(50);
+      const res = await uploadsApi.image({
+        uri: asset.uri,
+        name: asset.name || 'photo.jpg',
+        mimeType: asset.mimeType || 'image/jpeg',
+        file: (asset as any).file,
+      });
+      setImages(curr => [...curr, res.url]);
+      setImageUploadProgress(100);
+    } catch (err: any) {
+      setApiErrorMsg(err?.message || 'The photo could not be uploaded. Please try again.');
+    } finally {
+      setUploadingImage(false);
+    }
   };
 
   const handleRemoveImage = (index: number) => {
@@ -251,24 +266,30 @@ export default function AddSkuScreen() {
 
     setLoading(true);
 
-    const variantDetail = category === 'Makeup' ? `Shade: ${selectedShadeName}` : `Size: ${selectedVolume}`;
+    const isMakeup = category === 'Makeup';
+    const stockNum = parseInt(initialStock, 10) || 0;
     const payload: InventoryItem = {
-      productId: existingItem?.productId || `P-${Date.now().toString().slice(-4)}`,
-      name: productName,
-      brand,
+      productId: existingItem?.productId || '',
+      name: productName.trim(),
+      brand: brand.trim(),
       category,
-      description: `${description} (${variantDetail})`,
+      shopCategory: category === 'Skincare' ? shopCategory : null,
+      description: isMakeup && selectedShadeName ? `${description.trim()} (Shade: ${selectedShadeName})`.trim() : description.trim(),
+      packSize: isMakeup ? '' : selectedVolume,
+      keyActives: keyActivesText.split(',').map(k => k.trim()).filter(Boolean),
       sku: skuCode,
       mrp: mrpNum,
       sellingPrice: sellingNum,
       gstPercent,
-      stock: parseInt(initialStock, 10) || 0,
+      stock: stockNum,
       bin: shelfLocation,
       expiryDate: batchExpiry,
       images,
-      active: (parseInt(initialStock, 10) || 0) > 0,
+      active: existingItem ? existingItem.active : true,
       updatedAt: Date.now(),
     };
+    // The backend assigns productId, vendorId, storeId and the approval status.
+    const { productId: _ignored, active: _active, updatedAt: _updated, ...body } = payload;
 
     try {
       if (isOffline) {
@@ -280,19 +301,16 @@ export default function AddSkuScreen() {
         }
       } else {
         if (isEditing && existingItem) {
-          await inventoryApi.update(existingItem.productId, payload);
-          updateInventoryItem(existingItem.productId, payload);
+          const res: any = await inventoryApi.update(existingItem.productId, body);
+          updateInventoryItem(existingItem.productId, res?.item || payload);
+          setCreatedProductPreview(res?.item || payload);
         } else {
-          const res = await inventoryApi.add(payload);
-          if (res?.item) {
-            addInventoryItem(res.item);
-          } else {
-            addInventoryItem(payload);
-          }
+          const res: any = await inventoryApi.add(body);
+          addInventoryItem(res?.item || payload);
+          setCreatedProductPreview(res?.item || payload);
         }
       }
 
-      setCreatedProductPreview(payload);
       setShowSuccessModal(true);
     } catch (err: any) {
       setApiErrorMsg(err.message || 'Failed to save product SKU. Please try again.');
@@ -311,7 +329,8 @@ export default function AddSkuScreen() {
     setSkuCode('');
     setInitialStock('20');
     setFormErrors({});
-    setImages(['https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=400']);
+    setImages([]);
+    setKeyActivesText('');
   };
 
   return (
@@ -506,6 +525,49 @@ export default function AddSkuScreen() {
                           ))}
                         </ScrollView>
                       </View>
+                    </View>
+
+                    {/* Shop category (required for Skincare) */}
+                    {category === 'Skincare' ? (
+                      <View style={s.fieldGroup}>
+                        <Text style={s.fieldLabel}>Shop category (required)</Text>
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.catPillsRow}>
+                          {SHOP_CATEGORIES.map(sc => (
+                            <TouchableOpacity
+                              key={sc}
+                              style={[s.catPill, shopCategory === sc && s.catPillActive]}
+                              onPress={() => {
+                                setShopCategory(sc);
+                                if (formErrors.shopCategory) setFormErrors({ ...formErrors, shopCategory: '' });
+                              }}
+                            >
+                              <Text style={[s.catPillText, shopCategory === sc && s.catPillTextActive]}>{sc}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </ScrollView>
+                        {formErrors.shopCategory ? <Text style={s.errorText}>{formErrors.shopCategory}</Text> : null}
+                        <Text style={s.shopNoteText}>
+                          Where this product appears on the GlowVAI shop. New products, and edits to the name, brand, category, description, photos or size, are reviewed before they go live.
+                        </Text>
+                      </View>
+                    ) : (
+                      <View style={s.fieldGroup}>
+                        <Text style={s.shopNoteText}>
+                          Only Skincare products are listed on the GlowVAI shop for now. You can still add this product to your catalog.
+                        </Text>
+                      </View>
+                    )}
+
+                    {/* Key actives */}
+                    <View style={s.fieldGroup}>
+                      <Text style={s.fieldLabel}>Key actives (comma separated, optional)</Text>
+                      <TextInput
+                        style={s.fieldInput}
+                        placeholder="e.g. Niacinamide, Zinc PCA"
+                        placeholderTextColor={Colors.textMuted}
+                        value={keyActivesText}
+                        onChangeText={setKeyActivesText}
+                      />
                     </View>
 
                     {/* Short Description */}
@@ -803,7 +865,7 @@ export default function AddSkuScreen() {
                     ) : (
                       <View style={s.imageGuidanceBox}>
                         <Text style={s.imageGuidanceText}>
-                          📷 Drag & Drop or click photo upload. PNG/JPG up to 5MB. Clear front angle with visible brand label.
+                          📷 Click to upload a photo. JPEG, PNG or WebP up to 5 MB. Clear front angle with visible brand label.
                         </Text>
                       </View>
                     )}
@@ -835,7 +897,7 @@ export default function AddSkuScreen() {
                       {images.length < 3 && (
                         <TouchableOpacity
                           style={s.dropzoneCard}
-                          onPress={handleSimulateImageUpload}
+                          onPress={handlePickImage}
                           disabled={uploadingImage}
                           activeOpacity={0.8}
                         >
@@ -848,7 +910,7 @@ export default function AddSkuScreen() {
                             <>
                               <Ionicons name="camera-outline" size={18} style={{ color: '#475569' }} />
                               <Text style={s.dropzoneText}>+ Upload Photo ({images.length + 1}/3)</Text>
-                              <Text style={s.dropzoneSub}>Drag and drop image here</Text>
+                              <Text style={s.dropzoneSub}>JPEG, PNG or WebP, up to 5 MB</Text>
                             </>
                           )}
                         </TouchableOpacity>
@@ -961,7 +1023,7 @@ export default function AddSkuScreen() {
             </View>
             <Text style={s.successTitle}>Product SKU Saved Successfully!</Text>
             <Text style={s.successSub}>
-              "{createdProductPreview.name}" is now live and updated in your dark store catalog.
+              "{createdProductPreview.name}" is saved. It goes live on the GlowVAI shop after our team approves it{createdProductPreview.category === 'Skincare' ? '' : ' (only Skincare products are listed on the shop for now)'}.
             </Text>
 
             <View style={s.previewSummaryBox}>
@@ -1355,6 +1417,12 @@ const s = StyleSheet.create({
   fieldInputError: {
     borderColor: Colors.danger,
     backgroundColor: Colors.dangerLight,
+  },
+  shopNoteText: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: '#475569',
+    marginTop: 6,
   },
   errorText: {
     fontSize: 12,

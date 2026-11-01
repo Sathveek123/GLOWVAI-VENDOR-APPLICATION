@@ -26,10 +26,10 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import useVendorStore from '../../src/store/useVendorStore';
+import { useVendorSession } from '../../src/services/session';
 import { ordersApi } from '../../src/services/api';
 import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
 
-const VENDOR_ID = process.env.EXPO_PUBLIC_VENDOR_ID || 'VND-001';
 
 type Stage = 'accepted' | 'verified' | 'sealed' | 'rider_arrived' | 'handover_complete';
 
@@ -45,6 +45,9 @@ interface PackItem {
 }
 
 function PackOrderScreen() {
+  // The signed-in vendor (the backend also takes it from the session token).
+  const vendorSession = useVendorSession();
+  const VENDOR_ID = vendorSession.vendorId || '';
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isExpanded = width >= 1024;

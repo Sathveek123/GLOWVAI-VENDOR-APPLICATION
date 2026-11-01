@@ -24,6 +24,7 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import useVendorStore from '../../src/store/useVendorStore';
+import { useVendorSession, getSession } from '../../src/services/session';
 import { vendorApi, ordersApi, earningsApi, inventoryApi } from '../../src/services/api';
 import { getSocket, registerVendor, setVendorStatus, acceptOrderOffer, declineOrderOffer } from '../../src/services/socket';
 import { soundService } from '../../src/services/sound';
@@ -31,8 +32,6 @@ import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectB
 import MobileBottomNav from '../../src/components/MobileBottomNav';
 import AppHeader from '../../src/components/AppHeader';
 
-const VENDOR_ID = process.env.EXPO_PUBLIC_VENDOR_ID || 'VND-001';
-const STORE_ID  = process.env.EXPO_PUBLIC_STORE_ID  || 'DS-VIJ-01';
 
 const PAUSE_REASONS = [
   'Store busy / Heavy order rush',
@@ -42,6 +41,10 @@ const PAUSE_REASONS = [
 ];
 
 export default function GlowVAIVendorHomeScreen() {
+  // The signed-in vendor (the backend also takes it from the session token).
+  const vendorSession = useVendorSession();
+  const VENDOR_ID = vendorSession.vendorId || '';
+  const STORE_ID = vendorSession.storeId || '';
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isExpanded = width >= 1024;
@@ -115,10 +118,10 @@ export default function GlowVAIVendorHomeScreen() {
     setIsLoadingDashboard(true);
     try {
       const [vRes, oRes, eRes, iRes] = await Promise.all([
-        vendorApi.getProfile(VENDOR_ID).catch(() => null),
-        ordersApi.getAll({ storeId: STORE_ID }).catch(() => null),
-        earningsApi.getSummary(VENDOR_ID).catch(() => null),
-        inventoryApi.getAll(STORE_ID).catch(() => null),
+        vendorApi.me().catch(() => null),
+        ordersApi.getAll().catch(() => null),
+        getSession().then(sess => (sess.vendorId ? earningsApi.getSummary(sess.vendorId) : null)).catch(() => null),
+        inventoryApi.getAll().catch(() => null),
       ]);
 
       if (vRes?.vendor) setVendor(vRes.vendor);

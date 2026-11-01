@@ -24,13 +24,13 @@ import {
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import useVendorStore from '../../src/store/useVendorStore';
+import { useVendorSession } from '../../src/services/session';
 import { inventoryApi } from '../../src/services/api';
 import type { InventoryItem } from '../../src/store/useVendorStore';
 import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
 import MobileBottomNav from '../../src/components/MobileBottomNav';
 import AppHeader from '../../src/components/AppHeader';
 
-const STORE_ID = process.env.EXPO_PUBLIC_STORE_ID || 'DS-VIJ-01';
 
 const CATEGORIES = [
   'All',
@@ -196,6 +196,9 @@ SKU-GLOW-203,Biotique Botanical Bio Kelp Protein Shampoo 340ml,Hair care,399,329
 SKU-GLOW-204,Bella Vita Organic Luxury Woman Perfume Gift Set,Fragrance,599,499,8,Shelf D-01-08`;
 
 export default function CatalogScreen() {
+  // The signed-in vendor (the backend also takes it from the session token).
+  const vendorSession = useVendorSession();
+  const STORE_ID = vendorSession.storeId || '';
   const router = useRouter();
   const { inventory, setInventory, updateInventoryItem } = useVendorStore();
   const { width } = useWindowDimensions();
@@ -645,6 +648,17 @@ export default function CatalogScreen() {
                               {item.description && (
                                 <Text style={s.productVariantText} numberOfLines={1}>{item.description}</Text>
                               )}
+                              {item.approvalStatus ? (
+                                <Text style={s.productVariantText} numberOfLines={2}>
+                                  {item.listing?.live
+                                    ? 'On the GlowVAI shop'
+                                    : item.approvalStatus === 'REJECTED'
+                                      ? `Not approved: ${item.rejectionReason || 'see support'}`
+                                      : item.approvalStatus === 'PENDING'
+                                        ? 'Waiting for GlowVAI approval'
+                                        : `Not on the shop: ${(item.listing?.blockers || []).join(', ')}`}
+                                </Text>
+                              ) : null}
                             </View>
 
                             {/* Live Toggle Pill */}

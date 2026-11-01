@@ -495,7 +495,12 @@ function pushNewOrderToStore(storeId, orderData) {
 // ── Firebase Realtime Database Direct Sync Engine ───────────────────────────
 const FIREBASE_RTDB_URL = (process.env.FIREBASE_DATABASE_URL || 'https://glowvai-v2-default-rtdb.firebaseio.com').replace(/\/$/, '');
 
+// Off by default. Writes go to the live database without credentials, so enable this
+// only for a local emulator (FIREBASE_DIRECT_SYNC=true). The startup seeding was removed.
+const FIREBASE_DIRECT_SYNC = process.env.FIREBASE_DIRECT_SYNC === 'true';
+
 async function syncToFirebaseRTDB(dbPath, payload, method = 'PUT') {
+  if (!FIREBASE_DIRECT_SYNC) return;
   try {
     const url = `${FIREBASE_RTDB_URL}/${dbPath}.json`;
     await fetch(url, {
@@ -507,26 +512,6 @@ async function syncToFirebaseRTDB(dbPath, payload, method = 'PUT') {
     logger.warn(`Firebase RTDB sync failed for ${dbPath}: ${e.message}`);
   }
 }
-
-// Initial bootstrap seeding to Firebase Realtime Database
-async function bootstrapFirebaseSync() {
-  try {
-    logger.info('🔄 Bootstrapping initial database state to Firebase RTDB (glowvai-v2)...');
-    for (const v of mockStore.vendors) {
-      await syncToFirebaseRTDB(`vendors/${v.vendorId}`, v);
-    }
-    for (const item of mockStore.inventory) {
-      await syncToFirebaseRTDB(`inventory/${item.productId}`, item);
-    }
-    for (const ord of mockStore.orders) {
-      await syncToFirebaseRTDB(`orders/${ord.orderId}`, ord);
-    }
-    logger.info('✅ Database state synchronized with Firebase Realtime Database');
-  } catch (err) {
-    logger.warn(`Firebase bootstrap sync warning: ${err.message}`);
-  }
-}
-setTimeout(bootstrapFirebaseSync, 1500);
 
 // ── Security Headers ────────────────────────────────────────────────────────
 app.use((req, res, next) => {

@@ -6,6 +6,8 @@ interface MapPickerProps {
   latitude: number;
   longitude: number;
   shopName: string;
+  /** Map height in px (default 320). */
+  height?: number;
   onLocationSelect: (location: {
     latitude: number;
     longitude: number;
@@ -21,6 +23,7 @@ export default function RealInteractiveMap({
   longitude,
   shopName,
   onLocationSelect,
+  height = 320,
 }: MapPickerProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -126,7 +129,7 @@ export default function RealInteractiveMap({
   <div id="map"></div>
 
   <div class="info-bar">
-    <span id="locStatus">📍 <span class="hint">Click or Drag pin</span> to exact dark store shop entrance</span>
+    <span id="locStatus">📍 <span class="hint">Click or Drag pin</span> to your shop entrance</span>
     <span id="coordsDisplay" style="color:#94a3b8; font-family:monospace; font-size:11px;">${latitude.toFixed(4)}, ${longitude.toFixed(4)}</span>
   </div>
 
@@ -265,7 +268,7 @@ export default function RealInteractiveMap({
 </html>`;
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { height }]}>
       {Platform.OS === 'web' ? (
         // @ts-ignore
         <iframe
@@ -273,7 +276,7 @@ export default function RealInteractiveMap({
           srcDoc={mapHtml}
           style={{
             width: '100%',
-            height: 320,
+            height,
             border: 'none',
             borderRadius: 12,
           }}

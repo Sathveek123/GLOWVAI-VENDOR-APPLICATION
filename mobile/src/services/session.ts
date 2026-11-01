@@ -16,6 +16,7 @@ export const SESSION_KEYS = [
   'vendor_registered',
   'vendor_onboarding_status',
   'vendor_phone',
+  'vendor_submitted_at',
 ] as const;
 
 export interface VendorSession {

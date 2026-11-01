@@ -19,7 +19,9 @@ export const Colors = {
   // Typography Contrast (WCAG AA Compliant)
   textPrimary: '#0F172A',    // Deep Slate Text
   textSecondary: '#475569',  // Medium Slate Text
-  textMuted: '#94A3B8',      // Muted Gray Labels
+  textMuted: '#94A3B8',      // Muted Gray Labels (decorative only; below AA for text)
+  textSubtle: '#64748B',     // Helper text and placeholders (4.7:1 on white)
+  inputBorder: '#8291A7',    // Input outline (3.2:1 on white, meets non-text contrast)
 
   // Status & Contextual Colors (Used strictly for functional status)
   success: '#16A34A',        // Green (Delivered, In Stock)

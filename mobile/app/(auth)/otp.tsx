@@ -156,8 +156,8 @@ export default function OtpScreen() {
   const boxSize = isPhone ? 60 : 64;
 
   return (
-    <SellerFrame onBack={editNumber} testID="otp-screen">
-      <View style={{ width: '100%', maxWidth: 440, alignSelf: 'center' }}>
+    <SellerFrame onBack={editNumber} maxWidth={440} testID="otp-screen">
+      <View>
         <Section>
           <Text accessibilityRole="header" style={st.title}>
             Enter the {CODE_LENGTH}-digit code

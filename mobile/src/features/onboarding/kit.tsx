@@ -156,7 +156,9 @@ export function SellerFrame({
   onBack,
   headerRight,
   testID,
+  maxWidth: maxWidthProp,
 }: {
+  maxWidth?: number;
   step?: number;
   title?: string;
   description?: string;
@@ -169,7 +171,7 @@ export function SellerFrame({
 }) {
   const { isPhone, canSplit } = useLayout();
   const insets = useSafeAreaInsets();
-  const maxWidth = wide && canSplit ? WIDE_MAX : FORM_MAX;
+  const maxWidth = maxWidthProp ?? (wide && canSplit ? WIDE_MAX : FORM_MAX);
   const pad = isPhone ? S.lg : S.xl;
 
   return (

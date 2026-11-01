@@ -154,7 +154,7 @@ export default function SplashScreen() {
       } else if (status === 'step-d') {
         setStatusText('Resuming onboarding step D…');
         router.replace('/(onboarding)/step-d');
-      } else if (status === 'pending') {
+      } else if (status === 'pending' || status === 'rejected') {
         setStatusText('Opening application review status…');
         router.replace('/(onboarding)/pending');
       } else if (status === 'approved' || registered === 'true') {

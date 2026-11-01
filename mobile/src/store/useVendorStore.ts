@@ -67,6 +67,18 @@ export interface InventoryItem {
   brand?: string;
   expiryDate?: string;
   updatedAt: number;
+  // Marketplace fields (set by the backend)
+  vendorId?: string;
+  storeId?: string;
+  shopCategory?: string | null;
+  packSize?: string;
+  keyActives?: string[];
+  status?: 'active' | 'paused' | 'deleted';
+  stockOnHand?: number;
+  availableStock?: number;
+  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  rejectionReason?: string | null;
+  listing?: { live: boolean; blockers: string[] };
 }
 
 export interface VendorProfile {

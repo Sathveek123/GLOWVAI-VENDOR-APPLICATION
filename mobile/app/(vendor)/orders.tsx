@@ -25,13 +25,13 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import useVendorStore from '../../src/store/useVendorStore';
+import { useVendorSession } from '../../src/services/session';
 import { ordersApi } from '../../src/services/api';
 import type { Order } from '../../src/store/useVendorStore';
 import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
 import MobileBottomNav from '../../src/components/MobileBottomNav';
 import AppHeader from '../../src/components/AppHeader';
 
-const STORE_ID = process.env.EXPO_PUBLIC_STORE_ID || 'DS-VIJ-01';
 
 const FILTER_TABS = [
   { key: 'ALL',        label: 'All Orders' },
@@ -53,6 +53,9 @@ function formatRelativeTime(timestamp: number) {
 }
 
 export default function OrdersScreen() {
+  // The signed-in vendor (the backend also takes it from the session token).
+  const vendorSession = useVendorSession();
+  const STORE_ID = vendorSession.storeId || '';
   const router = useRouter();
   const { width } = useWindowDimensions();
   const isExpanded = width >= 1024;
@@ -75,7 +78,7 @@ export default function OrdersScreen() {
   const loadOrders = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await ordersApi.getAll({ storeId: STORE_ID });
+      const res = await ordersApi.getAll();
       if (res?.orders && Array.isArray(res.orders)) {
         setOrders(res.orders);
         setIsConnected(true);

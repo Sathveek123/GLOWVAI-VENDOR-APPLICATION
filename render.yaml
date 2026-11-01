@@ -1,0 +1,35 @@
+# Render Blueprint for the GlowVAI vendor backend (Express + firebase-admin).
+# Secrets are declared with sync: false, so Render asks for them when the
+# Blueprint is applied; they are never stored in this file.
+services:
+  - type: web
+    name: glowvai-vendor-api
+    runtime: node
+    region: singapore
+    plan: starter
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node src/server.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      - key: FIREBASE_PROJECT_ID
+        value: glowvai-v2
+      - key: FIREBASE_STORAGE_BUCKET
+        value: glowvai-v2.firebasestorage.app
+      - key: FIREBASE_DATABASE_URL
+        value: https://glowvai-v2-default-rtdb.firebaseio.com
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: VENDOR_TOKEN_SECRET
+        generateValue: true
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: https://glowvai.in,https://www.glowvai.in,http://localhost:3100
+      - key: FIREBASE_DIRECT_SYNC
+        value: "false"

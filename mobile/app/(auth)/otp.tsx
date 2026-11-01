@@ -21,10 +21,12 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import AppHeader from '../../src/components/AppHeader';
+import { authApi, ApiError } from '../../src/services/api';
+import { saveSession } from '../../src/services/session';
+import { resetSocket } from '../../src/services/socket';
 
 const OTP_LENGTH = 4;
 const MAX_ATTEMPTS = 3;
-const DEV_TEST_OTP = '4892';
 
 export default function OTPScreen() {
   const router = useRouter();
@@ -135,25 +137,40 @@ export default function OTPScreen() {
 
     try {
       const fullCode = otp.join('');
-      await new Promise(r => setTimeout(r, 600));
 
-      // Verification must happen on the server. No OTP endpoint exists yet, so the
-      // only accepted code is the developer test code, and only in __DEV__ builds.
-      if (!(__DEV__ && fullCode === DEV_TEST_OTP)) {
-        setErrorMsg('Code verification is not available in this build yet. Please try again later.');
-        return;
+      // The server verifies the code. A development/mock backend accepts its test code;
+      // a production backend expects Firebase phone sign-in and rejects this request.
+      let session;
+      try {
+        session = await authApi.login({ phone, otp: fullCode });
+      } catch (e: any) {
+        if (e instanceof ApiError && e.code === 'OTP_PROVIDER_REQUIRED') {
+          setErrorMsg('SMS sign-in is not available in this build yet. Please contact GlowVAI support.');
+          return;
+        }
+        throw e;
       }
 
       setStatusState('success');
-      await AsyncStorage.setItem('vendor_session_token', 'DEV_SESSION_ONLY');
-      await AsyncStorage.setItem('vendor_id', 'VND-001');
+      await saveSession({
+        token: session.token,
+        vendorId: session.vendorId,
+        storeId: session.storeId,
+        kycStatus: session.kycStatus,
+      });
+      await AsyncStorage.setItem('vendor_registered', session.registered ? 'true' : 'false');
+      if (session.kycStatus) {
+        await AsyncStorage.setItem('vendor_onboarding_status', session.kycStatus === 'APPROVED' ? 'approved' : session.kycStatus === 'REJECTED' ? 'rejected' : 'pending');
+      }
+      resetSocket();
 
-      const isRegistered = await AsyncStorage.getItem('vendor_registered');
       setTimeout(() => {
-        if (isRegistered === 'true') {
+        if (!session.registered) {
+          router.replace('/(onboarding)/step-a');
+        } else if (session.kycStatus === 'APPROVED') {
           router.replace('/(vendor)/home');
         } else {
-          router.replace('/(onboarding)/step-a');
+          router.replace('/(onboarding)/pending');
         }
       }, 500);
     } catch (err: any) {

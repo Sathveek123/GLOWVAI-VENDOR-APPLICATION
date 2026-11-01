@@ -3,30 +3,77 @@
  * All HTTP calls to the vendor backend
  */
 
-const BASE_URL = process.env.EXPO_PUBLIC_VENDOR_API_URL || 'http://localhost:4000';
+import { getSessionToken } from './session';
 
+const BASE_URL = (process.env.EXPO_PUBLIC_VENDOR_API_URL || 'http://localhost:4000').replace(/\/+$/, '');
+
+/** Error with the HTTP status and the backend's error code, when there is one. */
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+// Sends the vendor session token (from OTP sign-in or onboarding) on every call.
 async function apiFetch<T = any>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
   const url = `${BASE_URL}${path}`;
+  const token = await getSessionToken();
+  const isForm = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const res  = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
     ...options,
+    headers: {
+      ...(isForm ? {} : { 'Content-Type': 'application/json' }),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers as Record<string, string> | undefined),
+    },
   });
 
-  const data = await res.json();
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch (_) {
+    data = null;
+  }
   if (!res.ok) {
-    throw new Error(data.error || `HTTP ${res.status}`);
+    const message = data?.message || data?.error || `HTTP ${res.status}`;
+    throw new ApiError(message, res.status, data?.code || (typeof data?.error === 'string' && data?.message ? data.error : undefined));
   }
   return data as T;
 }
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+export interface VendorLoginResponse {
+  ok: boolean;
+  token: string;
+  phone: string;
+  registered: boolean;
+  vendorId: string | null;
+  storeId: string | null;
+  kycStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+  kycRejectionReason: string | null;
+}
+
+export const authApi = {
+  /** Development/mock backends accept the test OTP; production expects a Firebase phone-auth ID token. */
+  login: (body: { phone: string; otp: string } | { firebaseIdToken: string }) =>
+    apiFetch<VendorLoginResponse>('/api/auth/vendor/login', {
+      method: 'POST',
+      body:   JSON.stringify(body),
+    }),
+};
+
 // ── Vendor ────────────────────────────────────────────────────────────────────
 export const vendorApi = {
+  /** The signed-in vendor (includes kycStatus and kycRejectionReason). */
+  me: () => apiFetch('/api/vendor/me'),
+
   getProfile: (vendorId: string) =>
     apiFetch(`/api/vendor/${vendorId}`),
 
@@ -159,6 +206,29 @@ export const inventoryApi = {
     apiFetch(`/api/inventory/${productId}`, { method: 'DELETE' }),
 };
 
+// ── Uploads ───────────────────────────────────────────────────────────────────
+export interface PickedImage {
+  uri: string;
+  name: string;
+  mimeType: string;
+  /** Present on web: the browser File from the picker. */
+  file?: Blob;
+}
+
+export const uploadsApi = {
+  /** Uploads one product photo (JPEG, PNG or WebP, max 5 MB). Returns its public URL. */
+  image: async (img: PickedImage): Promise<{ ok: boolean; url: string }> => {
+    const form = new FormData();
+    if (img.file) {
+      form.append('file', img.file, img.name);
+    } else {
+      // React Native's FormData accepts { uri, name, type } for local files.
+      form.append('file', { uri: img.uri, name: img.name, type: img.mimeType } as any);
+    }
+    return apiFetch('/api/uploads/image', { method: 'POST', body: form });
+  },
+};
+
 // ── Onboarding ────────────────────────────────────────────────────────────────
 export const onboardingApi = {
   submit: (payload: Record<string, any>) =>
@@ -206,6 +276,8 @@ export const healthApi = {
 
 export default {
   BASE_URL,
+  authApi,
+  uploadsApi,
   vendorApi,
   ordersApi,
   inventoryApi,

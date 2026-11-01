@@ -49,8 +49,25 @@ const logger = winston.createLogger({
   transports: [new winston.transports.Console()],
 });
 
+// ── Security configuration (refuses to start in production without secrets) ──
+const {
+  IS_PROD, DEV_OTP, loadSecurityConfig, safeEqual, buildCorsOriginCheck, parseServiceAccountEnv,
+} = require('./lib/config');
+const { signVendorToken, verifyVendorToken, bearerToken, normalizePhone } = require('./lib/vendorAuth');
+const P = require('./lib/products');
+
+let SECURITY;
+try {
+  SECURITY = loadSecurityConfig(logger);
+} catch (_) {
+  process.exit(1);
+}
+
 // ── Firebase Admin SDK ──────────────────────────────────────────────────────
 const admin = require('firebase-admin');
+
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'glowvai-v2';
+const FIREBASE_STORAGE_BUCKET = process.env.FIREBASE_STORAGE_BUCKET || `${FIREBASE_PROJECT_ID}.firebasestorage.app`;
 
 let firebaseInitialized = false;
 try {
@@ -58,28 +75,37 @@ try {
     __dirname,
     process.env.FIREBASE_SERVICE_ACCOUNT_PATH || '../service-account.json'
   );
-  if (fs.existsSync(saPath)) {
+  let credentialSource = null;
+  let serviceAccount = null;
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    serviceAccount = parseServiceAccountEnv(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    credentialSource = 'FIREBASE_SERVICE_ACCOUNT_JSON';
+  } else if (fs.existsSync(saPath)) {
+    serviceAccount = require(saPath);
+    credentialSource = saPath;
+  }
+  if (serviceAccount) {
     admin.initializeApp({
-      credential: admin.credential.cert(require(saPath)),
-      databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://glowvai-v2-default-rtdb.firebaseio.com',
-      projectId:   process.env.FIREBASE_PROJECT_ID || 'glowvai-v2',
+      credential:    admin.credential.cert(serviceAccount),
+      databaseURL:   process.env.FIREBASE_DATABASE_URL || `https://${FIREBASE_PROJECT_ID}-default-rtdb.firebaseio.com`,
+      projectId:     FIREBASE_PROJECT_ID,
+      storageBucket: FIREBASE_STORAGE_BUCKET,
     });
     firebaseInitialized = true;
-    logger.info('✅ Firebase Admin SDK initialized from service-account.json');
-  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    const sa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
-    admin.initializeApp({
-      credential:  admin.credential.cert(sa),
-      databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://glowvai-v2-default-rtdb.firebaseio.com',
-      projectId:   process.env.FIREBASE_PROJECT_ID || 'glowvai-v2',
-    });
-    firebaseInitialized = true;
-    logger.info('✅ Firebase Admin SDK initialized from env JSON');
+    logger.info(`✅ Firebase Admin SDK initialized from ${credentialSource}`);
   } else {
-    logger.warn('⚠️  Firebase service account not found — running in MOCK mode with active local sync');
+    logger.warn('⚠️  Firebase service account not found — running in MOCK mode (data kept in memory)');
   }
 } catch (err) {
+  if (IS_PROD) {
+    logger.error(`Firebase init failed in production: ${err.message}`);
+    process.exit(1);
+  }
   logger.warn(`⚠️  Firebase init failed: ${err.message} — running in MOCK mode`);
+}
+if (IS_PROD && !firebaseInitialized) {
+  logger.error('Refusing to start in production without Firebase credentials (set FIREBASE_SERVICE_ACCOUNT_JSON). Mock mode keeps data in memory only.');
+  process.exit(1);
 }
 
 const db    = firebaseInitialized ? admin.firestore() : null;
@@ -363,17 +389,48 @@ const mockStore = {
     total: { orders: 0, revenue: 0, earnings: 0, pendingPayout: 0 },
   },
   returns: [],
+  storefront: new Map(), // MOCK copy of Firestore products/{productId}
+  uploads: new Map(),    // MOCK image uploads: id -> { buffer, contentType }
 };
+
+// MOCK only: the seed products belong to seed vendor VND-001 and are pre-approved so
+// the mock storefront is not empty. Products created through the API start PENDING.
+const SEED_SHOP_CATEGORY = {
+  'SKU-NIAC-001': 'Serums',
+  'SKU-FACE-WASH-002': 'Cleansers',
+  'SKU-SPF-003': 'Suncare',
+  'SKU-RETINOL-004': 'Treatments',
+};
+for (const p of mockStore.inventory) {
+  const shop = SEED_SHOP_CATEGORY[p.productId];
+  Object.assign(p, {
+    vendorId: 'VND-001',
+    storeId: 'DS-VIJ-01',
+    category: shop ? 'Skincare' : p.category,
+    categoryId: shop ? 'skincare' : p.categoryId,
+    shopCategory: shop || null,
+    keyActives: [],
+    deleted: false,
+    approvalStatus: 'APPROVED',
+    rejectionReason: null,
+    approvedAt: p.updatedAt,
+    createdAt: p.updatedAt,
+  });
+}
 
 // ── Express App & HTTP Server ────────────────────────────────────────────────
 const app    = express();
 const server = http.createServer(app);
 const PORT   = parseInt(process.env.PORT || '4000');
+const CORS   = buildCorsOriginCheck(logger);
+
+// Render (and most hosts) terminate TLS at a proxy; trust it so req.protocol is https.
+app.set('trust proxy', 1);
 
 // ── Socket.IO — Real-time Push ───────────────────────────────────────────────
 const io = new Server(server, {
   cors: {
-    origin:  '*',
+    origin:  CORS.check,
     methods: ['GET', 'POST'],
   },
   pingTimeout:  60000,
@@ -387,85 +444,90 @@ const vendorSockets = new Map();
 const RedisDispatchEngine = require('./services/redisDispatch');
 const dispatchEngine = new RedisDispatchEngine(io);
 
+// Vendor sockets authenticate with the same session token as the REST API
+// (socket.io `auth: { token }`). Outside production an unauthenticated socket may
+// still name its vendorId, so the mock demo keeps working.
+io.use((socket, next) => {
+  const token = socket.handshake.auth && socket.handshake.auth.token;
+  socket.data.vendor = token ? verifyVendorToken(token, SECURITY.vendorTokenSecret) : null;
+  next();
+});
+
+function socketVendor(socket, claimed) {
+  const session = socket.data.vendor;
+  if (session && session.vendorId) return { vendorId: session.vendorId, storeId: session.storeId };
+  if (!IS_PROD && claimed && claimed.vendorId) return { vendorId: claimed.vendorId, storeId: claimed.storeId };
+  return null;
+}
+
 io.on('connection', (socket) => {
   logger.info(`📡 Socket connected: ${socket.id}`);
 
   // Vendor registers itself with location
-  socket.on('vendor:register', ({ vendorId, storeId, lat, lng, name }) => {
-    const vid = vendorId || 'VND-001';
+  socket.on('vendor:register', ({ vendorId, storeId, lat, lng, name } = {}) => {
+    const who = socketVendor(socket, { vendorId, storeId });
+    if (!who) {
+      socket.emit('vendor:registered', { ok: false, error: 'Sign in required' });
+      return;
+    }
+    const vid = who.vendorId;
     vendorSockets.set(vid, socket.id);
     socket.join(`vendor:${vid}`);
-    socket.join(`store:${storeId || 'DS-VIJ-01'}`);
+    if (who.storeId) socket.join(`store:${who.storeId}`);
 
     dispatchEngine.attachSocketToVendor(vid, socket.id);
     if (lat && lng) {
-      dispatchEngine.registerVendorLocation(vid, lng, lat, { storeId, name, socketId: socket.id });
+      dispatchEngine.registerVendorLocation(vid, lng, lat, { storeId: who.storeId, name, socketId: socket.id });
     }
 
     logger.info(`🏪 Vendor ${vid} registered on socket ${socket.id}`);
-    socket.emit('vendor:registered', { ok: true, vendorId: vid, storeId });
+    socket.emit('vendor:registered', { ok: true, vendorId: vid, storeId: who.storeId });
   });
 
   // Real-time vendor GPS location ping
-  socket.on('vendor:location:update', ({ vendorId, latitude, longitude }) => {
-    dispatchEngine.registerVendorLocation(vendorId, longitude, latitude, { socketId: socket.id });
+  socket.on('vendor:location:update', ({ vendorId, latitude, longitude } = {}) => {
+    const who = socketVendor(socket, { vendorId });
+    if (!who) return;
+    dispatchEngine.registerVendorLocation(who.vendorId, longitude, latitude, { socketId: socket.id });
   });
 
   // Vendor updates online/offline duty status
-  socket.on('vendor:setStatus', async ({ vendorId, isOnline }) => {
-    await setVendorOnlineStatus(vendorId, isOnline);
-    dispatchEngine.setVendorOnlineStatus(vendorId, isOnline);
-    io.to(`vendor:${vendorId}`).emit('vendor:statusUpdated', { isOnline });
+  socket.on('vendor:setStatus', async ({ vendorId, isOnline } = {}) => {
+    const who = socketVendor(socket, { vendorId });
+    if (!who) return;
+    try {
+      await setVendorOnlineStatus(who.vendorId, isOnline);
+      dispatchEngine.setVendorOnlineStatus(who.vendorId, isOnline);
+      io.to(`vendor:${who.vendorId}`).emit('vendor:statusUpdated', { isOnline });
+    } catch (err) {
+      logger.warn(`vendor:setStatus failed: ${err.message}`);
+    }
   });
 
-  // ── Rapido-Style Race Condition Handler (Distributed Lock) ─────────────────
-  socket.on('ACCEPT_ORDER', async ({ orderId, vendorId }) => {
-    logger.info(`⚡ Vendor ${vendorId} attempting to accept order ${orderId}...`);
-
-    // Attempt atomic lock acquisition (Redis SETNX)
-    const lockResult = await dispatchEngine.tryClaimOrderLock(orderId, vendorId);
-
-    if (lockResult.success) {
-      logger.info(`🏆 Order ${orderId} WON and LOCKED by Vendor ${vendorId}`);
-
-      // Update order in database / mockStore
-      const order = mockStore.orders.find(o => o.orderId === orderId);
-      if (order) {
-        order.status = 'ACCEPTED';
-        order.vendorId = vendorId;
-        order.acceptedAt = Date.now();
-      }
-
-      // 1. Confirm order to winning vendor
+  // Orders are routed to the vendor that owns the products, so accepting is an
+  // ownership check plus the shared accept logic (stock commit + storefront sync).
+  socket.on('ACCEPT_ORDER', async ({ orderId, vendorId } = {}) => {
+    const who = socketVendor(socket, { vendorId });
+    if (!who) {
+      socket.emit('ORDER_CLAIM_FAILED', { ok: false, orderId, message: 'Sign in required' });
+      return;
+    }
+    const result = await acceptOrder(orderId, { vendorId: who.vendorId });
+    if (result.ok) {
       socket.emit('ORDER_CONFIRMED', {
         ok: true,
         orderId,
-        vendorId,
-        message: 'Order successfully reserved and assigned to you!',
-        order,
-      });
-
-      // 2. Broadcast dismissal to all other candidate vendors
-      socket.broadcast.emit('ORDER_CLAIMED_BY_OTHER', {
-        orderId,
-        winnerVendorId: vendorId,
-        message: 'Order was accepted by another nearby vendor.',
+        vendorId: who.vendorId,
+        message: 'Order accepted',
+        order: result.order,
       });
     } else {
-      logger.warn(`❌ Order ${orderId} claim FAILED for Vendor ${vendorId}. Winner: ${lockResult.winnerId}`);
-
-      // Notify losing vendor
-      socket.emit('ORDER_CLAIM_FAILED', {
-        ok: false,
-        orderId,
-        winnerVendorId: lockResult.winnerId,
-        message: 'Order no longer available. Already accepted by another nearby vendor.',
-      });
+      socket.emit('ORDER_CLAIM_FAILED', { ok: false, orderId, message: result.error });
     }
   });
 
   // Vendor declines an offer
-  socket.on('DECLINE_ORDER', ({ orderId, vendorId }) => {
+  socket.on('DECLINE_ORDER', ({ orderId, vendorId } = {}) => {
     logger.info(`🚫 Vendor ${vendorId} declined order ${orderId}`);
     socket.emit('ORDER_DISMISSED', { orderId });
   });
@@ -483,19 +545,23 @@ function pushToVendor(vendorId, event, data) {
   io.to(`vendor:${vendorId}`).emit(event, data);
 }
 
-// Helper: push new order to candidate vendors via Redis Geospatial Fanout
-function pushNewOrderToStore(storeId, orderData) {
-  if (orderData?.order) {
-    dispatchEngine.dispatchOrderToCandidates(orderData.order, 16.5062, 80.6480);
-  } else {
-    io.to(`store:${storeId}`).emit('order:incoming', orderData);
-  }
+// Helper: push a new order only to the vendor (and store room) that owns it.
+function pushOrderToVendor(order) {
+  const payload = { type: 'NEW_ORDER', order, orderId: order.orderId, sentAt: Date.now() };
+  const room = io.to(`vendor:${order.vendorId}`).to(`store:${order.storeId}`);
+  room.emit('order:incoming', payload);
+  room.emit('ORDER_OFFER', payload);
 }
 
 // ── Firebase Realtime Database Direct Sync Engine ───────────────────────────
 const FIREBASE_RTDB_URL = (process.env.FIREBASE_DATABASE_URL || 'https://glowvai-v2-default-rtdb.firebaseio.com').replace(/\/$/, '');
 
+// Off by default. Writes go to the live database without credentials, so enable this
+// only for a local emulator (FIREBASE_DIRECT_SYNC=true). The startup seeding was removed.
+const FIREBASE_DIRECT_SYNC = process.env.FIREBASE_DIRECT_SYNC === 'true';
+
 async function syncToFirebaseRTDB(dbPath, payload, method = 'PUT') {
+  if (!FIREBASE_DIRECT_SYNC) return;
   try {
     const url = `${FIREBASE_RTDB_URL}/${dbPath}.json`;
     await fetch(url, {
@@ -508,26 +574,6 @@ async function syncToFirebaseRTDB(dbPath, payload, method = 'PUT') {
   }
 }
 
-// Initial bootstrap seeding to Firebase Realtime Database
-async function bootstrapFirebaseSync() {
-  try {
-    logger.info('🔄 Bootstrapping initial database state to Firebase RTDB (glowvai-v2)...');
-    for (const v of mockStore.vendors) {
-      await syncToFirebaseRTDB(`vendors/${v.vendorId}`, v);
-    }
-    for (const item of mockStore.inventory) {
-      await syncToFirebaseRTDB(`inventory/${item.productId}`, item);
-    }
-    for (const ord of mockStore.orders) {
-      await syncToFirebaseRTDB(`orders/${ord.orderId}`, ord);
-    }
-    logger.info('✅ Database state synchronized with Firebase Realtime Database');
-  } catch (err) {
-    logger.warn(`Firebase bootstrap sync warning: ${err.message}`);
-  }
-}
-setTimeout(bootstrapFirebaseSync, 1500);
-
 // ── Security Headers ────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -538,14 +584,10 @@ app.use((req, res, next) => {
 });
 
 // ── CORS ────────────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || '*').split(',');
+// Allowed: https://glowvai.in, https://www.glowvai.in, http://localhost:3100, plus
+// ALLOWED_ORIGINS (comma-separated). Outside production any localhost origin is allowed.
 app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-      return cb(null, true);
-    }
-    cb(new Error('Not allowed by CORS'));
-  },
+  origin: CORS.check,
   credentials: true,
 }));
 
@@ -576,6 +618,48 @@ app.use('/api/', (req, res, next) => {
   next();
 });
 
+// ── Sessions: vendor token (Authorization: Bearer) and admin key (x-admin-key) ──
+app.use((req, _res, next) => {
+  const token = bearerToken(req);
+  req.vendor = token ? verifyVendorToken(token, SECURITY.vendorTokenSecret) : null;
+  const key = req.headers['x-admin-key'];
+  req.isAdmin = typeof key === 'string' && key.length > 0 && safeEqual(key, SECURITY.adminApiKey);
+  next();
+});
+
+function requireVendor(req, res, next) {
+  if (req.vendor && req.vendor.vendorId) return next();
+  return res.status(401).json({ ok: false, error: 'Vendor sign-in required', code: 'VENDOR_AUTH_REQUIRED' });
+}
+
+// A phone-verified session (vendorId may still be null before onboarding).
+function requirePhoneSession(req, res, next) {
+  if (req.vendor && req.vendor.phone) return next();
+  return res.status(401).json({ ok: false, error: 'Verify your phone number first', code: 'VENDOR_AUTH_REQUIRED' });
+}
+
+function requireAdmin(req, res, next) {
+  if (req.isAdmin) return next();
+  return res.status(401).json({ ok: false, error: 'Admin key required (x-admin-key)', code: 'ADMIN_AUTH_REQUIRED' });
+}
+
+function requireVendorOrAdmin(req, res, next) {
+  if (req.isAdmin || (req.vendor && req.vendor.vendorId)) return next();
+  return res.status(401).json({ ok: false, error: 'Vendor sign-in or admin key required', code: 'AUTH_REQUIRED' });
+}
+
+// The vendor in the token may only act on its own records; admins may act on any.
+function ownsRecord(req, record) {
+  if (req.isAdmin) return true;
+  return !!(record && req.vendor && record.vendorId === req.vendor.vendorId);
+}
+
+function sendError(res, err) {
+  const status = err.status || 500;
+  if (status >= 500) logger.error(err.stack || err.message);
+  return res.status(status).json({ ok: false, error: err.message, ...(err.code ? { code: err.code } : {}) });
+}
+
 // ── Request Logger ───────────────────────────────────────────────────────────
 app.use((req, _res, next) => {
   logger.info(`${req.method} ${req.path}`);
@@ -583,102 +667,284 @@ app.use((req, _res, next) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ── ATOMIC INVENTORY CONCURRENCY ENGINE ─────────────────────────────────────
+// ── DATA ACCESS (Firestore in real mode, mockStore in MOCK mode) ─────────────
 // ════════════════════════════════════════════════════════════════════════════
 
-function reserveInventoryForOrder(items) {
-  if (!items || !items.length) return { ok: true };
+class HttpError extends Error {
+  constructor(status, message, code, extra) {
+    super(message);
+    this.status = status;
+    if (code) this.code = code;
+    if (extra) this.extra = extra;
+  }
+}
 
-  // 1. Check availability for all items in order
-  for (const it of items) {
-    const qty = it.qty || it.quantity || 1;
-    const prod = mockStore.inventory.find(p =>
-      p.productId === it.productId ||
-      p.sku === it.sku ||
-      p.name.toLowerCase() === (it.name || it.productName || '').toLowerCase()
-    );
-    if (!prod) continue;
-    const available = prod.availableStock !== undefined ? prod.availableStock : (prod.stockOnHand || prod.stock || 0);
-    if (available < qty) {
-      return {
-        ok: false,
-        error: 'OUT_OF_STOCK',
-        productName: prod.name,
-        availableStock: available,
-        requestedQty: qty,
-      };
+async function getProduct(productId) {
+  if (!productId || typeof productId !== 'string') return null;
+  if (db) {
+    const d = await db.collection('inventory').doc(productId).get();
+    return d.exists ? { productId: d.id, ...d.data() } : null;
+  }
+  return mockStore.inventory.find(p => p.productId === productId) || null;
+}
+
+async function createProduct(product) {
+  if (db) await db.collection('inventory').doc(product.productId).set(product);
+  else mockStore.inventory.unshift(product);
+  syncToFirebaseRTDB(`inventory/${product.productId}`, product);
+  return product;
+}
+
+async function saveProductChanges(productId, changes, historyEntry = null) {
+  if (db) {
+    const update = { ...changes };
+    if (historyEntry) update.stockHistory = admin.firestore.FieldValue.arrayUnion(historyEntry);
+    await db.collection('inventory').doc(productId).update(update);
+    return getProduct(productId);
+  }
+  const p = mockStore.inventory.find(i => i.productId === productId);
+  if (!p) return null;
+  Object.assign(p, changes);
+  if (historyEntry) p.stockHistory = [historyEntry, ...(p.stockHistory || [])].slice(0, 100);
+  return p;
+}
+
+async function listProducts({ storeId, vendorId, approvalStatus } = {}) {
+  if (db) {
+    let q = db.collection('inventory');
+    if (storeId) q = q.where('storeId', '==', storeId);
+    if (vendorId) q = q.where('vendorId', '==', vendorId);
+    if (approvalStatus) q = q.where('approvalStatus', '==', approvalStatus);
+    const snap = await q.limit(500).get();
+    return snap.docs.map(d => ({ productId: d.id, ...d.data() }));
+  }
+  return mockStore.inventory.filter(p =>
+    (!storeId || p.storeId === storeId) &&
+    (!vendorId || p.vendorId === vendorId) &&
+    (!approvalStatus || p.approvalStatus === approvalStatus));
+}
+
+async function getVendor(vendorId) {
+  if (!vendorId || typeof vendorId !== 'string') return null;
+  if (db) {
+    const d = await db.collection('vendors').doc(vendorId).get();
+    return d.exists ? { vendorId: d.id, ...d.data() } : null;
+  }
+  return mockStore.vendors.find(v => v.vendorId === vendorId) || null;
+}
+
+async function findVendorByPhone(phone) {
+  if (!phone) return null;
+  if (db) {
+    const snap = await db.collection('vendors').where('phone', '==', phone).limit(1).get();
+    return snap.empty ? null : { vendorId: snap.docs[0].id, ...snap.docs[0].data() };
+  }
+  return mockStore.vendors.find(v => normalizePhone(v.phone) === phone) || null;
+}
+
+async function saveVendor(vendorId, fields) {
+  if (db) {
+    await db.collection('vendors').doc(vendorId).set(fields, { merge: true });
+    return getVendor(vendorId);
+  }
+  let v = mockStore.vendors.find(x => x.vendorId === vendorId);
+  if (!v) { v = { vendorId }; mockStore.vendors.unshift(v); }
+  Object.assign(v, fields);
+  return v;
+}
+
+async function listVendors({ kycStatus } = {}) {
+  if (db) {
+    let q = db.collection('vendors');
+    if (kycStatus) q = q.where('kycStatus', '==', kycStatus);
+    const snap = await q.limit(500).get();
+    return snap.docs.map(d => ({ vendorId: d.id, ...d.data() }));
+  }
+  return mockStore.vendors.filter(v => !kycStatus || v.kycStatus === kycStatus);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── STOREFRONT PUBLISHING (Firestore products/{productId}) ───────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// A product is listed when it is APPROVED, its vendor is APPROVED, it is an active
+// Skincare product with a shop category, and it has available stock. Otherwise its
+// storefront document (if one was ever written) is set to active:false.
+
+async function syncStorefront(productId, cachedVendor = null) {
+  try {
+    const product = await getProduct(productId);
+    let vendor = null;
+    if (product) {
+      vendor = cachedVendor && cachedVendor.vendorId === product.vendorId
+        ? cachedVendor
+        : await getVendor(product.vendorId);
+    }
+    const blockers = P.listingBlockers(product, vendor);
+    const now = Date.now();
+
+    if (!blockers.length) {
+      const doc = P.toStorefrontDoc(product, { vendor, httpsOnly: !!db, now });
+      if (db) await db.collection('products').doc(productId).set(doc, { merge: true });
+      else mockStore.storefront.set(productId, doc);
+      return { live: true, blockers };
+    }
+
+    const available = Math.max(0, Number(product && product.availableStock) || 0);
+    const hide = { active: false, inStock: available > 0, availableStock: available, updatedAt: new Date(now).toISOString() };
+    if (db) {
+      try {
+        await db.collection('products').doc(productId).update(hide);
+      } catch (e) {
+        if (e.code !== 5) throw e; // 5 = NOT_FOUND: never published, nothing to hide
+      }
+    } else if (mockStore.storefront.has(productId)) {
+      Object.assign(mockStore.storefront.get(productId), hide);
+    }
+    return { live: false, blockers };
+  } catch (err) {
+    logger.error(`Storefront sync failed for ${productId}: ${err.message}`);
+    return { live: false, blockers: ['storefront sync failed'], error: err.message };
+  }
+}
+
+async function syncVendorStorefront(vendorId) {
+  const vendor = await getVendor(vendorId);
+  const products = await listProducts({ vendorId });
+  let live = 0;
+  for (const p of products) {
+    const r = await syncStorefront(p.productId, vendor);
+    if (r.live) live++;
+  }
+  return { products: products.length, live };
+}
+
+function withListing(product, vendor) {
+  const blockers = P.listingBlockers(product, vendor);
+  return { ...product, listing: { live: blockers.length === 0, blockers } };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── ATOMIC STOCK ENGINE ─────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// reserve: order placed (available - qty)      release: rejected/cancelled before accept
+// commit:  order accepted (on hand - qty)      restock: cancelled after accept
+// Each order records stockState so a movement is applied at most once.
+
+const STOCK_TRANSITIONS = {
+  reserve: [null, 'RESERVED'],
+  release: ['RESERVED', 'RELEASED'],
+  commit:  ['RESERVED', 'COMMITTED'],
+  restock: ['COMMITTED', 'RELEASED'],
+};
+
+function orderLines(items) {
+  const byProduct = new Map();
+  for (const it of items || []) {
+    if (!it || !it.productId) continue;
+    const qty = Math.max(1, Math.floor(Number(it.qty ?? it.quantity ?? 1)) || 1);
+    byProduct.set(it.productId, (byProduct.get(it.productId) || 0) + qty);
+  }
+  return [...byProduct].map(([productId, qty]) => ({ productId, qty }));
+}
+
+function nextStock(prod, qty, kind) {
+  let onHand = prod.stockOnHand ?? prod.stock ?? 0;
+  let reserved = prod.reservedStock ?? 0;
+  if (kind === 'reserve') reserved += qty;
+  else if (kind === 'release') reserved = Math.max(0, reserved - qty);
+  else if (kind === 'commit') { onHand = Math.max(0, onHand - qty); reserved = Math.max(0, reserved - qty); }
+  else if (kind === 'restock') onHand += qty;
+  return P.stockFields(onHand, reserved);
+}
+
+function outOfStock(prod, qty) {
+  return new HttpError(409,
+    `"${prod.name}" is out of stock or already reserved (available ${prod.availableStock ?? 0}, requested ${qty})`,
+    'OUT_OF_STOCK',
+    { productId: prod.productId, productName: prod.name, availableStock: prod.availableStock ?? 0, requestedQty: qty });
+}
+
+/**
+ * Moves stock for an order atomically. With kind 'reserve', `newOrders` are created
+ * in the same step (all-or-nothing). For other kinds `orderId` is required and the
+ * movement is skipped when the order's stockState does not match.
+ */
+async function moveOrderStock({ kind, lines, orderId = null, newOrders = [] }) {
+  const [fromState, toState] = STOCK_TRANSITIONS[kind];
+  let skipped = false;
+  const now = Date.now();
+
+  if (db) {
+    try {
+      await db.runTransaction(async (tx) => {
+        skipped = false;
+        const refs = lines.map(l => db.collection('inventory').doc(l.productId));
+        const snaps = refs.length ? await tx.getAll(...refs) : [];
+        let orderRef = null;
+        if (orderId) {
+          orderRef = db.collection('orders').doc(orderId);
+          const os = await tx.get(orderRef);
+          if (!os.exists) throw new HttpError(404, 'Order not found');
+          if ((os.data().stockState || null) !== fromState) { skipped = true; return; }
+        }
+        const writes = [];
+        snaps.forEach((snap, i) => {
+          if (!snap.exists) {
+            if (kind === 'reserve') throw new HttpError(400, `Unknown product ${lines[i].productId}`, 'UNKNOWN_PRODUCT');
+            return;
+          }
+          const prod = { productId: snap.id, ...snap.data() };
+          if (kind === 'reserve' && (prod.availableStock ?? 0) < lines[i].qty) throw outOfStock(prod, lines[i].qty);
+          writes.push([refs[i], nextStock(prod, lines[i].qty, kind)]);
+        });
+        writes.forEach(([ref, f]) => tx.update(ref, { ...f, updatedAt: now }));
+        if (orderRef) tx.update(orderRef, { stockState: toState });
+        newOrders.forEach(o => tx.create(db.collection('orders').doc(o.orderId), { ...o, stockState: toState }));
+      });
+    } catch (e) {
+      if (e.code === 6) throw new HttpError(409, 'Order already exists', 'DUPLICATE_ORDER'); // 6 = ALREADY_EXISTS
+      throw e;
+    }
+  } else {
+    // Single-threaded: check everything first, then apply, with no await in between.
+    let order = null;
+    if (orderId) {
+      order = mockStore.orders.find(o => o.orderId === orderId);
+      if (!order) throw new HttpError(404, 'Order not found');
+      if ((order.stockState || null) !== fromState) skipped = true;
+    }
+    if (!skipped) {
+      for (const o of newOrders) {
+        if (mockStore.orders.some(x => x.orderId === o.orderId)) {
+          throw new HttpError(409, `Order ${o.orderId} already exists`, 'DUPLICATE_ORDER');
+        }
+      }
+      const prods = lines.map(l => mockStore.inventory.find(p => p.productId === l.productId));
+      prods.forEach((prod, i) => {
+        if (!prod && kind === 'reserve') throw new HttpError(400, `Unknown product ${lines[i].productId}`, 'UNKNOWN_PRODUCT');
+        if (prod && kind === 'reserve' && (prod.availableStock ?? 0) < lines[i].qty) throw outOfStock(prod, lines[i].qty);
+      });
+      prods.forEach((prod, i) => { if (prod) Object.assign(prod, nextStock(prod, lines[i].qty, kind), { updatedAt: now }); });
+      if (order) order.stockState = toState;
+      newOrders.forEach(o => mockStore.orders.unshift({ ...o, stockState: toState }));
     }
   }
 
-  // 2. Atomically reserve
-  for (const it of items) {
-    const qty = it.qty || it.quantity || 1;
-    const prod = mockStore.inventory.find(p =>
-      p.productId === it.productId ||
-      p.sku === it.sku ||
-      p.name.toLowerCase() === (it.name || it.productName || '').toLowerCase()
-    );
-    if (!prod) continue;
-    prod.reservedStock = (prod.reservedStock || 0) + qty;
-    prod.availableStock = Math.max(0, (prod.stockOnHand || prod.stock || 0) - prod.reservedStock);
-    prod.stock = prod.availableStock;
-    prod.isAvailable = prod.availableStock > 0;
-    io.emit('inventory:stockUpdated', {
-      productId: prod.productId,
-      stockOnHand: prod.stockOnHand,
-      availableStock: prod.availableStock,
-      reservedStock: prod.reservedStock,
-    });
-  }
+  if (skipped) return { ok: true, skipped: true };
 
-  return { ok: true };
-}
-
-function releaseInventoryForOrder(items) {
-  if (!items || !items.length) return;
-  for (const it of items) {
-    const qty = it.qty || it.quantity || 1;
-    const prod = mockStore.inventory.find(p =>
-      p.productId === it.productId ||
-      p.sku === it.sku ||
-      p.name.toLowerCase() === (it.name || it.productName || '').toLowerCase()
-    );
-    if (!prod) continue;
-    prod.reservedStock = Math.max(0, (prod.reservedStock || 0) - qty);
-    prod.availableStock = Math.max(0, (prod.stockOnHand || prod.stock || 0) - prod.reservedStock);
-    prod.stock = prod.availableStock;
-    prod.isAvailable = prod.availableStock > 0;
-    io.emit('inventory:stockUpdated', {
-      productId: prod.productId,
-      stockOnHand: prod.stockOnHand,
-      availableStock: prod.availableStock,
-      reservedStock: prod.reservedStock,
-    });
+  for (const l of lines) {
+    await syncStorefront(l.productId);
+    const prod = await getProduct(l.productId);
+    if (prod) {
+      io.to(`vendor:${prod.vendorId}`).emit('inventory:stockUpdated', {
+        productId: prod.productId,
+        stockOnHand: prod.stockOnHand,
+        availableStock: prod.availableStock,
+        reservedStock: prod.reservedStock,
+      });
+    }
   }
-}
-
-function finalizeInventoryForOrder(items) {
-  if (!items || !items.length) return;
-  for (const it of items) {
-    const qty = it.qty || it.quantity || 1;
-    const prod = mockStore.inventory.find(p =>
-      p.productId === it.productId ||
-      p.sku === it.sku ||
-      p.name.toLowerCase() === (it.name || it.productName || '').toLowerCase()
-    );
-    if (!prod) continue;
-    prod.stockOnHand = Math.max(0, (prod.stockOnHand || prod.stock || 0) - qty);
-    prod.reservedStock = Math.max(0, (prod.reservedStock || 0) - qty);
-    prod.availableStock = Math.max(0, prod.stockOnHand - prod.reservedStock);
-    prod.stock = prod.stockOnHand;
-    prod.isAvailable = prod.stockOnHand > 0;
-    io.emit('inventory:stockUpdated', {
-      productId: prod.productId,
-      stockOnHand: prod.stockOnHand,
-      availableStock: prod.availableStock,
-      reservedStock: prod.reservedStock,
-    });
-  }
+  return { ok: true, skipped: false };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -686,20 +952,26 @@ function finalizeInventoryForOrder(items) {
 // ════════════════════════════════════════════════════════════════════════════
 
 async function getOrders(filter = {}) {
+  let orders;
   if (db) {
+    // Equality filters only, sorted in memory: avoids needing composite indexes.
     let query = db.collection('orders');
-    if (filter.storeId) query = query.where('storeId', '==', filter.storeId);
-    if (filter.status)  query = query.where('status', '==', filter.status);
-    const snap = await query.orderBy('createdAt', 'desc').limit(100).get();
-    return snap.docs.map(d => ({ orderId: d.id, ...d.data() }));
+    if (filter.storeId)  query = query.where('storeId', '==', filter.storeId);
+    if (filter.vendorId) query = query.where('vendorId', '==', filter.vendorId);
+    if (filter.status)   query = query.where('status', '==', filter.status);
+    const snap = await query.limit(500).get();
+    orders = snap.docs.map(d => ({ orderId: d.id, ...d.data() }));
+  } else {
+    orders = mockStore.orders.filter(o =>
+      (!filter.storeId || o.storeId === filter.storeId) &&
+      (!filter.vendorId || o.vendorId === filter.vendorId) &&
+      (!filter.status || o.status === filter.status));
   }
-  let orders = [...mockStore.orders];
-  if (filter.storeId) orders = orders.filter(o => o.storeId === filter.storeId);
-  if (filter.status)  orders = orders.filter(o => o.status  === filter.status);
-  return orders.sort((a, b) => b.createdAt - a.createdAt);
+  return orders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 200);
 }
 
 async function getOrderById(orderId) {
+  if (!orderId || typeof orderId !== 'string') return null;
   if (db) {
     const doc = await db.collection('orders').doc(orderId).get();
     return doc.exists ? { orderId: doc.id, ...doc.data() } : null;
@@ -709,14 +981,20 @@ async function getOrderById(orderId) {
 
 async function updateOrderStatus(orderId, status, extraFields = {}) {
   const updatedAt = Date.now();
+  const { note = '', ...fields } = extraFields;
+  const entry = { status, timestamp: updatedAt, note };
   if (db) {
-    await db.collection('orders').doc(orderId).update({ status, updatedAt, ...extraFields });
-    syncToFirebaseRTDB(`orders/${orderId}`, { status, updatedAt, ...extraFields }, 'PATCH');
-    return { orderId, status, updatedAt, ...extraFields };
+    await db.collection('orders').doc(orderId).update({
+      status, updatedAt, ...fields,
+      timeline: admin.firestore.FieldValue.arrayUnion(entry),
+    });
+    syncToFirebaseRTDB(`orders/${orderId}`, { status, updatedAt, ...fields }, 'PATCH');
+    return getOrderById(orderId);
   }
   const idx = mockStore.orders.findIndex(o => o.orderId === orderId);
   if (idx === -1) return null;
-  mockStore.orders[idx] = { ...mockStore.orders[idx], status, updatedAt, ...extraFields };
+  const prev = mockStore.orders[idx];
+  mockStore.orders[idx] = { ...prev, status, updatedAt, ...fields, timeline: [...(prev.timeline || []), entry] };
   syncToFirebaseRTDB(`orders/${orderId}`, mockStore.orders[idx]);
   return mockStore.orders[idx];
 }
@@ -724,43 +1002,17 @@ async function updateOrderStatus(orderId, status, extraFields = {}) {
 async function setVendorOnlineStatus(vendorId, isOnline) {
   const updatedAt = Date.now();
   if (db) {
-    await db.collection('vendors').doc(vendorId).update({ isOnline, updatedAt });
+    await db.collection('vendors').doc(vendorId).set({ isOnline: !!isOnline, updatedAt }, { merge: true });
     syncToFirebaseRTDB(`vendors/${vendorId}/isOnline`, isOnline);
     syncToFirebaseRTDB(`vendors/${vendorId}/updatedAt`, updatedAt);
   } else {
     const v = mockStore.vendors.find(v => v.vendorId === vendorId);
     if (v) {
-      v.isOnline = isOnline;
+      v.isOnline = !!isOnline;
       v.updatedAt = updatedAt;
       syncToFirebaseRTDB(`vendors/${vendorId}`, v);
     }
   }
-}
-
-async function getInventory(storeId) {
-  if (db) {
-    const snap = await db.collection('inventory')
-      .where('storeId', '==', storeId)
-      .orderBy('category')
-      .get();
-    return snap.docs.map(d => ({ productId: d.id, ...d.data() }));
-  }
-  return mockStore.inventory;
-}
-
-async function updateInventoryItem(productId, fields) {
-  const updatedAt = Date.now();
-  if (db) {
-    await db.collection('inventory').doc(productId).update({ ...fields, updatedAt });
-    syncToFirebaseRTDB(`inventory/${productId}`, { ...fields, updatedAt }, 'PATCH');
-    const doc = await db.collection('inventory').doc(productId).get();
-    return { productId: doc.id, ...doc.data() };
-  }
-  const idx = mockStore.inventory.findIndex(i => i.productId === productId);
-  if (idx === -1) return null;
-  mockStore.inventory[idx] = { ...mockStore.inventory[idx], ...fields, updatedAt };
-  syncToFirebaseRTDB(`inventory/${productId}`, mockStore.inventory[idx]);
-  return mockStore.inventory[idx];
 }
 
 async function getEarnings(vendorId) {
@@ -805,26 +1057,89 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// ── VENDOR ENDPOINTS ─────────────────────────────────────────────────────────
+// ── VENDOR SIGN-IN ────────────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 
-app.get('/api/vendor/:vendorId', async (req, res) => {
+// POST /api/auth/vendor/login
+//   { phone, otp }         outside production only; otp must equal VENDOR_DEV_OTP (default 4892)
+//   { firebaseIdToken }    a Firebase Phone Auth ID token (real mode); the phone comes from the token
+// → { ok, token, phone, registered, vendorId, storeId, kycStatus, kycRejectionReason }
+// The token is phone-only (vendorId null) until onboarding is submitted.
+app.post('/api/auth/vendor/login', async (req, res) => {
   try {
-    const { vendorId } = req.params;
-    if (db) {
-      const doc = await db.collection('vendors').doc(vendorId).get();
-      if (!doc.exists) return res.status(404).json({ ok: false, error: 'Vendor not found' });
-      return res.json({ ok: true, vendor: { vendorId: doc.id, ...doc.data() } });
+    const { otp, firebaseIdToken } = req.body || {};
+    let phone = null;
+
+    if (firebaseIdToken) {
+      if (!firebaseInitialized) {
+        return res.status(400).json({ ok: false, error: 'Firebase sign-in is not available in mock mode', code: 'FIREBASE_UNAVAILABLE' });
+      }
+      try {
+        const decoded = await admin.auth().verifyIdToken(String(firebaseIdToken));
+        phone = normalizePhone(decoded.phone_number);
+      } catch (_) {
+        return res.status(401).json({ ok: false, error: 'Phone sign-in could not be verified', code: 'INVALID_ID_TOKEN' });
+      }
+      if (!phone) return res.status(401).json({ ok: false, error: 'The sign-in has no phone number', code: 'INVALID_ID_TOKEN' });
+    } else {
+      if (IS_PROD) {
+        return res.status(400).json({ ok: false, error: 'Use phone sign-in (firebaseIdToken)', code: 'OTP_PROVIDER_REQUIRED' });
+      }
+      phone = normalizePhone(req.body && req.body.phone);
+      if (!phone) return res.status(400).json({ ok: false, error: 'Enter a valid 10-digit mobile number', code: 'INVALID_PHONE' });
+      if (String(otp || '') !== DEV_OTP) {
+        return res.status(401).json({ ok: false, error: 'Incorrect verification code', code: 'INVALID_OTP' });
+      }
     }
-    const vendor = mockStore.vendors.find(v => v.vendorId === vendorId)
-      || mockStore.vendors[0];
-    res.json({ ok: true, vendor });
+
+    const vendor = await findVendorByPhone(phone);
+    const token = signVendorToken({ vendorId: vendor && vendor.vendorId, storeId: vendor && vendor.storeId, phone }, SECURITY.vendorTokenSecret);
+    return res.json({
+      ok: true,
+      token,
+      phone,
+      registered: !!vendor,
+      vendorId: vendor ? vendor.vendorId : null,
+      storeId: vendor ? vendor.storeId : null,
+      kycStatus: vendor ? vendor.kycStatus || 'PENDING' : null,
+      kycRejectionReason: vendor ? vendor.kycRejectionReason || null : null,
+    });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    return sendError(res, err);
   }
 });
 
-app.patch('/api/vendor/:vendorId/status', async (req, res) => {
+// ════════════════════════════════════════════════════════════════════════════
+// ── VENDOR ENDPOINTS ─────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+// GET /api/vendor/me → { ok, vendor } for the signed-in vendor (used to poll KYC status).
+app.get('/api/vendor/me', requireVendor, async (req, res) => {
+  try {
+    const vendor = await getVendor(req.vendor.vendorId);
+    if (!vendor) return res.status(404).json({ ok: false, error: 'Vendor not found' });
+    return res.json({ ok: true, vendor });
+  } catch (err) {
+    return sendError(res, err);
+  }
+});
+
+function requireSelfOrAdmin(req, res, next) {
+  if (req.isAdmin || (req.vendor && req.vendor.vendorId === req.params.vendorId)) return next();
+  return res.status(req.vendor || req.isAdmin ? 403 : 401).json({ ok: false, error: 'Not allowed for this vendor', code: 'FORBIDDEN' });
+}
+
+app.get('/api/vendor/:vendorId', requireSelfOrAdmin, async (req, res) => {
+  try {
+    const vendor = await getVendor(req.params.vendorId);
+    if (!vendor) return res.status(404).json({ ok: false, error: 'Vendor not found' });
+    res.json({ ok: true, vendor });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.patch('/api/vendor/:vendorId/status', requireSelfOrAdmin, async (req, res) => {
   try {
     const { vendorId } = req.params;
     const { isOnline }  = req.body;
@@ -832,47 +1147,47 @@ app.patch('/api/vendor/:vendorId/status', async (req, res) => {
     pushToVendor(vendorId, 'vendor:statusUpdated', { isOnline, updatedAt: Date.now() });
     res.json({ ok: true, vendorId, isOnline, updatedAt: Date.now() });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/vendor/:vendorId/fcm-token', async (req, res) => {
+app.patch('/api/vendor/:vendorId/fcm-token', requireSelfOrAdmin, async (req, res) => {
   try {
     const { vendorId } = req.params;
     const { fcmToken }  = req.body;
-    if (!fcmToken) return res.status(400).json({ ok: false, error: 'fcmToken required' });
-    if (db) {
-      await db.collection('vendors').doc(vendorId).update({ fcmToken, updatedAt: Date.now() });
-    } else {
-      const v = mockStore.vendors.find(v => v.vendorId === vendorId);
-      if (v) v.fcmToken = fcmToken;
-    }
+    if (!fcmToken || typeof fcmToken !== 'string') return res.status(400).json({ ok: false, error: 'fcmToken required' });
+    const vendor = await getVendor(vendorId);
+    if (!vendor) return res.status(404).json({ ok: false, error: 'Vendor not found' });
+    await saveVendor(vendorId, { fcmToken, updatedAt: Date.now() });
     res.json({ ok: true, vendorId, fcmToken });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/vendor/:vendorId', async (req, res) => {
+// Profile fields a vendor may change. KYC status, ids and phone are never taken from the body.
+const VENDOR_EDITABLE_FIELDS = [
+  'name', 'shopName', 'email', 'shopType', 'city', 'pinCode', 'locality', 'address',
+  'latitude', 'longitude', 'openTime', 'closeTime', 'categories', 'avatarUrl',
+];
+
+app.patch('/api/vendor/:vendorId', requireSelfOrAdmin, async (req, res) => {
   try {
     const { vendorId } = req.params;
-    const updates = req.body || {};
-    if (db) {
-      await db.collection('vendors').doc(vendorId).set({ ...updates, updatedAt: Date.now() }, { merge: true });
-      const doc = await db.collection('vendors').doc(vendorId).get();
-      return res.json({ ok: true, vendor: { vendorId: doc.id, ...doc.data() } });
-    } else {
-      let v = mockStore.vendors.find(item => item.vendorId === vendorId);
-      if (!v) {
-        v = { vendorId, ...updates, updatedAt: Date.now() };
-        mockStore.vendors.push(v);
-      } else {
-        Object.assign(v, updates, { updatedAt: Date.now() });
-      }
-      return res.json({ ok: true, vendor: v });
+    const existing = await getVendor(vendorId);
+    if (!existing) return res.status(404).json({ ok: false, error: 'Vendor not found' });
+    const updates = {};
+    for (const k of VENDOR_EDITABLE_FIELDS) {
+      if (req.body && req.body[k] !== undefined) updates[k] = req.body[k];
     }
+    if (req.body && req.body.pincode !== undefined && updates.pinCode === undefined) updates.pinCode = req.body.pincode;
+    const previousShopName = existing.shopName;
+    const vendor = await saveVendor(vendorId, { ...updates, updatedAt: Date.now() });
+    // storeName on the storefront docs comes from shopName.
+    if (updates.shopName !== undefined && updates.shopName !== previousShopName) await syncVendorStorefront(vendorId);
+    return res.json({ ok: true, vendor });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -880,220 +1195,220 @@ app.patch('/api/vendor/:vendorId', async (req, res) => {
 // ── ORDER ENDPOINTS ──────────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 
-app.get('/api/orders', async (req, res) => {
+// Order reads are scoped: a vendor sees its own orders, an admin sees all.
+app.get('/api/orders', requireVendorOrAdmin, async (req, res) => {
   try {
-    const { storeId, status } = req.query;
-    const orders = await getOrders({ storeId, status });
+    const { storeId, status, vendorId } = req.query;
+    const filter = req.isAdmin
+      ? { storeId, status, vendorId }
+      : { vendorId: req.vendor.vendorId, status };
+    const orders = await getOrders(filter);
     res.json({ ok: true, orders, count: orders.length });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.get('/api/orders/all', async (req, res) => {
+app.get('/api/orders/all', requireAdmin, async (req, res) => {
   try {
     const orders = await getOrders({});
     res.json({ ok: true, orders, count: orders.length });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.get('/api/orders/pending', async (req, res) => {
+app.get('/api/orders/pending', requireVendorOrAdmin, async (req, res) => {
   try {
-    const orders = await getOrders({ status: 'PENDING' });
+    const orders = await getOrders(req.isAdmin ? { status: 'PENDING' } : { status: 'PENDING', vendorId: req.vendor.vendorId });
     res.json({ ok: true, orders, count: orders.length });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.get('/api/orders/:orderId', async (req, res) => {
+app.get('/api/orders/:orderId', requireVendorOrAdmin, async (req, res) => {
   try {
     const order = await getOrderById(req.params.orderId);
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
+    if (!order || !ownsRecord(req, order)) return res.status(404).json({ ok: false, error: 'Order not found' });
     res.json({ ok: true, order });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.post('/api/orders', async (req, res) => {
-  try {
-    const {
-      customerId, customerName, customerPhone,
-      shippingAddress, items, pricing,
-      payment, storeId, vendorId,
-    } = req.body;
+// ── Order placement ───────────────────────────────────────────────────────────
+// Every line must carry a productId (vendorId optional; if given it must match the
+// product). Lines are priced from the catalog and the order is routed to the vendor
+// that owns the products. A cart spanning several vendors becomes one order per
+// vendor, sharing a groupId. Stock is reserved for all lines atomically.
 
-    if (!items || !items.length) {
-      return res.status(400).json({ ok: false, error: 'items[] required' });
-    }
+function cleanText(v, fallback, max = 200) {
+  if (typeof v !== 'string' && typeof v !== 'number') return fallback;
+  const s = String(v).trim().slice(0, max);
+  return s || fallback;
+}
 
-    // Atomic concurrency reservation
-    const reserveResult = reserveInventoryForOrder(items);
-    if (!reserveResult.ok) {
-      return res.status(409).json({
-        ok: false,
-        error: 'OUT_OF_STOCK',
-        message: `Item "${reserveResult.productName}" is out of stock or already reserved by another customer (Available: ${reserveResult.availableStock}, Requested: ${reserveResult.requestedQty})`,
-        details: reserveResult,
-      });
-    }
+function money(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
+}
 
-    const orderId = 'ORD-' + Math.floor(100000 + Math.random() * 900000);
-    const now     = Date.now();
-
-    const newOrder = {
-      orderId,
-      customerId:   customerId   || 'anon',
-      customerName: customerName || 'Customer',
-      customerPhone:customerPhone|| '0000000000',
-      shippingAddress: shippingAddress || { fullAddress: 'Vijayawada' },
-      items:        items,
-      pricing:      pricing       || { grandTotal: 0, subtotal: 0, deliveryFee: 0, discount: 0 },
-      payment:      payment       || { method: 'CASH ON DELIVERY', status: 'PENDING' },
-      storeId:      storeId       || process.env.DEFAULT_STORE_ID  || 'DS-VIJ-01',
-      vendorId:     vendorId      || 'VND-001',
-      status:       'PENDING',
-      otp:          String(Math.floor(1000 + Math.random() * 9000)),
-      createdAt:    now,
-      updatedAt:    now,
-      timeline: [{ status: 'PENDING', timestamp: now, note: 'Order placed by customer' }],
-    };
-
-    if (db) {
-      await db.collection('orders').doc(orderId).set(newOrder);
-    } else {
-      mockStore.orders.unshift(newOrder);
-    }
-    syncToFirebaseRTDB(`orders/${orderId}`, newOrder);
-
-    // Push real-time to vendor
-    pushNewOrderToStore(newOrder.storeId, {
-      type:   'NEW_ORDER',
-      order:  newOrder,
-      sentAt: now,
-    });
-
-    // FCM push to vendor
-    if (fcm) {
-      try {
-        const vDoc = db ? await db.collection('vendors').doc(newOrder.vendorId).get() : null;
-        const token = vDoc?.data()?.fcmToken;
-        if (token) {
-          await fcm.send({
-            token,
-            notification: {
-              title: '🛍️ New Order Incoming!',
-              body:  `Order #${orderId} — ₹${newOrder.pricing.grandTotal} — ${customerName}`,
-            },
-            data: { orderId, type: 'NEW_ORDER' },
-          });
-        }
-      } catch (fcmErr) {
-        logger.warn(`FCM push failed: ${fcmErr.message}`);
-      }
-    }
-
-    // Add notification
-    const notif = {
-      id:        uuidv4(),
-      vendorId:  newOrder.vendorId,
-      type:      'NEW_ORDER',
-      title:     '🛍️ New Order!',
-      body:      `Order #${orderId} from ${customerName} — ₹${newOrder.pricing?.grandTotal}`,
-      orderId,
-      read:      false,
-      createdAt: now,
-    };
-    if (db) {
-      await db.collection('notifications').add(notif);
-    } else {
-      mockStore.notifications.unshift(notif);
-    }
-
-    logger.info(`✅ New order created & pushed to vendor: ${orderId}`);
-    res.status(201).json({ ok: true, order: newOrder });
-  } catch (err) {
-    logger.error(`❌ Create order failed: ${err.message}`);
-    res.status(500).json({ ok: false, error: err.message });
+async function createMarketplaceOrders(body = {}, { note }) {
+  const rawItems = Array.isArray(body.items) ? body.items : [];
+  if (!rawItems.length) throw new HttpError(400, 'items[] required', 'ITEMS_REQUIRED');
+  if (rawItems.length > 50) throw new HttpError(400, 'Too many items in one order', 'TOO_MANY_ITEMS');
+  if (rawItems.some(it => !it || typeof it.productId !== 'string' || !it.productId)) {
+    throw new HttpError(400, 'Every item needs a productId', 'PRODUCT_ID_REQUIRED');
   }
-});
 
-// ── Customer App Bridge (/api/orders/create) ──────────────────────────────────
-app.post('/api/orders/create', async (req, res) => {
-  try {
-    const {
-      orderId, orderAmount, customerName, customerPhone,
-      deliveryAddress, items, paymentMethod, storeId, vendorId,
-    } = req.body;
+  const vendorCache = new Map();
+  const groups = new Map(); // vendorId -> { storeId, items }
+  for (const it of rawItems) {
+    const prod = await getProduct(it.productId);
+    if (!prod || prod.deleted) throw new HttpError(400, `Unknown product ${it.productId}`, 'UNKNOWN_PRODUCT');
+    if (it.vendorId && it.vendorId !== prod.vendorId) {
+      throw new HttpError(400, `Product ${it.productId} is not sold by vendor ${it.vendorId}`, 'VENDOR_MISMATCH');
+    }
+    if (!vendorCache.has(prod.vendorId)) vendorCache.set(prod.vendorId, await getVendor(prod.vendorId));
+    // Stock is checked atomically during reservation; everything else must allow listing.
+    const blockers = P.listingBlockers(prod, vendorCache.get(prod.vendorId)).filter(b => b !== 'out of stock');
+    if (blockers.length) {
+      throw new HttpError(409, `"${prod.name}" is not available (${blockers.join(', ')})`, 'PRODUCT_UNAVAILABLE', { productId: prod.productId });
+    }
+    const qty = Math.max(1, Math.floor(Number(it.qty ?? it.quantity ?? 1)) || 1);
+    const price = Number(prod.sellingPrice ?? prod.price) || 0;
+    const line = {
+      productId: prod.productId,
+      vendorId: prod.vendorId,
+      storeId: prod.storeId,
+      sku: prod.sku || '',
+      name: prod.name,
+      productName: prod.name,
+      brand: prod.brand || '',
+      packSize: prod.packSize || '',
+      image: (prod.images && prod.images[0]) || null,
+      qty,
+      quantity: qty,
+      price,
+      lineTotal: Math.round(price * qty * 100) / 100,
+    };
+    if (!groups.has(prod.vendorId)) groups.set(prod.vendorId, { storeId: prod.storeId, items: [] });
+    groups.get(prod.vendorId).items.push(line);
+  }
 
-    const formattedItems = (items && items.length) ? items.map(it => ({
-      productId:   it.productId || 'SKU-GEN-' + Math.floor(100 + Math.random() * 900),
-      productName: it.name || it.productName || 'Cosmetics Item',
-      name:        it.name || it.productName || 'Cosmetics Item',
-      quantity:    it.qty || it.quantity || 1,
-      qty:         it.qty || it.quantity || 1,
-      price:       Number(it.price || 599),
-    })) : [
-      { productId: 'SKU-NIAC-001', productName: 'Minimalist 10% Niacinamide Serum', name: 'Minimalist 10% Niacinamide Serum', quantity: 1, qty: 1, price: 599 }
-    ];
+  const requestedId = typeof body.orderId === 'string' && /^[A-Za-z0-9_-]{4,64}$/.test(body.orderId) ? body.orderId : null;
+  const baseId = requestedId || ('ORD-' + crypto.randomBytes(4).toString('hex').toUpperCase());
+  const multi = groups.size > 1;
+  const now = Date.now();
+  const pricingIn = body.pricing && typeof body.pricing === 'object' ? body.pricing : {};
+  const paymentIn = body.payment && typeof body.payment === 'object' ? body.payment : {};
+  const shippingAddress = body.shippingAddress && typeof body.shippingAddress === 'object'
+    ? body.shippingAddress
+    : { fullAddress: cleanText(body.deliveryAddress, '', 500) };
 
-    // Concurrency reservation
-    reserveInventoryForOrder(formattedItems);
-
-    const finalOrderId = orderId || ('ORD-' + Math.floor(100000 + Math.random() * 900000));
-    const now = Date.now();
-    const grandTotal = Number(orderAmount || (formattedItems.reduce((s, i) => s + (i.price * i.quantity), 0)));
-
-    const newOrder = {
-      orderId: finalOrderId,
-      customerName: customerName || 'Priya Sharma',
-      customerPhone: customerPhone || '+91 98480 22338',
-      shippingAddress: { fullAddress: deliveryAddress || 'Flat 4B, Srinagar Colony, Benz Circle, Vijayawada' },
-      items: formattedItems,
-      pricing: {
-        subtotal: grandTotal,
-        deliveryFee: 0,
-        discount: 0,
-        grandTotal: grandTotal,
-        vendorEarnings: Math.round(grandTotal * 0.88),
-      },
+  const orders = [...groups.entries()].map(([vendorId, g], i) => {
+    const subtotal = Math.round(g.items.reduce((s, l) => s + l.lineTotal, 0) * 100) / 100;
+    const deliveryFee = i === 0 ? money(pricingIn.deliveryFee) : 0;
+    const discount = i === 0 ? Math.min(money(pricingIn.discount), subtotal + deliveryFee) : 0;
+    const grandTotal = Math.round((subtotal + deliveryFee - discount) * 100) / 100;
+    return {
+      orderId: multi ? `${baseId}-${i + 1}` : baseId,
+      ...(multi ? { groupId: baseId } : {}),
+      customerId:    cleanText(body.customerId, 'anon', 128),
+      customerName:  cleanText(body.customerName, 'Customer', 120),
+      customerPhone: cleanText(body.customerPhone, '', 20),
+      shippingAddress,
+      items: g.items,
+      pricing: { subtotal, deliveryFee, discount, grandTotal, vendorEarnings: Math.round(subtotal * 0.88) },
       payment: {
-        method: paymentMethod || 'ONLINE_UPI',
-        status: 'PAID',
+        method: cleanText(paymentIn.method || body.paymentMethod, 'CASH ON DELIVERY', 60),
+        status: cleanText(paymentIn.status || body.paymentStatus, 'PENDING', 30),
       },
-      storeId: storeId || 'DS-VIJ-01',
-      vendorId: vendorId || 'VND-001',
+      storeId: g.storeId,
+      vendorId,
       status: 'PENDING',
-      otp: '4892',
+      otp: /^\d{4}$/.test(String(body.deliveryOtp || '')) ? String(body.deliveryOtp) : String(crypto.randomInt(1000, 10000)),
       createdAt: now,
       updatedAt: now,
-      timeline: [{ status: 'PENDING', timestamp: now, note: 'Order placed by customer via user app' }],
+      timeline: [{ status: 'PENDING', timestamp: now, note }],
     };
+  });
 
-    if (db) {
-      await db.collection('orders').doc(finalOrderId).set(newOrder);
-    } else {
-      mockStore.orders.unshift(newOrder);
+  await moveOrderStock({ kind: 'reserve', lines: orderLines(orders.flatMap(o => o.items)), newOrders: orders });
+  const created = [];
+  for (const o of orders) {
+    const order = (await getOrderById(o.orderId)) || o;
+    created.push(order);
+    syncToFirebaseRTDB(`orders/${order.orderId}`, order);
+    pushOrderToVendor(order);
+    await notifyVendorOfOrder(order);
+    logger.info(`✅ Order ${order.orderId} routed to vendor ${order.vendorId} (₹${order.pricing.grandTotal})`);
+  }
+  return created;
+}
+
+async function notifyVendorOfOrder(order) {
+  const notif = {
+    id:        uuidv4(),
+    vendorId:  order.vendorId,
+    type:      'NEW_ORDER',
+    title:     '🛍️ New Order!',
+    body:      `Order #${order.orderId} from ${order.customerName} — ₹${order.pricing.grandTotal}`,
+    orderId:   order.orderId,
+    read:      false,
+    createdAt: Date.now(),
+  };
+  try {
+    if (db) await db.collection('notifications').add(notif);
+    else mockStore.notifications.unshift(notif);
+  } catch (e) {
+    logger.warn(`Notification write failed: ${e.message}`);
+  }
+  if (fcm) {
+    try {
+      const vendor = await getVendor(order.vendorId);
+      if (vendor && vendor.fcmToken) {
+        await fcm.send({
+          token: vendor.fcmToken,
+          notification: { title: '🛍️ New Order Incoming!', body: notif.body },
+          data: { orderId: order.orderId, type: 'NEW_ORDER' },
+        });
+      }
+    } catch (fcmErr) {
+      logger.warn(`FCM push failed: ${fcmErr.message}`);
     }
-    syncToFirebaseRTDB(`orders/${finalOrderId}`, newOrder);
+  }
+}
 
-    // ⚡ Trigger Instant Vendor Alerts (Chime, Vibration, 45s Countdown Pop-up)
-    pushNewOrderToStore(newOrder.storeId, {
-      type: 'NEW_ORDER',
-      order: newOrder,
-      sentAt: now,
-    });
-    io.emit('ORDER_OFFER', { order: newOrder, orderId: finalOrderId });
-    io.emit('order:incoming', { order: newOrder, orderId: finalOrderId });
+function orderErrorResponse(res, err) {
+  if (err.status && err.status < 500) {
+    return res.status(err.status).json({ ok: false, error: err.code || 'BAD_REQUEST', message: err.message, details: err.extra || null });
+  }
+  return sendError(res, err);
+}
 
-    logger.info(`⚡ Live Customer App Order Dispatched to Vendor: ${finalOrderId} (Amount: ₹${grandTotal})`);
-    res.status(200).json({ ok: true, orderId: finalOrderId, order: newOrder, message: 'Order sent to dark store vendor' });
+// POST /api/orders
+// { items: [{ productId, vendorId?, qty }], customerId?, customerName?, customerPhone?,
+//   shippingAddress?, pricing?: { deliveryFee?, discount? }, payment?: { method, status } }
+// → 201 { ok, order, orders, orderId }
+app.post('/api/orders', async (req, res) => {
+  try {
+    const orders = await createMarketplaceOrders(req.body, { note: 'Order placed by customer' });
+    res.status(201).json({ ok: true, orderId: orders[0].orderId, order: orders[0], orders });
   } catch (err) {
-    logger.error(`❌ Customer order bridge error: ${err.message}`);
-    res.status(500).json({ ok: false, error: err.message });
+    orderErrorResponse(res, err);
+  }
+});
+
+// Customer app bridge: same as POST /api/orders, also accepts orderId, deliveryAddress
+// and paymentMethod. → 200 { ok, orderId, order, orders, message }
+app.post('/api/orders/create', async (req, res) => {
+  try {
+    const orders = await createMarketplaceOrders(req.body, { note: 'Order placed by customer via shop' });
+    res.status(200).json({ ok: true, orderId: orders[0].orderId, order: orders[0], orders, message: 'Order sent to vendor' });
+  } catch (err) {
+    orderErrorResponse(res, err);
   }
 });
 
@@ -1103,136 +1418,142 @@ app.post('/api/payment/verify', (req, res) => {
   res.json({ ok: true, orderId, amount, status: 'SUCCESS', verifiedAt: Date.now() });
 });
 
-app.patch('/api/orders/:orderId/accept', async (req, res) => {
+// ── Order lifecycle (vendor that owns the order, or admin) ───────────────────
+
+async function acceptOrder(orderId, { vendorId = null, isAdmin = false } = {}) {
   try {
-    const { orderId }  = req.params;
-    const { vendorId } = req.body;
-    const now          = Date.now();
+    const order = await getOrderById(orderId);
+    if (!order) return { ok: false, status: 404, error: 'Order not found' };
+    if (!isAdmin && order.vendorId !== vendorId) return { ok: false, status: 403, error: 'This order belongs to another vendor' };
+    if (order.status !== 'PENDING') return { ok: false, status: 409, error: `Order is ${order.status}, not PENDING` };
 
-    const order = await updateOrderStatus(orderId, 'ACCEPTED', {
+    // Reserved stock becomes sold stock; the storefront doc is republished.
+    await moveOrderStock({ kind: 'commit', lines: orderLines(order.items), orderId });
+    const now = Date.now();
+    const updated = await updateOrderStatus(orderId, 'ACCEPTED', {
       acceptedAt: now,
-      acceptedBy: vendorId || 'VND-001',
+      acceptedBy: isAdmin ? 'admin' : vendorId,
+      note: 'Accepted by vendor',
     });
-
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
-
-    // Finalize stock conversion from reserved to sold
-    finalizeInventoryForOrder(order.items);
-
-    pushToVendor(vendorId || 'VND-001', 'order:statusUpdated', {
-      orderId, status: 'ACCEPTED', updatedAt: now,
-    });
-
-    res.json({ ok: true, order, message: `Order ${orderId} accepted` });
+    pushToVendor(order.vendorId, 'order:statusUpdated', { orderId, status: 'ACCEPTED', updatedAt: now });
+    return { ok: true, order: updated };
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    logger.error(`Accept order ${orderId} failed: ${err.message}`);
+    return { ok: false, status: err.status || 500, error: err.message };
   }
+}
+
+// Returns stock for an order that will not be fulfilled.
+async function releaseOrderStock(order) {
+  const lines = orderLines(order.items);
+  if (order.stockState === 'RESERVED') await moveOrderStock({ kind: 'release', lines, orderId: order.orderId });
+  else if (order.stockState === 'COMMITTED') await moveOrderStock({ kind: 'restock', lines, orderId: order.orderId });
+}
+
+async function loadOwnedOrder(req, res) {
+  const order = await getOrderById(req.params.orderId);
+  if (!order || !ownsRecord(req, order)) {
+    res.status(404).json({ ok: false, error: 'Order not found' });
+    return null;
+  }
+  return order;
+}
+
+const FINAL_STATUSES = ['DELIVERED', 'CANCELLED', 'REJECTED', 'VENDOR_TIMEOUT'];
+
+app.patch('/api/orders/:orderId/accept', requireVendorOrAdmin, async (req, res) => {
+  const result = await acceptOrder(req.params.orderId, { vendorId: req.vendor && req.vendor.vendorId, isAdmin: req.isAdmin });
+  if (!result.ok) return res.status(result.status).json({ ok: false, error: result.error });
+  res.json({ ok: true, order: result.order, message: `Order ${req.params.orderId} accepted` });
 });
 
-app.patch('/api/orders/:orderId/prepare', async (req, res) => {
+app.patch('/api/orders/:orderId/prepare', requireVendorOrAdmin, async (req, res) => {
   try {
+    if (!(await loadOwnedOrder(req, res))) return;
     const { orderId } = req.params;
     const now = Date.now();
-
     const order = await updateOrderStatus(orderId, 'PREPARING', { preparingAt: now });
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
-
-    io.emit('order:statusUpdated', { orderId, status: 'PREPARING', updatedAt: now });
+    pushToVendor(order.vendorId, 'order:statusUpdated', { orderId, status: 'PREPARING', updatedAt: now });
     res.json({ ok: true, order });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/orders/:orderId/ready', async (req, res) => {
+app.patch('/api/orders/:orderId/ready', requireVendorOrAdmin, async (req, res) => {
   try {
+    if (!(await loadOwnedOrder(req, res))) return;
     const { orderId } = req.params;
     const { pickupBay } = req.body;
     const now = Date.now();
-
     const order = await updateOrderStatus(orderId, 'READY_FOR_PICKUP', {
       readyAt: now,
-      pickupBay: pickupBay || 'Bay-01',
+      pickupBay: cleanText(pickupBay, 'Bay-01', 20),
     });
-
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
-
-    io.emit('order:statusUpdated', { orderId, status: 'READY_FOR_PICKUP', updatedAt: now });
+    pushToVendor(order.vendorId, 'order:statusUpdated', { orderId, status: 'READY_FOR_PICKUP', updatedAt: now });
     res.json({ ok: true, order });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/orders/:orderId/pack', async (req, res) => {
+app.patch('/api/orders/:orderId/pack', requireVendorOrAdmin, async (req, res) => {
   try {
+    if (!(await loadOwnedOrder(req, res))) return;
     const { orderId }  = req.params;
-    const { vendorId, pickupBay } = req.body;
+    const { pickupBay } = req.body;
     const now = Date.now();
-
     const order = await updateOrderStatus(orderId, 'PACKED', {
       packedAt:  now,
-      pickupBay: pickupBay || 'Bay-01',
+      pickupBay: cleanText(pickupBay, 'Bay-01', 20),
     });
-
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
-
-    pushToVendor(vendorId || 'VND-001', 'order:statusUpdated', {
-      orderId, status: 'PACKED', pickupBay, updatedAt: now,
-    });
-
+    pushToVendor(order.vendorId, 'order:statusUpdated', { orderId, status: 'PACKED', pickupBay: order.pickupBay, updatedAt: now });
     res.json({ ok: true, order });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/orders/:orderId/handover', async (req, res) => {
+app.patch('/api/orders/:orderId/handover', requireVendorOrAdmin, async (req, res) => {
   try {
+    if (!(await loadOwnedOrder(req, res))) return;
     const { orderId } = req.params;
     const { riderId, riderName, riderPhone } = req.body;
     const now = Date.now();
-
     const order = await updateOrderStatus(orderId, 'DISPATCHED', {
       dispatchedAt: now,
-      rider: { riderId: riderId || 'RIDER-08', riderName: riderName || 'Kalyan V.', riderPhone: riderPhone || '9848022338' },
+      rider: { riderId: cleanText(riderId, '', 60), riderName: cleanText(riderName, '', 120), riderPhone: cleanText(riderPhone, '', 20) },
     });
-
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
-
-    io.emit('order:statusUpdated', { orderId, status: 'DISPATCHED', updatedAt: now });
+    pushToVendor(order.vendorId, 'order:statusUpdated', { orderId, status: 'DISPATCHED', updatedAt: now });
     res.json({ ok: true, order });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/orders/:orderId/dispatch', async (req, res) => {
+app.patch('/api/orders/:orderId/dispatch', requireVendorOrAdmin, async (req, res) => {
   try {
+    if (!(await loadOwnedOrder(req, res))) return;
     const { orderId } = req.params;
     const { riderId, riderName, riderPhone } = req.body;
     const now = Date.now();
-
     const order = await updateOrderStatus(orderId, 'DISPATCHED', {
       dispatchedAt: now,
-      rider: { riderId, riderName, riderPhone },
+      rider: { riderId: cleanText(riderId, '', 60), riderName: cleanText(riderName, '', 120), riderPhone: cleanText(riderPhone, '', 20) },
     });
-
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
     res.json({ ok: true, order });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/orders/:orderId/deliver', async (req, res) => {
+app.patch('/api/orders/:orderId/deliver', requireVendorOrAdmin, async (req, res) => {
   try {
+    const order = await loadOwnedOrder(req, res);
+    if (!order) return;
     const { orderId } = req.params;
     const { otp }     = req.body;
     const now         = Date.now();
-
-    const order = await getOrderById(orderId);
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
 
     if (order.otp && otp && order.otp !== String(otp)) {
       return res.status(400).json({ ok: false, error: 'Invalid OTP' });
@@ -1244,13 +1565,11 @@ app.patch('/api/orders/:orderId/deliver', async (req, res) => {
     });
 
     // Update earnings
-    const earnings = order.pricing?.vendorEarnings || Math.round((order.pricing?.grandTotal || 0) * 0.08);
+    const earnings = order.pricing?.vendorEarnings || Math.round((order.pricing?.subtotal || order.pricing?.grandTotal || 0) * 0.88);
     if (db) {
-      const earningsRef = db.collection('earnings').doc(order.vendorId);
-      await earningsRef.set({
-        today: admin.firestore.FieldValue.increment
-          ? { orders: admin.firestore.FieldValue.increment(1), revenue: admin.firestore.FieldValue.increment(order.pricing?.grandTotal || 0), earnings: admin.firestore.FieldValue.increment(earnings) }
-          : { orders: 1, revenue: order.pricing?.grandTotal || 0, earnings },
+      const inc = admin.firestore.FieldValue.increment;
+      await db.collection('earnings').doc(order.vendorId).set({
+        today: { orders: inc(1), revenue: inc(order.pricing?.grandTotal || 0), earnings: inc(earnings) },
       }, { merge: true });
     } else {
       mockStore.earnings.today.orders++;
@@ -1263,81 +1582,69 @@ app.patch('/api/orders/:orderId/deliver', async (req, res) => {
 
     res.json({ ok: true, order: updated, earnings });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/orders/:orderId/cancel', async (req, res) => {
+app.patch('/api/orders/:orderId/cancel', requireVendorOrAdmin, async (req, res) => {
   try {
+    const existing = await loadOwnedOrder(req, res);
+    if (!existing) return;
+    if (FINAL_STATUSES.includes(existing.status)) {
+      return res.status(409).json({ ok: false, error: `Order is already ${existing.status}` });
+    }
     const { orderId } = req.params;
-    const { reason }  = req.body;
-    const now         = Date.now();
-
+    const now = Date.now();
+    await releaseOrderStock(existing);
     const order = await updateOrderStatus(orderId, 'CANCELLED', {
-      cancelledAt:    now,
-      cancellationReason: reason || 'Cancelled by vendor',
+      cancelledAt: now,
+      cancellationReason: cleanText(req.body.reason, 'Cancelled by vendor', 300),
     });
-
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
-
-    // Release reserved inventory
-    releaseInventoryForOrder(order.items);
-
+    pushToVendor(order.vendorId, 'order:statusUpdated', { orderId, status: 'CANCELLED', updatedAt: now });
     res.json({ ok: true, order });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/orders/:orderId/reject', async (req, res) => {
+app.patch('/api/orders/:orderId/reject', requireVendorOrAdmin, async (req, res) => {
   try {
+    const existing = await loadOwnedOrder(req, res);
+    if (!existing) return;
+    if (existing.status !== 'PENDING') {
+      return res.status(409).json({ ok: false, error: `Order is ${existing.status}, not PENDING` });
+    }
     const { orderId } = req.params;
-    const { reason, vendorId } = req.body;
+    const reason = cleanText(req.body.reason, 'Item unavailable', 300);
     const now = Date.now();
-
+    await releaseOrderStock(existing);
     const order = await updateOrderStatus(orderId, 'REJECTED', {
       rejectedAt: now,
-      rejectionReason: reason || 'Item unavailable',
-      rejectedBy: vendorId || 'VND-001',
+      rejectionReason: reason,
+      rejectedBy: req.isAdmin ? 'admin' : req.vendor.vendorId,
     });
-
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
-
-    // Release reserved inventory
-    releaseInventoryForOrder(order.items);
-
-    pushToVendor(vendorId || 'VND-001', 'order:rejected', {
-      orderId,
-      status: 'REJECTED',
-      reason: reason || 'Item unavailable',
-      updatedAt: now,
-    });
-
-    io.emit('order:statusUpdated', { orderId, status: 'REJECTED', reason });
+    pushToVendor(order.vendorId, 'order:rejected', { orderId, status: 'REJECTED', reason, updatedAt: now });
     res.json({ ok: true, order, message: `Order ${orderId} rejected: ${reason}` });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.patch('/api/orders/:orderId/timeout', async (req, res) => {
+app.patch('/api/orders/:orderId/timeout', requireVendorOrAdmin, async (req, res) => {
   try {
+    const existing = await loadOwnedOrder(req, res);
+    if (!existing) return;
+    if (existing.status !== 'PENDING') {
+      return res.status(409).json({ ok: false, error: `Order is ${existing.status}, not PENDING` });
+    }
     const { orderId } = req.params;
     const now = Date.now();
-
-    const order = await updateOrderStatus(orderId, 'VENDOR_TIMEOUT', {
-      timedOutAt: now,
-    });
-
-    if (!order) return res.status(404).json({ ok: false, error: 'Order not found' });
-
-    // Release reserved inventory
-    releaseInventoryForOrder(order.items);
-
-    io.emit('order:statusUpdated', { orderId, status: 'VENDOR_TIMEOUT', updatedAt: now });
+    await releaseOrderStock(existing);
+    const order = await updateOrderStatus(orderId, 'VENDOR_TIMEOUT', { timedOutAt: now });
+    pushToVendor(order.vendorId, 'order:statusUpdated', { orderId, status: 'VENDOR_TIMEOUT', updatedAt: now });
     res.json({ ok: true, order });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
@@ -1345,278 +1652,562 @@ app.patch('/api/orders/:orderId/timeout', async (req, res) => {
 // ── INVENTORY ENDPOINTS ───────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 
-app.get('/api/inventory', async (req, res) => {
+// Write routes take vendorId/storeId from the session token, never from the body.
+// Each change re-evaluates the product's storefront listing (see syncStorefront).
+
+// GET /api/inventory → { ok, items: [product + listing{live, blockers}], count }
+// Vendor: own products. Admin: optional ?storeId= / ?vendorId=.
+app.get('/api/inventory', requireVendorOrAdmin, async (req, res) => {
   try {
-    const { storeId } = req.query;
-    const items = await getInventory(storeId || 'DS-VIJ-01');
+    const filter = req.isAdmin && !(req.vendor && req.vendor.vendorId)
+      ? { storeId: req.query.storeId, vendorId: req.query.vendorId }
+      : { vendorId: req.vendor.vendorId };
+    const products = (await listProducts(filter)).filter(p => !p.deleted);
+    const vendors = new Map();
+    for (const p of products) {
+      if (!vendors.has(p.vendorId)) vendors.set(p.vendorId, await getVendor(p.vendorId));
+    }
+    const items = products
+      .map(p => withListing(p, vendors.get(p.vendorId)))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     res.json({ ok: true, items, count: items.length });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.post('/api/inventory', async (req, res) => {
+async function findVendorSku(vendorId, sku, exceptProductId = null) {
+  if (!sku) return null;
+  const products = await listProducts({ vendorId });
+  return products.find(p => !p.deleted && p.sku === sku && p.productId !== exceptProductId) || null;
+}
+
+function newProductId() {
+  return 'SKU-' + uuidv4().replace(/-/g, '').slice(0, 10).toUpperCase();
+}
+
+// POST /api/inventory → 201 { ok, item }   (approvalStatus PENDING)
+// Body: name, brand, category, shopCategory (required when category is Skincare), description,
+// images[], packSize, keyActives[], sku, mrp, sellingPrice, stock, lowStockThreshold, bin, gstPercent, status
+app.post('/api/inventory', requireVendor, async (req, res) => {
   try {
-    const {
-      name, category, categoryId, sku, mrp, price, sellingPrice,
-      compareAtPrice, stock, stockOnHand, lowStockThreshold,
-      unitType, packSize, bin, gstPercent, storeId, vendorId,
-      images, description, brand, isAvailable, status,
-    } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ ok: false, error: 'Product name is required' });
-    }
-
-    const productId = 'SKU-' + uuidv4().slice(0, 8).toUpperCase();
-    const now       = Date.now();
-    const finalStockOnHand = Number(stockOnHand ?? stock ?? 0);
-    const finalPrice = Number(sellingPrice ?? price ?? mrp ?? 0);
-
-    const newItem = {
+    const { vendorId, storeId } = req.vendor;
+    const productId = newProductId();
+    const product = P.buildNewProduct(req.body || {}, {
       productId,
-      name:              name.trim(),
-      category:          category || 'General',
-      categoryId:        categoryId || (category ? category.toLowerCase().replace(/\s+/g, '-') : 'general'),
-      sku:               sku || ('SKU-' + name.slice(0, 4).toUpperCase() + '-' + Math.floor(100 + Math.random() * 900)),
-      brand:             brand || '',
-      unitType:          unitType || 'piece',
-      packSize:          packSize || '',
-      mrp:               Number(mrp || finalPrice),
-      price:             finalPrice,
-      sellingPrice:      finalPrice,
-      compareAtPrice:    compareAtPrice ? Number(compareAtPrice) : (mrp ? Number(mrp) : undefined),
-      stockOnHand:       finalStockOnHand,
-      reservedStock:     0,
-      availableStock:    finalStockOnHand,
-      lowStockThreshold: Number(lowStockThreshold ?? 5),
-      isAvailable:       isAvailable !== false,
-      stock:             finalStockOnHand,
-      bin:               bin || 'BIN-UNASSIGNED',
-      gstPercent:        Number(gstPercent ?? 18),
-      storeId:           storeId || 'DS-VIJ-01',
-      vendorId:          vendorId || 'VND-001',
-      images:            images && images.length ? images : ['https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400&q=80'],
-      description:       description || '',
-      active:            status !== 'paused' && isAvailable !== false,
-      status:            status || 'active',
-      createdAt:         now,
-      updatedAt:         now,
-      stockHistory:      [{ type: 'INITIAL', delta: finalStockOnHand, stockOnHand: finalStockOnHand, reason: 'Initial setup', timestamp: now }],
-    };
+      vendorId,
+      storeId,
+      initialStock: (req.body && (req.body.stockOnHand ?? req.body.stock)) || 0,
+    });
+    if (await findVendorSku(vendorId, product.sku)) {
+      return res.status(409).json({ ok: false, error: `SKU ${product.sku} already exists in your catalog`, code: 'DUPLICATE_SKU' });
+    }
+    await createProduct(product);
+    const listing = await syncStorefront(productId);
+    io.to(`vendor:${vendorId}`).emit('inventory:created', { item: product });
+    res.status(201).json({ ok: true, item: { ...product, listing } });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
 
-    if (db) {
-      await db.collection('inventory').doc(productId).set(newItem);
+async function loadOwnedProduct(req, res) {
+  const product = await getProduct(req.params.productId);
+  if (!product || product.deleted || !ownsRecord(req, product)) {
+    res.status(404).json({ ok: false, error: 'Product not found' });
+    return null;
+  }
+  return product;
+}
+
+/** Stock adjustment by delta or to an exact quantity, atomically, with history. */
+async function adjustProductStock(productId, { delta, exactQuantity, reason }) {
+  const now = Date.now();
+  const exact = exactQuantity !== undefined && exactQuantity !== null && exactQuantity !== '';
+  const compute = (cur) => {
+    let onHand = cur.stockOnHand ?? cur.stock ?? 0;
+    let actual;
+    if (exact) {
+      const target = Math.floor(Number(exactQuantity));
+      if (!Number.isFinite(target) || target < 0) throw new HttpError(400, 'exactQuantity must be a number ≥ 0');
+      actual = target - onHand;
+      onHand = target;
     } else {
-      mockStore.inventory.unshift(newItem);
+      const d = Math.trunc(Number(delta));
+      if (delta === undefined || delta === null || !Number.isFinite(d)) throw new HttpError(400, 'delta or exactQuantity required');
+      actual = Math.max(-onHand, d);
+      onHand += actual;
     }
-    syncToFirebaseRTDB(`inventory/${productId}`, newItem);
-
-    io.emit('inventory:created', { item: newItem });
-    res.status(201).json({ ok: true, item: newItem });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.patch('/api/inventory/:productId', async (req, res) => {
-  try {
-    const { productId } = req.params;
-    const fields        = req.body;
-    const item = await updateInventoryItem(productId, fields);
-    if (!item) return res.status(404).json({ ok: false, error: 'Product not found' });
-    io.emit('inventory:updated', { productId, ...fields });
-    res.json({ ok: true, item });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-app.patch('/api/inventory/:productId/stock', async (req, res) => {
-  try {
-    const { productId } = req.params;
-    const { delta, exactQuantity, reason } = req.body;
-    const now = Date.now();
-
-    const idx = mockStore.inventory.findIndex(i => i.productId === productId);
-    if (idx === -1) return res.status(404).json({ ok: false, error: 'Product not found in inventory' });
-
-    let currentItem = mockStore.inventory[idx];
-    let newStockOnHand = currentItem.stockOnHand ?? currentItem.stock ?? 0;
-    let actualDelta = 0;
-
-    if (exactQuantity !== undefined) {
-      const target = Math.max(0, Number(exactQuantity));
-      actualDelta = target - newStockOnHand;
-      newStockOnHand = target;
-    } else if (delta !== undefined) {
-      actualDelta = Number(delta);
-      newStockOnHand = Math.max(0, newStockOnHand + actualDelta);
-    }
-
-    const reserved = currentItem.reservedStock ?? 0;
-    const available = Math.max(0, newStockOnHand - reserved);
-    const historyEntry = {
-      type: exactQuantity !== undefined ? 'SET_EXACT' : (actualDelta >= 0 ? 'RESTOCK' : 'DEDUCTION'),
-      delta: actualDelta,
-      stockOnHand: newStockOnHand,
-      availableStock: available,
-      reason: reason || 'Manual stock adjustment',
+    const fields = { ...P.stockFields(onHand, cur.reservedStock), updatedAt: now };
+    const entry = {
+      type: exact ? 'SET_EXACT' : (actual >= 0 ? 'RESTOCK' : 'DEDUCTION'),
+      delta: actual,
+      stockOnHand: fields.stockOnHand,
+      availableStock: fields.availableStock,
+      reason: cleanText(reason, 'Manual stock adjustment', 200),
       timestamp: now,
     };
+    return { fields, entry, actual };
+  };
 
-    const updatedFields = {
-      stockOnHand: newStockOnHand,
-      availableStock: available,
-      stock: newStockOnHand,
-      isAvailable: available > 0,
-      active: available > 0,
-      updatedAt: now,
-    };
-
-    if (!currentItem.stockHistory) currentItem.stockHistory = [];
-    currentItem.stockHistory.unshift(historyEntry);
-
-    Object.assign(mockStore.inventory[idx], updatedFields);
-
-    if (db) {
-      await db.collection('inventory').doc(productId).update({
-        ...updatedFields,
-        stockHistory: admin.firestore.FieldValue.arrayUnion(historyEntry),
-      });
-    }
-
-    io.emit('inventory:stockUpdated', {
-      productId,
-      stockOnHand: newStockOnHand,
-      availableStock: available,
-      delta: actualDelta,
-      reason: reason || 'Manual adjustment',
+  let result;
+  if (db) {
+    await db.runTransaction(async (tx) => {
+      const ref = db.collection('inventory').doc(productId);
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new HttpError(404, 'Product not found');
+      result = compute(snap.data());
+      tx.update(ref, { ...result.fields, stockHistory: admin.firestore.FieldValue.arrayUnion(result.entry) });
     });
-
-    res.json({ ok: true, item: mockStore.inventory[idx] });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+  } else {
+    const p = mockStore.inventory.find(i => i.productId === productId);
+    if (!p) throw new HttpError(404, 'Product not found');
+    result = compute(p);
+    Object.assign(p, result.fields);
+    p.stockHistory = [result.entry, ...(p.stockHistory || [])].slice(0, 100);
   }
-});
 
-app.delete('/api/inventory/:productId', async (req, res) => {
+  const listing = await syncStorefront(productId);
+  const item = await getProduct(productId);
+  io.to(`vendor:${item.vendorId}`).emit('inventory:stockUpdated', {
+    productId,
+    stockOnHand: item.stockOnHand,
+    availableStock: item.availableStock,
+    delta: result.actual,
+    reason: result.entry.reason,
+  });
+  return { item: { ...item, listing }, delta: result.actual };
+}
+
+// PATCH /api/inventory/:productId → { ok, item, reapprovalRequired }
+// Editing name, brand, category, shopCategory, description, images, packSize or keyActives
+// sends an approved/rejected product back to PENDING. Price and stock edits do not.
+app.patch('/api/inventory/:productId', requireVendorOrAdmin, async (req, res) => {
   try {
+    const existing = await loadOwnedProduct(req, res);
+    if (!existing) return;
     const { productId } = req.params;
-    const item = await updateInventoryItem(productId, { active: false, isAvailable: false, status: 'paused' });
-    if (!item) return res.status(404).json({ ok: false, error: 'Product not found' });
-    res.json({ ok: true, message: `Product ${productId} paused/deactivated`, item });
+    const body = req.body || {};
+    const { changes } = P.applyProductUpdate(existing, body);
+    if (changes.sku && await findVendorSku(existing.vendorId, changes.sku, productId)) {
+      return res.status(409).json({ ok: false, error: `SKU ${changes.sku} already exists in your catalog`, code: 'DUPLICATE_SKU' });
+    }
+    if (Object.keys(changes).length) await saveProductChanges(productId, changes);
+
+    const stockTarget = body.stockOnHand ?? body.stock;
+    let item;
+    if (stockTarget !== undefined && Number(stockTarget) !== (existing.stockOnHand ?? existing.stock)) {
+      ({ item } = await adjustProductStock(productId, { exactQuantity: stockTarget, reason: 'Edited in product form' }));
+    } else {
+      const listing = await syncStorefront(productId);
+      item = { ...(await getProduct(productId)), listing };
+    }
+    io.to(`vendor:${existing.vendorId}`).emit('inventory:updated', { productId, ...changes });
+    res.json({ ok: true, item, reapprovalRequired: changes.approvalStatus === 'PENDING' });
   } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    sendError(res, err);
   }
 });
 
-app.post('/api/inventory/bulk-upload', async (req, res) => {
+// PATCH /api/inventory/:productId/stock  { delta } | { exactQuantity }, reason? → { ok, item, delta }
+app.patch('/api/inventory/:productId/stock', requireVendorOrAdmin, async (req, res) => {
   try {
-    const { items, storeId = 'DS-VIJ-01', csvText } = req.body;
-    let productsToInsert = [];
+    const existing = await loadOwnedProduct(req, res);
+    if (!existing) return;
+    const { delta, exactQuantity, reason } = req.body || {};
+    const result = await adjustProductStock(req.params.productId, { delta, exactQuantity, reason });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
 
-    if (Array.isArray(items) && items.length > 0) {
-      productsToInsert = items;
-    } else if (typeof csvText === 'string' && csvText.trim().length > 0) {
-      const lines = csvText.trim().split(/\r?\n/);
-      if (lines.length > 1) {
-        const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
-        for (let i = 1; i < lines.length; i++) {
-          const cols = lines[i].split(',').map(c => c.trim());
-          if (cols.length >= 2 && cols[0]) {
-            const nameIdx = headers.findIndex(h => h.includes('name') || h.includes('product'));
-            const catIdx  = headers.findIndex(h => h.includes('cat'));
-            const mrpIdx  = headers.findIndex(h => h.includes('mrp') || h.includes('price'));
-            const stIdx   = headers.findIndex(h => h.includes('stock') || h.includes('qty'));
-            const skuIdx  = headers.findIndex(h => h.includes('sku') || h.includes('code'));
-
-            const name  = nameIdx >= 0 ? cols[nameIdx] : cols[0];
-            const cat   = catIdx >= 0 ? cols[catIdx] : 'General';
-            const mrp   = mrpIdx >= 0 ? parseFloat(cols[mrpIdx]) || 499 : 499;
-            const stock = stIdx >= 0 ? parseInt(cols[stIdx], 10) || 10 : 10;
-            const sku   = skuIdx >= 0 ? cols[skuIdx] : 'SKU-' + name.slice(0, 4).toUpperCase() + '-' + (i * 10);
-
-            productsToInsert.push({
-              name,
-              category: cat,
-              mrp,
-              sellingPrice: Math.round(mrp * 0.8),
-              stock,
-              sku,
-            });
-          }
-        }
-      }
-    }
-
-    if (productsToInsert.length === 0) {
-      return res.status(400).json({ ok: false, error: 'No valid products provided for bulk upload' });
-    }
-
-    const inserted = [];
-    for (const item of productsToInsert) {
-      const productId = item.productId || ('SKU-' + uuidv4().slice(0, 8).toUpperCase());
-      const mrp = Number(item.mrp || 499);
-      const sellingPrice = Number(item.sellingPrice || Math.round(mrp * 0.8));
-      const stock = Number(item.stock || 0);
-
-      const product = {
-        productId,
-        name:         item.name || 'Unnamed Product',
-        category:     item.category || 'General',
-        sku:          item.sku || ('SKU-' + productId.slice(4)),
-        mrp,
-        sellingPrice,
-        stock,
-        bin:          item.bin || 'BIN-GEN-01',
-        gstPercent:   item.gstPercent || 18,
-        images:       item.images || [],
-        active:       item.active !== undefined ? item.active : (stock > 0),
-        storeId,
-        expiry:       item.expiry || null,
-        updatedAt:    Date.now(),
-      };
-
-      if (db) {
-        await db.collection('inventory').doc(productId).set(product);
-      } else {
-        const existingIdx = mockStore.inventory.findIndex(p => p.sku === product.sku || p.productId === product.productId);
-        if (existingIdx >= 0) {
-          mockStore.inventory[existingIdx] = { ...mockStore.inventory[existingIdx], ...product };
-        } else {
-          mockStore.inventory.unshift(product);
-        }
-      }
-      inserted.push(product);
-    }
-
-    io.to(storeId).emit('inventory:bulk_updated', {
-      storeId,
-      count: inserted.length,
-      items: inserted,
-      timestamp: Date.now(),
+// DELETE /api/inventory/:productId → soft delete; the storefront doc is set to active:false.
+app.delete('/api/inventory/:productId', requireVendorOrAdmin, async (req, res) => {
+  try {
+    const existing = await loadOwnedProduct(req, res);
+    if (!existing) return;
+    const { productId } = req.params;
+    const now = Date.now();
+    const item = await saveProductChanges(productId, {
+      deleted: true, status: 'deleted', active: false, isAvailable: false, deletedAt: now, updatedAt: now,
     });
-    io.emit('inventory:updated', { storeId, timestamp: Date.now() });
+    await syncStorefront(productId);
+    io.to(`vendor:${existing.vendorId}`).emit('inventory:updated', { productId, deleted: true });
+    res.json({ ok: true, message: `Product ${productId} deleted`, item });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
 
-    logger.info(`📦 Bulk uploaded ${inserted.length} SKUs for store ${storeId}`);
-    return res.status(200).json({
-      ok: true,
-      message: `Successfully processed ${inserted.length} products in real time`,
-      count: inserted.length,
-      items: inserted,
+// Minimal CSV parser (supports quoted fields with commas and "" escapes).
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') { row.push(field.trim()); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field.trim()); field = '';
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field.trim());
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
+}
+
+function csvToItems(csvText) {
+  const rows = parseCsv(csvText);
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(h => h.toLowerCase());
+  const col = (pred) => headers.findIndex(pred);
+  const idx = {
+    name: col(h => h === 'name' || h.includes('product name') || h === 'product' || h === 'title'),
+    brand: col(h => h.includes('brand')),
+    shopCategory: col(h => h.includes('shop')),
+    category: col(h => h.includes('cat') && !h.includes('shop')),
+    mrp: col(h => h.includes('mrp')),
+    sellingPrice: col(h => h.includes('selling') || h === 'price' || h.includes('sale')),
+    stock: col(h => h.includes('stock') || h.includes('qty') || h.includes('quantity')),
+    sku: col(h => h.includes('sku') || h.includes('code')),
+    packSize: col(h => h.includes('pack') || h.includes('size') || h.includes('volume')),
+    description: col(h => h.includes('desc')),
+    images: col(h => h.includes('image')),
+    keyActives: col(h => h.includes('active') && h.includes('key')),
+  };
+  return rows.slice(1).map(cols => {
+    const item = {};
+    for (const [k, i] of Object.entries(idx)) {
+      if (i >= 0 && cols[i] !== undefined && cols[i] !== '') item[k] = cols[i];
+    }
+    if (idx.name < 0 && cols[0]) item.name = cols[0];
+    if (item.images) item.images = item.images.split(/[|\s]+/).filter(Boolean);
+    if (item.keyActives) item.keyActives = item.keyActives.split('|');
+    return item;
+  });
+}
+
+// POST /api/inventory/bulk-upload  { items: [...] } | { csvText }
+// → { ok, count, created, updated, items, errors: [{ row, error }] }
+// New rows become PENDING products with the same fields as POST /api/inventory. A row
+// whose sku matches an existing product of this vendor updates it (same rules as PATCH).
+app.post('/api/inventory/bulk-upload', requireVendor, async (req, res) => {
+  try {
+    const { vendorId, storeId } = req.vendor;
+    const { items, csvText } = req.body || {};
+    let rows = [];
+    if (Array.isArray(items) && items.length > 0) rows = items;
+    else if (typeof csvText === 'string' && csvText.trim()) rows = csvToItems(csvText);
+    if (!rows.length) return res.status(400).json({ ok: false, error: 'No valid products provided for bulk upload' });
+    if (rows.length > 500) return res.status(400).json({ ok: false, error: 'At most 500 products per upload' });
+
+    const results = [];
+    const errors = [];
+    let created = 0;
+    let updated = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      try {
+        const input = { ...row };
+        if (input.sellingPrice === undefined && input.price === undefined && input.mrp !== undefined) input.sellingPrice = input.mrp;
+        const stock = input.stockOnHand ?? input.stock;
+        const existing = input.sku ? await findVendorSku(vendorId, String(input.sku).trim()) : null;
+        if (existing) {
+          const { changes } = P.applyProductUpdate(existing, input);
+          if (Object.keys(changes).length) await saveProductChanges(existing.productId, changes);
+          if (stock !== undefined && Number(stock) !== existing.stockOnHand) {
+            await adjustProductStock(existing.productId, { exactQuantity: stock, reason: 'Bulk upload' });
+          } else {
+            await syncStorefront(existing.productId);
+          }
+          results.push(await getProduct(existing.productId));
+          updated++;
+        } else {
+          const product = P.buildNewProduct(input, { productId: newProductId(), vendorId, storeId, initialStock: stock || 0 });
+          await createProduct(product);
+          await syncStorefront(product.productId);
+          results.push(product);
+          created++;
+        }
+      } catch (e) {
+        if (!e.status || e.status >= 500) throw e;
+        errors.push({ row: i + 1, error: e.message });
+      }
+    }
+
+    io.to(`vendor:${vendorId}`).emit('inventory:bulk_updated', { storeId, count: results.length, timestamp: Date.now() });
+    logger.info(`📦 Bulk upload for ${vendorId}: ${created} created, ${updated} updated, ${errors.length} rejected`);
+    return res.status(results.length ? 200 : 400).json({
+      ok: results.length > 0,
+      message: `${created} created, ${updated} updated, ${errors.length} rejected`,
+      count: results.length,
+      created,
+      updated,
+      items: results,
+      errors,
     });
   } catch (err) {
     logger.error(`Bulk upload failed: ${err.message}`);
-    return res.status(500).json({ ok: false, error: err.message });
+    return sendError(res, err);
   }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── IMAGE UPLOADS ────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// POST /api/uploads/image (multipart/form-data, field "file"; JPEG, PNG or WebP, ≤ 5 MB)
+// → 201 { ok, url, path, contentType, size }
+// Real mode: stored in Firebase Storage under vendor-uploads/{vendorId}/ and returned as a
+// Firebase download URL. MOCK mode: kept in memory and served from GET /uploads/:id.
+
+const multer = require('multer');
+
+const IMAGE_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const MOCK_UPLOAD_LIMIT = 300;
+
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (IMAGE_TYPES[file.mimetype]) return cb(null, true);
+    return cb(new HttpError(415, 'Only JPEG, PNG or WebP images are allowed', 'UNSUPPORTED_TYPE'));
+  },
+});
+
+// The declared type comes from the client, so check the file's magic bytes too.
+function sniffImageType(buf) {
+  if (!buf || buf.length < 12) return null;
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return null;
+}
+
+function publicBaseUrl(req) {
+  return (process.env.PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+}
+
+app.post('/api/uploads/image', requireVendor, (req, res) => {
+  imageUpload.single('file')(req, res, async (err) => {
+    try {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ ok: false, error: 'Image must be 5 MB or smaller', code: 'FILE_TOO_LARGE' });
+        if (err.status) return res.status(err.status).json({ ok: false, error: err.message, code: err.code });
+        return res.status(400).json({ ok: false, error: err.message, code: 'UPLOAD_FAILED' });
+      }
+      if (!req.file) return res.status(400).json({ ok: false, error: 'Attach the image as multipart field "file"', code: 'FILE_REQUIRED' });
+      const contentType = sniffImageType(req.file.buffer);
+      if (!contentType) return res.status(415).json({ ok: false, error: 'The file is not a valid JPEG, PNG or WebP image', code: 'UNSUPPORTED_TYPE' });
+
+      const { vendorId } = req.vendor;
+      const fileName = `${uuidv4()}.${IMAGE_TYPES[contentType]}`;
+      let url;
+      let objectPath;
+      if (firebaseInitialized) {
+        const bucket = admin.storage().bucket();
+        objectPath = `vendor-uploads/${vendorId}/${fileName}`;
+        const downloadToken = uuidv4();
+        await bucket.file(objectPath).save(req.file.buffer, {
+          resumable: false,
+          contentType,
+          metadata: {
+            contentType,
+            cacheControl: 'public, max-age=31536000',
+            metadata: { firebaseStorageDownloadTokens: downloadToken, vendorId },
+          },
+        });
+        url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodeURIComponent(objectPath)}?alt=media&token=${downloadToken}`;
+      } else {
+        objectPath = `uploads/${fileName}`;
+        mockStore.uploads.set(fileName, { buffer: req.file.buffer, contentType, vendorId });
+        while (mockStore.uploads.size > MOCK_UPLOAD_LIMIT) {
+          mockStore.uploads.delete(mockStore.uploads.keys().next().value);
+        }
+        url = `${publicBaseUrl(req)}/uploads/${fileName}`;
+      }
+      return res.status(201).json({ ok: true, url, path: objectPath, contentType, size: req.file.size });
+    } catch (e) {
+      return sendError(res, e);
+    }
+  });
+});
+
+// MOCK mode image serving.
+app.get('/uploads/:fileName', (req, res) => {
+  const f = mockStore.uploads.get(req.params.fileName);
+  if (!f) return res.status(404).json({ ok: false, error: 'Not found' });
+  res.set('Content-Type', f.contentType);
+  res.set('Cache-Control', 'public, max-age=86400');
+  res.set('Cross-Origin-Resource-Policy', 'cross-origin');
+  return res.send(f.buffer);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── STOREFRONT (read-only, public) ───────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// GET /api/storefront/products?category=Serums&vendorId=  → { ok, products, count, source }
+// GET /api/storefront/products/:productId                 → { ok, product }
+// Only active documents. Real mode reads Firestore products; MOCK mode reads the mock copy.
+
+async function readStorefront() {
+  if (db) {
+    const snap = await db.collection('products').where('active', '==', true).limit(1000).get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  }
+  return [...mockStore.storefront.values()].filter(p => p.active).map(p => ({ ...p }));
+}
+
+app.get('/api/storefront/products', async (req, res) => {
+  try {
+    let products = await readStorefront();
+    if (req.query.category) products = products.filter(p => p.category === req.query.category);
+    if (req.query.vendorId) products = products.filter(p => p.vendorId === req.query.vendorId);
+    products.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, products, count: products.length, source: db ? 'firestore' : 'mock' });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.get('/api/storefront/products/:productId', async (req, res) => {
+  try {
+    let product = null;
+    if (db) {
+      const d = await db.collection('products').doc(req.params.productId).get();
+      product = d.exists ? { id: d.id, ...d.data() } : null;
+    } else {
+      product = mockStore.storefront.get(req.params.productId) || null;
+    }
+    if (!product || !product.active) return res.status(404).json({ ok: false, error: 'Product not found' });
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, product });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── ADMIN: vendor KYC and product approval (header x-admin-key) ──────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+function statusParam(v, allowed) {
+  if (v === undefined || v === '') return undefined;
+  const s = String(v).toUpperCase();
+  if (!allowed.includes(s)) throw new HttpError(400, `Status must be one of ${allowed.join(', ')}`);
+  return s;
+}
+
+function requireReason(body) {
+  const reason = cleanText(body && body.reason, '', 500);
+  if (!reason) throw new HttpError(400, 'A reason is required', 'REASON_REQUIRED');
+  return reason;
+}
+
+// GET /api/admin/vendors?kycStatus=PENDING → { ok, vendors, count }
+app.get('/api/admin/vendors', requireAdmin, async (req, res) => {
+  try {
+    const kycStatus = statusParam(req.query.kycStatus, P.APPROVAL_STATUSES);
+    const vendors = (await listVendors({ kycStatus })).sort((a, b) => (b.joinedAt || 0) - (a.joinedAt || 0));
+    res.json({ ok: true, vendors, count: vendors.length });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+async function setVendorKyc(req, res, kycStatus) {
+  try {
+    const { vendorId } = req.params;
+    if (!(await getVendor(vendorId))) return res.status(404).json({ ok: false, error: 'Vendor not found' });
+    const now = Date.now();
+    const reason = kycStatus === 'REJECTED' ? requireReason(req.body) : null;
+    const vendor = await saveVendor(vendorId, {
+      kycStatus,
+      kycRejectionReason: reason,
+      kycReviewedAt: now,
+      updatedAt: now,
+    });
+    const storefront = await syncVendorStorefront(vendorId);
+    pushToVendor(vendorId, 'vendor:kycUpdated', { vendorId, kycStatus, reason });
+    logger.info(`🛂 Vendor ${vendorId} ${kycStatus} (${storefront.live}/${storefront.products} products live)`);
+    return res.json({ ok: true, vendor, storefront });
+  } catch (err) {
+    return sendError(res, err);
+  }
+}
+
+// POST /api/admin/vendors/:vendorId/approve            → { ok, vendor, storefront: { products, live } }
+// POST /api/admin/vendors/:vendorId/reject { reason }  → same
+app.post('/api/admin/vendors/:vendorId/approve', requireAdmin, (req, res) => setVendorKyc(req, res, 'APPROVED'));
+app.post('/api/admin/vendors/:vendorId/reject', requireAdmin, (req, res) => setVendorKyc(req, res, 'REJECTED'));
+
+// GET /api/admin/products?approvalStatus=PENDING&vendorId= → { ok, products, count }
+app.get('/api/admin/products', requireAdmin, async (req, res) => {
+  try {
+    const approvalStatus = statusParam(req.query.approvalStatus, P.APPROVAL_STATUSES);
+    const products = (await listProducts({ approvalStatus, vendorId: req.query.vendorId }))
+      .filter(p => !p.deleted)
+      .sort((a, b) => (a.submittedAt || a.createdAt || 0) - (b.submittedAt || b.createdAt || 0));
+    const vendors = new Map();
+    for (const p of products) {
+      if (!vendors.has(p.vendorId)) vendors.set(p.vendorId, await getVendor(p.vendorId));
+    }
+    const items = products.map(p => {
+      const v = vendors.get(p.vendorId);
+      const { stockHistory, ...rest } = p;
+      return { ...withListing(rest, v), vendor: v ? { vendorId: v.vendorId, shopName: v.shopName, kycStatus: v.kycStatus } : null };
+    });
+    res.json({ ok: true, products: items, count: items.length });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+async function setProductApproval(req, res, approvalStatus) {
+  try {
+    const { productId } = req.params;
+    const existing = await getProduct(productId);
+    if (!existing || existing.deleted) return res.status(404).json({ ok: false, error: 'Product not found' });
+    const now = Date.now();
+    const reason = approvalStatus === 'REJECTED' ? requireReason(req.body) : null;
+    await saveProductChanges(productId, {
+      approvalStatus,
+      rejectionReason: reason,
+      approvedAt: approvalStatus === 'APPROVED' ? now : null,
+      reviewedAt: now,
+      updatedAt: now,
+    });
+    const listing = await syncStorefront(productId);
+    const product = await getProduct(productId);
+    pushToVendor(product.vendorId, 'inventory:approvalUpdated', { productId, approvalStatus, rejectionReason: reason });
+    logger.info(`🧾 Product ${productId} ${approvalStatus}${listing.live ? ' (live on shop)' : ''}`);
+    return res.json({ ok: true, product: { ...product, listing } });
+  } catch (err) {
+    return sendError(res, err);
+  }
+}
+
+// POST /api/admin/products/:productId/approve            → { ok, product: { ..., listing: { live, blockers } } }
+// POST /api/admin/products/:productId/reject { reason }  → same
+app.post('/api/admin/products/:productId/approve', requireAdmin, (req, res) => setProductApproval(req, res, 'APPROVED'));
+app.post('/api/admin/products/:productId/reject', requireAdmin, (req, res) => setProductApproval(req, res, 'REJECTED'));
 
 // ════════════════════════════════════════════════════════════════════════════
 // ── EARNINGS ENDPOINTS ────────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 
-app.get('/api/earnings/:vendorId', async (req, res) => {
+app.get('/api/earnings/:vendorId', requireSelfOrAdmin, async (req, res) => {
   try {
     const { vendorId } = req.params;
     const earnings = await getEarnings(vendorId);
@@ -1626,7 +2217,7 @@ app.get('/api/earnings/:vendorId', async (req, res) => {
   }
 });
 
-app.get('/api/earnings/:vendorId/history', async (req, res) => {
+app.get('/api/earnings/:vendorId/history', requireSelfOrAdmin, async (req, res) => {
   try {
     const { vendorId }   = req.params;
     const { from, to }   = req.query;
@@ -1659,7 +2250,7 @@ app.get('/api/earnings/:vendorId/history', async (req, res) => {
 // ── NOTIFICATIONS ENDPOINTS ───────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 
-app.get('/api/notifications/:vendorId', async (req, res) => {
+app.get('/api/notifications/:vendorId', requireSelfOrAdmin, async (req, res) => {
   try {
     const { vendorId } = req.params;
     const notifications = await getNotifications(vendorId);
@@ -1669,7 +2260,7 @@ app.get('/api/notifications/:vendorId', async (req, res) => {
   }
 });
 
-app.patch('/api/notifications/:notificationId/read', async (req, res) => {
+app.patch('/api/notifications/:notificationId/read', requireVendorOrAdmin, async (req, res) => {
   try {
     const { notificationId } = req.params;
     if (db) {
@@ -1684,7 +2275,7 @@ app.patch('/api/notifications/:notificationId/read', async (req, res) => {
   }
 });
 
-app.post('/api/notifications/broadcast', async (req, res) => {
+app.post('/api/notifications/broadcast', requireAdmin, async (req, res) => {
   try {
     const { title, body, data } = req.body;
     if (!title || !body) return res.status(400).json({ ok: false, error: 'title and body required' });
@@ -1711,9 +2302,12 @@ app.post('/api/notifications/broadcast', async (req, res) => {
 // ── ANALYTICS ENDPOINTS ───────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
 
-app.get('/api/analytics/:storeId', async (req, res) => {
+app.get('/api/analytics/:storeId', requireVendorOrAdmin, async (req, res) => {
   try {
     const { storeId } = req.params;
+    if (!req.isAdmin && req.vendor.storeId !== storeId) {
+      return res.status(403).json({ ok: false, error: 'Not allowed for this store' });
+    }
     const orders = await getOrders({ storeId });
 
     const today      = new Date().toDateString();
@@ -1788,7 +2382,7 @@ app.post('/api/returns', async (req, res) => {
       reason:       reason       || '',
       items:        items        || [],
       refundAmount: refundAmount || 0,
-      vendorId:     vendorId     || 'VND-001',
+      vendorId:     (req.vendor && req.vendor.vendorId) || vendorId || null,
       status:       'PENDING',
       createdAt:    now,
       updatedAt:    now,
@@ -1809,6 +2403,12 @@ app.post('/api/returns', async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 // ── TEST / SIMULATION / RACE-CONDITION ENDPOINTS ──────────────────────────────
 // ════════════════════════════════════════════════════════════════════════════
+
+// Test and simulation routes are development-only (they bypass ownership and mutate stock).
+app.use('/api/test', (req, res, next) => {
+  if (IS_PROD) return res.status(404).json({ ok: false, error: 'Endpoint not found' });
+  return next();
+});
 
 app.all('/api/test/simulate-order', async (req, res) => {
   try {
@@ -1875,7 +2475,7 @@ app.all('/api/test/simulate-order', async (req, res) => {
     }
 
     // Push real-time to vendor
-    pushNewOrderToStore(storeId, { type: 'NEW_ORDER', order: newOrder, sentAt: now });
+    pushOrderToVendor(newOrder);
 
     logger.info(`⚡ Simulated order created: ${orderId}`);
     return res.status(201).json({
@@ -1912,7 +2512,7 @@ app.all('/api/test/race-condition', async (req, res) => {
     // Simulate 2 parallel customer order requests fired concurrently via internal reservation logic
     const orderPromise1 = (async () => {
       const items = [{ productId: prod.productId, name: prod.name, price: prod.price, quantity: 1 }];
-      const reserve = reserveInventoryForOrder(items);
+      const reserve = await moveOrderStock({ kind: 'reserve', lines: orderLines(items) }).catch(e => ({ ok: false, error: e.message }));
       if (!reserve.ok) {
         return { ok: false, status: 409, error: 'OUT_OF_STOCK', customer: 'Customer A (Ananya)', message: `Item "${prod.name}" already reserved by another customer.` };
       }
@@ -1922,7 +2522,7 @@ app.all('/api/test/race-condition', async (req, res) => {
 
     const orderPromise2 = (async () => {
       const items = [{ productId: prod.productId, name: prod.name, price: prod.price, quantity: 1 }];
-      const reserve = reserveInventoryForOrder(items);
+      const reserve = await moveOrderStock({ kind: 'reserve', lines: orderLines(items) }).catch(e => ({ ok: false, error: e.message }));
       if (!reserve.ok) {
         return { ok: false, status: 409, error: 'OUT_OF_STOCK', customer: 'Customer B (Ravi)', message: `Item "${prod.name}" already reserved by another customer.` };
       }
@@ -1969,59 +2569,112 @@ app.all('/api/test/race-condition', async (req, res) => {
 });
 
 // ── Onboarding Submission Endpoint ─────────────────────────────────────────────
-app.post('/api/onboarding/submit', async (req, res) => {
+// POST /api/onboarding/submit   (Authorization: Bearer <token from /api/auth/vendor/login>)
+// Body: ownerName, shopName, email, shopType, city, locality, address, pincode (or pinCode),
+//   openTime, closeTime, latitude, longitude, gstin, pan, cosmeticLicense, licenseExpiry,
+//   tradeLicense, beneficiaryName, bankName, maskedAccountNumber, ifsc, upiVpa,
+//   categories (or selectedCats), seedSkus
+// → { ok, vendorId, storeId, kycStatus: 'PENDING', token, vendor }
+// The phone comes from the verified session. kycStatus stays PENDING until an admin
+// approves the vendor; the returned token carries the new vendorId/storeId.
+const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
+const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+
+app.post('/api/onboarding/submit', requirePhoneSession, async (req, res) => {
   try {
-    const payload = req.body;
-    const vendorId = payload.vendorId || ('VND-' + Math.floor(100 + Math.random() * 900));
-    const storeId  = payload.storeId  || ('DS-' + (payload.city ? payload.city.slice(0, 3).toUpperCase() : 'VIJ') + '-01');
+    const b = req.body || {};
+    const t = (v, max = 200) => cleanText(v, '', max);
+    const phone = req.vendor.phone;
+
+    let existing = req.vendor.vendorId ? await getVendor(req.vendor.vendorId) : null;
+    if (!existing) existing = await findVendorByPhone(phone);
+    if (existing && existing.kycStatus === 'APPROVED') {
+      return res.status(409).json({ ok: false, error: 'This store is already approved. Edit details from your profile.', code: 'ALREADY_APPROVED' });
+    }
+
+    const ownerName = t(b.ownerName, 120);
+    const shopName = t(b.shopName || b.storeName, 160);
+    if (!ownerName || !shopName) {
+      return res.status(400).json({ ok: false, error: 'ownerName and shopName are required', code: 'MISSING_FIELDS' });
+    }
+    const gstin = t(b.gstin, 15).toUpperCase();
+    const pan = t(b.pan, 10).toUpperCase();
+    if (gstin && !GSTIN_RE.test(gstin)) return res.status(400).json({ ok: false, error: 'GSTIN format is invalid', code: 'INVALID_GSTIN' });
+    if (pan && !PAN_RE.test(pan)) return res.status(400).json({ ok: false, error: 'PAN format is invalid', code: 'INVALID_PAN' });
+
+    const city = t(b.city, 80);
+    const suffix = crypto.randomBytes(3).toString('hex').toUpperCase();
+    const vendorId = existing ? existing.vendorId : `VND-${suffix}`;
+    const storeId = existing && existing.storeId
+      ? existing.storeId
+      : `DS-${(city.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase() || 'GV')}-${suffix}`;
+    const categories = (Array.isArray(b.categories) ? b.categories : Array.isArray(b.selectedCats) ? b.selectedCats : [])
+      .map(c => t(c, 60)).filter(Boolean).slice(0, 20);
+    const lat = Number(b.latitude);
+    const lng = Number(b.longitude);
+    const now = Date.now();
 
     const vendorRecord = {
       vendorId,
       storeId,
-      name:         payload.ownerName || 'Vendor Partner',
-      shopName:     payload.shopName  || 'GlowVAI Dark Store',
-      email:        payload.email     || 'partner@glowvai.com',
-      phone:        payload.phone     || '8977855998',
-      shopType:     payload.shopType  || 'Retailer',
-      city:         payload.city      || 'Vijayawada',
-      pinCode:      payload.pinCode   || '520010',
-      locality:     payload.locality  || 'Payakapuram',
-      address:      payload.address   || 'Vijayawada Hub',
-      latitude:     payload.latitude  || 16.5062,
-      longitude:    payload.longitude || 80.6480,
-      openTime:     payload.openTime  || '09:30 AM',
-      closeTime:    payload.closeTime || '09:30 PM',
-      bankDetails:  payload.bankDetails || {},
-      kycStatus:    'APPROVED',
-      isOnline:     true,
-      categories:   payload.selectedCats || ['Skincare', 'Makeup'],
-      joinedAt:     Date.now(),
-      updatedAt:    Date.now(),
+      phone,
+      name:            ownerName,
+      shopName,
+      email:           t(b.email, 160),
+      shopType:        t(b.shopType, 80) || 'Retailer',
+      city,
+      locality:        t(b.locality, 160),
+      address:         t(b.address, 400),
+      pinCode:         t(b.pinCode ?? b.pincode, 10),
+      latitude:        Number.isFinite(lat) ? lat : null,
+      longitude:       Number.isFinite(lng) ? lng : null,
+      openTime:        t(b.openTime, 20),
+      closeTime:       t(b.closeTime, 20),
+      gstin,
+      pan,
+      cosmeticLicense: t(b.cosmeticLicense, 80),
+      licenseExpiry:   t(b.licenseExpiry, 20),
+      tradeLicense:    t(b.tradeLicense, 80),
+      // Only the masked account number is accepted; the full number never reaches this API.
+      bankDetails: {
+        bankName:         t(b.bankName, 120),
+        holderName:       t(b.beneficiaryName, 120),
+        accNumberMasked:  t(b.maskedAccountNumber, 24),
+        ifsc:             t(b.ifsc, 11).toUpperCase(),
+        upiId:            t(b.upiVpa, 120),
+      },
+      categories,
+      seedSkus:        Array.isArray(b.seedSkus) ? b.seedSkus.slice(0, 100) : [],
+      kycStatus:       'PENDING',
+      kycRejectionReason: null,
+      kycSubmittedAt:  now,
+      isOnline:        existing ? !!existing.isOnline : false,
+      joinedAt:        (existing && existing.joinedAt) || now,
+      updatedAt:       now,
     };
 
-    if (db) {
-      await db.collection('vendors').doc(vendorId).set(vendorRecord);
-    } else {
-      const idx = mockStore.vendors.findIndex(v => v.vendorId === vendorId);
-      if (idx >= 0) mockStore.vendors[idx] = vendorRecord;
-      else mockStore.vendors.unshift(vendorRecord);
-    }
+    const vendor = await saveVendor(vendorId, vendorRecord);
+    if (existing) await syncVendorStorefront(vendorId); // a resubmission puts KYC back to PENDING
 
-    io.emit('vendor:registered', { vendor: vendorRecord });
-    logger.info(`✨ Vendor onboarded: ${vendorRecord.shopName} (${vendorId}) at [${vendorRecord.latitude}, ${vendorRecord.longitude}]`);
+    const token = signVendorToken({ vendorId, storeId, phone }, SECURITY.vendorTokenSecret);
+    logger.info(`✨ Vendor onboarding submitted: ${shopName} (${vendorId}), KYC PENDING`);
 
     return res.status(200).json({
       ok: true,
-      message: 'Onboarding registered and approved successfully',
-      vendor: vendorRecord,
+      message: 'Onboarding submitted. Your store is under review.',
+      vendorId,
+      storeId,
+      kycStatus: 'PENDING',
+      token,
+      vendor,
     });
   } catch (err) {
-    return res.status(500).json({ ok: false, error: err.message });
+    return sendError(res, err);
   }
 });
 
 // ── Admin Panel APIs ───────────────────────────────────────────────────────────
-app.get('/api/admin/overview', async (_req, res) => {
+app.get('/api/admin/overview', requireAdmin, async (_req, res) => {
   try {
     const totalOrders    = mockStore.orders.length;
     const totalInventory = mockStore.inventory.length;
@@ -2051,7 +2704,7 @@ app.get('/api/admin/overview', async (_req, res) => {
   }
 });
 
-app.get('/api/admin/vendor/:vendorId', async (req, res) => {
+app.get('/api/admin/vendor/:vendorId', requireAdmin, async (req, res) => {
   try {
     const { vendorId } = req.params;
     let vendor = mockStore.vendors.find(v => v.vendorId === vendorId || v.storeId === vendorId);
@@ -2107,9 +2760,17 @@ app.use((_req, res) => {
 
 // ── Global Error Handler ──────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
+  if (err.type === 'entity.parse.failed') return res.status(400).json({ ok: false, error: 'Invalid JSON body' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ ok: false, error: 'Request body too large' });
   logger.error(`Unhandled: ${err.message}`);
   res.status(500).json({ ok: false, error: 'Internal server error' });
 });
+
+// MOCK mode: publish the pre-approved seed products to the mock storefront.
+if (!db) {
+  Promise.all(mockStore.inventory.map(p => syncStorefront(p.productId)))
+    .then(r => logger.info(`🛍️  Mock storefront: ${r.filter(x => x.live).length} seed products listed`));
+}
 
 // ── Start Server ──────────────────────────────────────────────────────────────
 server.listen(PORT, () => {
@@ -2117,42 +2778,25 @@ server.listen(PORT, () => {
   logger.info(`📡 WebSocket (Socket.IO) ready`);
   logger.info(`🔥 Firebase: ${firebaseInitialized ? 'Connected' : 'MOCK mode'}`);
   logger.info('');
-  logger.info('═══ API Endpoints ══════════════════════════════════════');
-  logger.info(`  GET    /health`);
-  logger.info(`  GET    /api/vendor/:vendorId`);
-  logger.info(`  PATCH  /api/vendor/:vendorId/status`);
-  logger.info(`  PATCH  /api/vendor/:vendorId/fcm-token`);
-  logger.info(`  GET    /api/orders`);
-  logger.info(`  GET    /api/orders/all`);
-  logger.info(`  GET    /api/orders/pending`);
-  logger.info(`  GET    /api/orders/:orderId`);
-  logger.info(`  POST   /api/orders`);
-  logger.info(`  PATCH  /api/orders/:orderId/accept`);
-  logger.info(`  PATCH  /api/orders/:orderId/pack`);
-  logger.info(`  PATCH  /api/orders/:orderId/prepare`);
-  logger.info(`  PATCH  /api/orders/:orderId/ready`);
-  logger.info(`  PATCH  /api/orders/:orderId/handover`);
-  logger.info(`  PATCH  /api/orders/:orderId/dispatch`);
-  logger.info(`  PATCH  /api/orders/:orderId/deliver`);
-  logger.info(`  PATCH  /api/orders/:orderId/cancel`);
-  logger.info(`  PATCH  /api/orders/:orderId/reject`);
-  logger.info(`  PATCH  /api/orders/:orderId/timeout`);
-  logger.info(`  GET    /api/inventory`);
-  logger.info(`  POST   /api/inventory`);
-  logger.info(`  PATCH  /api/inventory/:productId`);
-  logger.info(`  PATCH  /api/inventory/:productId/stock`);
-  logger.info(`  DELETE /api/inventory/:productId`);
-  logger.info(`  POST   /api/inventory/bulk-upload`);
-  logger.info(`  GET    /api/earnings/:vendorId`);
-  logger.info(`  GET    /api/earnings/:vendorId/history`);
-  logger.info(`  GET    /api/notifications/:vendorId`);
-  logger.info(`  PATCH  /api/notifications/:notifId/read`);
-  logger.info(`  POST   /api/notifications/broadcast`);
-  logger.info(`  GET    /api/analytics/:storeId`);
-  logger.info(`  GET    /api/returns`);
-  logger.info(`  POST   /api/returns`);
-  logger.info(`  POST   /api/test/simulate-order`);
-  logger.info(`  ALL    /api/test/race-condition`);
+  logger.info(`🌐 CORS origins: ${CORS.allowed.join(', ')}${IS_PROD ? '' : ' (+ any localhost in development)'}`);
+  logger.info('═══ Marketplace endpoints ═════════════════════════════');
+  logger.info('  POST   /api/auth/vendor/login            (public)');
+  logger.info('  POST   /api/onboarding/submit            (phone session)');
+  logger.info('  GET    /api/vendor/me                    (vendor)');
+  logger.info('  GET    /api/inventory                    (vendor | admin)');
+  logger.info('  POST   /api/inventory                    (vendor)');
+  logger.info('  PATCH  /api/inventory/:productId         (vendor | admin)');
+  logger.info('  PATCH  /api/inventory/:productId/stock   (vendor | admin)');
+  logger.info('  DELETE /api/inventory/:productId         (vendor | admin)');
+  logger.info('  POST   /api/inventory/bulk-upload        (vendor)');
+  logger.info('  POST   /api/uploads/image                (vendor, multipart "file")');
+  logger.info('  POST   /api/orders | /api/orders/create  (public, items need productId)');
+  logger.info('  PATCH  /api/orders/:orderId/<action>     (vendor | admin)');
+  logger.info('  GET    /api/storefront/products[/:id]    (public)');
+  logger.info('  GET    /api/admin/vendors?kycStatus=     (admin)');
+  logger.info('  POST   /api/admin/vendors/:id/approve|reject');
+  logger.info('  GET    /api/admin/products?approvalStatus= (admin)');
+  logger.info('  POST   /api/admin/products/:id/approve|reject');
   logger.info('═══════════════════════════════════════════════════════');
 });
 

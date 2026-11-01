@@ -23,13 +23,16 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
 import useVendorStore from '../../src/store/useVendorStore';
+import { useVendorSession } from '../../src/services/session';
 import { ordersApi } from '../../src/services/api';
 
-const VENDOR_ID = process.env.EXPO_PUBLIC_VENDOR_ID || 'VND-001';
 
 type EdgeState = 'normal' | 'delayed' | 'reassigned' | 'invalid_code' | 'qr_failure' | 'duplicate' | 'network_loss' | 'already_dispatched';
 
 export default function ReadyPickupScreen() {
+  // The signed-in vendor (the backend also takes it from the session token).
+  const vendorSession = useVendorSession();
+  const VENDOR_ID = vendorSession.vendorId || '';
   const router = useRouter();
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
   const { orders, updateOrder } = useVendorStore();

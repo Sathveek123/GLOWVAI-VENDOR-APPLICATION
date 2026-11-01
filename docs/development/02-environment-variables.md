@@ -23,15 +23,21 @@ Expo exposes only variables prefixed `EXPO_PUBLIC_` to the app. Anything else is
 
 ## Backend (`backend/.env`)
 
+`backend/.env.example` lists every variable with placeholders. The main ones:
+
 | Variable | Purpose |
 |---|---|
 | `PORT` | Port the server listens on. Default `4000`. |
-| `NODE_ENV` | `development` or `production`. |
-| `FIREBASE_SERVICE_ACCOUNT_PATH` | Path to the Firebase service account JSON. The file must stay out of git. Leave unset to run in mock mode. |
-| `JWT_SECRET` | Secret for signing tokens. Use a long random value. |
-| `CORS_ORIGINS` | Comma-separated list of origins allowed to call the API (the web app and the Expo dev server). |
+| `NODE_ENV` | `development` or `production`. Production refuses to start without the secrets below and Firebase credentials. |
+| `VENDOR_TOKEN_SECRET` | HMAC secret for vendor session tokens (32+ characters in production). |
+| `ADMIN_API_KEY` | Key for `/api/admin/*`, sent as the `x-admin-key` header. Development default: `dev-admin-key`. |
+| `VENDOR_DEV_OTP` | Test OTP accepted outside production. Default `4892`. |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Service account JSON (raw or base64). Leave unset, with no key file, to run in mock mode. |
+| `FIREBASE_SERVICE_ACCOUNT_PATH` | Local alternative: path to the key file. The file must stay out of git. |
+| `FIREBASE_STORAGE_BUCKET` | Bucket for product photos. Default `glowvai-v2.firebasestorage.app`. |
+| `ALLOWED_ORIGINS` | Extra CORS origins. glowvai.in, www.glowvai.in and localhost:3100 are always allowed. |
 
-Secrets (`JWT_SECRET`, the service account file) stay on the server. They must never appear in `mobile/.env`.
+Secrets (`VENDOR_TOKEN_SECRET`, `ADMIN_API_KEY`, the service account) stay on the server. They must never appear in `mobile/.env`. Deployment: `docs/deploy/render.md`.
 
 ## Checking your setup
 

@@ -9,6 +9,8 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { vendorApi, ApiError } from '../../src/services/api';
 import { clearSession, getSession } from '../../src/services/session';
+import { cacheStatus, getCachedStatus, normalizeStatus } from '../../src/features/onboarding/status';
+import { clearResumeStep } from '../../src/features/onboarding/draft';
 import useVendorStore from '../../src/store/useVendorStore';
 import {
   SellerFrame,
@@ -23,7 +25,7 @@ import {
 import { FontFamily } from '../../src/theme/typography';
 
 const NEXT_STEPS: { title: string; text: string }[] = [
-  { title: 'Add your products', text: 'Add each product with its price, stock and photos. Our team reviews new products before they appear on the shop.' },
+  { title: 'Add your products', text: 'Add each product with its price, stock and photos from the Inventory tab.' },
   { title: 'Go online', text: 'Switch your store online from the dashboard when you’re ready to take orders. Orders reach you only while you are online.' },
 ];
 
@@ -36,6 +38,7 @@ export default function ApprovedScreen() {
   const [profile, setProfile] = useState<any>(null);
   const [offline, setOffline] = useState(false);
   const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -51,16 +54,14 @@ export default function ApprovedScreen() {
       try {
         const res: any = await vendorApi.me();
         const v = res?.vendor;
-        if (v?.kycStatus !== 'APPROVED') {
+        const status = normalizeStatus(v);
+        await cacheStatus(status);
+        if (status !== 'APPROVED') {
           router.replace('/(onboarding)/pending');
           return;
         }
         setProfile(v);
-        await AsyncStorage.multiSet([
-          ['vendor_registered', 'true'],
-          ['vendor_onboarding_status', 'approved'],
-          ['vendor_kyc_status', 'APPROVED'],
-        ]);
+        await clearResumeStep();
       } catch (e: any) {
         if (e instanceof ApiError && e.status === 401) {
           await clearSession();
@@ -68,8 +69,8 @@ export default function ApprovedScreen() {
           return;
         }
         // Offline: trust the status this device last confirmed, otherwise go back to status.
-        const known = await AsyncStorage.getItem('vendor_onboarding_status');
-        if (known !== 'approved') {
+        const known = await getCachedStatus();
+        if (known !== 'APPROVED') {
           router.replace('/(onboarding)/pending');
           return;
         }
@@ -82,20 +83,26 @@ export default function ApprovedScreen() {
   const openDashboard = async () => {
     setOpening(true);
     const session = await getSession();
-    if (!session.token || !session.vendorId || !session.storeId) {
-      await clearSession();
+    if (!session.token) {
       router.replace('/(auth)/login');
+      return;
+    }
+    const storeId = session.storeId || profile?.storeId;
+    if (!session.vendorId || !storeId) {
+      // Don't sign the seller out: the store record is incomplete on our side.
+      setOpening(false);
+      setOpenError('Your store isn’t fully set up on our side yet, so the dashboard can’t open. Try again in a few minutes, or contact seller support.');
       return;
     }
     setVendor({
       vendorId: session.vendorId,
-      storeId: session.storeId,
-      name: profile?.name || 'Your store',
+      storeId,
+      name: profile?.name || profile?.ownerName || '',
       shopName: profile?.shopName,
       phone: profile?.phone || (await AsyncStorage.getItem('vendor_phone')) || '',
       email: profile?.email,
       isOnline: !!profile?.isOnline,
-    } as any);
+    });
     router.replace('/(vendor)/home');
   };
 
@@ -103,16 +110,17 @@ export default function ApprovedScreen() {
 
   return (
     <SellerFrame testID="approved">
-      {offline ? <Banner tone="warning" message="You're offline. Some details may be out of date until you reconnect." /> : null}
+      {offline ? <Banner tone="warning" message="You’re offline. Some details may be out of date until you reconnect." /> : null}
+      {openError ? <Banner tone="error" message={openError} /> : null}
       <Section>
         <View style={st.icon}>
-          <Ionicons name="checkmark" size={30} color="#FFFFFF" />
+          <Ionicons name="checkmark" size={30} color={C.textOnPrimary} />
         </View>
         <Text accessibilityRole="header" style={st.title}>
           Your store is approved
         </Text>
         <Text style={st.body}>
-          {profile?.shopName ? `${profile.shopName} can now sell on glowvai.` : 'Your store can now sell on glowvai.'} Here{'’'}s what to do next.
+          {profile?.shopName ? `${profile.shopName} can now sell on GlowVai.` : 'Your store can now sell on GlowVai.'} Here{'’'}s what to do next.
         </Text>
         <View style={{ marginTop: S.lg }}>
           {NEXT_STEPS.map((s, i) => (
@@ -136,7 +144,7 @@ export default function ApprovedScreen() {
 }
 
 const st = StyleSheet.create({
-  icon: { width: 56, height: 56, borderRadius: 28, backgroundColor: C.success, alignItems: 'center', justifyContent: 'center', marginBottom: S.lg },
+  icon: { width: 56, height: 56, borderRadius: 28, backgroundColor: C.successText, alignItems: 'center', justifyContent: 'center', marginBottom: S.lg },
   title: { fontFamily: FontFamily.bold, fontSize: 24, lineHeight: 30, letterSpacing: -0.4, color: C.textPrimary },
   body: { fontSize: 15, lineHeight: 22, color: C.textSecondary, marginTop: S.sm },
   step: { flexDirection: 'row', alignItems: 'flex-start', gap: S.md, paddingVertical: S.md, borderTopWidth: 1, borderTopColor: C.border },

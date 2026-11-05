@@ -25,22 +25,20 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as DocumentPicker from 'expo-document-picker';
 import Wordmark from '../../components/Wordmark';
-import { Colors } from '../../theme/tokens';
+import { Colors, BorderRadii, Shadows } from '../../theme/tokens';
 import { FontFamily } from '../../theme/typography';
 import { formatBytes, type AttachedFile } from './draft';
 
 // ── Scale ─────────────────────────────────────────────────────────────────────
 export const S = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
-export const R = { input: 10, card: 14, pill: 999 } as const;
+export const R = { input: BorderRadii.button, card: BorderRadii.sheet, pill: BorderRadii.pill } as const;
 export const FORM_MAX = 720;
 export const WIDE_MAX = 1040;
 
 const C = {
   ...Colors,
-  page: '#F6F8FB',
-  errorText: '#B91C1C',
-  successText: '#15803D',
-  warningText: '#B45309',
+  page: Colors.canvas,
+  errorText: Colors.dangerText,
 };
 
 const webNoOutline = Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : null;
@@ -59,7 +57,7 @@ export function useLayout() {
 export function useDocumentTitle(title: string) {
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = `${title} · glowvai Sellers`;
+      document.title = `${title} · GlowVai Seller`;
     }
   }, [title]);
 }
@@ -93,9 +91,7 @@ export function SellerHeader({
           <View style={{ width: S.sm }} />
         )}
         <View style={h.brand}>
-          <Wordmark lowercase size={22} />
-          <View style={h.divider} />
-          <Text style={h.portal}>Sellers</Text>
+          <Wordmark size={20} suffix="Seller" />
         </View>
         <View style={h.right}>{right}</View>
       </View>
@@ -108,8 +104,6 @@ const h = StyleSheet.create({
   inner: { width: '100%', alignSelf: 'center', height: 56, flexDirection: 'row', alignItems: 'center' },
   iconBtn: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   brand: { flexDirection: 'row', alignItems: 'center', marginLeft: S.xs, flexShrink: 1 },
-  divider: { width: 1, height: 18, backgroundColor: C.border, marginHorizontal: S.sm + 2 },
-  portal: { fontFamily: FontFamily.semibold, fontSize: 14, color: C.textSecondary },
   right: { marginLeft: 'auto', flexDirection: 'row', alignItems: 'center' },
 });
 
@@ -249,7 +243,7 @@ export function Section({
 }
 
 const sc = StyleSheet.create({
-  card: { backgroundColor: C.background, borderRadius: R.card, borderWidth: 1, borderColor: C.border, marginBottom: S.lg },
+  card: { backgroundColor: C.card, borderRadius: R.card, borderWidth: 1, borderColor: C.border, marginBottom: S.lg, ...Shadows.card },
   head: { flexDirection: 'row', alignItems: 'flex-start', gap: S.md, marginBottom: S.lg },
   title: { fontFamily: FontFamily.bold, fontSize: 17, lineHeight: 24, color: C.textPrimary },
   desc: { fontSize: 14, lineHeight: 20, color: C.textSecondary, marginTop: 2 },
@@ -397,7 +391,7 @@ export function Button({
 }) {
   const inactive = disabled || loading;
   const v = bv[variant];
-  const textColor = disabled && variant === 'primary' ? C.textSubtle : v.color;
+  const textColor = disabled && variant === 'primary' ? C.disabledText : v.color;
   return (
     <Pressable
       testID={testID}
@@ -427,8 +421,8 @@ export function Button({
 }
 
 const bv: Record<ButtonVariant, { bg: string; border: string; color: string; pressed: string }> = {
-  primary: { bg: C.primary, border: C.primary, color: '#FFFFFF', pressed: C.primaryPressed },
-  secondary: { bg: C.background, border: '#CBD5E1', color: C.textPrimary, pressed: C.surface },
+  primary: { bg: C.primary, border: C.primary, color: C.textOnPrimary, pressed: C.primaryPressed },
+  secondary: { bg: C.background, border: C.borderStrong, color: C.textPrimary, pressed: C.surface },
   ghost: { bg: 'transparent', border: 'transparent', color: C.primary, pressed: C.primaryLight },
   danger: { bg: C.background, border: C.dangerBorder, color: C.errorText, pressed: C.dangerLight },
 };
@@ -444,17 +438,20 @@ const bt = StyleSheet.create({
     justifyContent: 'center',
   },
   compact: { minHeight: 44, paddingHorizontal: 12 },
-  primaryDisabled: { backgroundColor: '#E2E8F0', borderColor: '#E2E8F0' },
+  // Disabled primary: #475569 on #E2E8F0 is 6.2:1, readable in a bright shop.
+  primaryDisabled: { backgroundColor: C.disabledBg, borderColor: C.disabledBg },
   text: { fontFamily: FontFamily.bold, fontSize: 16, lineHeight: 22 },
   textCompact: { fontFamily: FontFamily.semibold, fontSize: 15 },
 });
 
 /** Inline text link with a 44px touch target. */
-export function LinkButton({ label, onPress, accessibilityLabel }: { label: string; onPress: () => void; accessibilityLabel?: string }) {
+export function LinkButton({ label, onPress, accessibilityLabel, testID }: { label: string; onPress: () => void; accessibilityLabel?: string; testID?: string }) {
   return (
     <Pressable
+      testID={testID}
       onPress={onPress}
-      accessibilityRole="link"
+      hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+      accessibilityRole="button"
       accessibilityLabel={accessibilityLabel || label}
       style={({ pressed }) => [lk.hit, pressed && { opacity: 0.6 }]}
     >
@@ -464,7 +461,7 @@ export function LinkButton({ label, onPress, accessibilityLabel }: { label: stri
 }
 
 const lk = StyleSheet.create({
-  hit: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
+  hit: { minHeight: 44, minWidth: 44, justifyContent: 'center', alignItems: 'center', paddingHorizontal: S.sm, borderRadius: R.input },
   text: { fontFamily: FontFamily.semibold, fontSize: 15, color: C.primary, textDecorationLine: 'underline' },
 });
 
@@ -472,10 +469,10 @@ const lk = StyleSheet.create({
 type Tone = 'info' | 'success' | 'warning' | 'error';
 
 const TONES: Record<Tone, { bg: string; border: string; color: string; icon: keyof typeof Ionicons.glyphMap }> = {
-  info: { bg: C.primaryLight, border: C.primaryBorder, color: '#1E3A8A', icon: 'information-circle' },
-  success: { bg: C.successLight, border: C.successBorder, color: '#14532D', icon: 'checkmark-circle' },
-  warning: { bg: C.warningLight, border: C.warningBorder, color: '#78350F', icon: 'alert-circle' },
-  error: { bg: C.dangerLight, border: C.dangerBorder, color: '#7F1D1D', icon: 'alert-circle' },
+  info: { bg: C.primaryLight, border: C.primaryBorder, color: C.infoText, icon: 'information-circle' },
+  success: { bg: C.successLight, border: C.successBorder, color: C.successText, icon: 'checkmark-circle' },
+  warning: { bg: C.warningLight, border: C.warningBorder, color: C.warningText, icon: 'alert-circle' },
+  error: { bg: C.dangerLight, border: C.dangerBorder, color: C.dangerText, icon: 'alert-circle' },
 };
 
 export function Banner({
@@ -525,7 +522,7 @@ export function Checkbox({ checked, onChange, label }: { checked: boolean; onCha
       accessibilityLabel={label}
       style={cb.row}
     >
-      <View style={[cb.box, checked && cb.boxOn]}>{checked ? <Ionicons name="checkmark" size={16} color="#FFFFFF" /> : null}</View>
+      <View style={[cb.box, checked && cb.boxOn]}>{checked ? <Ionicons name="checkmark" size={16} color={C.textOnPrimary} /> : null}</View>
       <Text style={cb.label}>{label}</Text>
     </Pressable>
   );
@@ -714,7 +711,7 @@ export function FileField({
           <View style={fl.fileIcon}>
             <Ionicons name={value.mimeType === PDF ? 'document-text-outline' : 'image-outline'} size={22} color={C.primary} />
           </View>
-          <View style={{ flex: 1, minWidth: 0 }} accessible accessibilityLabel={`${label}: ${value.name} attached`}>
+          <View style={{ flex: 1, minWidth: 0 }} accessible accessibilityLabel={`${label}: ${value.name} selected`}>
             <Text style={fl.fileName} numberOfLines={1} ellipsizeMode="middle">
               {value.name}
             </Text>
@@ -783,7 +780,7 @@ const fl = StyleSheet.create({
     flexWrap: 'wrap',
     borderWidth: 1,
     borderColor: C.successBorder,
-    backgroundColor: '#FBFEFC',
+    backgroundColor: C.successLight,
     borderRadius: R.input,
     paddingLeft: S.md,
     paddingVertical: S.xs,
@@ -837,7 +834,7 @@ export function Segmented<T extends string>({
 
 const sg = StyleSheet.create({
   wrap: { flexDirection: 'row', backgroundColor: C.surface, borderRadius: R.input, borderWidth: 1, borderColor: C.border, padding: 3 },
-  item: { minWidth: 52, minHeight: 40, borderRadius: 8, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10 },
+  item: { minWidth: 52, minHeight: 44, borderRadius: 8, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
   itemOn: { backgroundColor: C.background, borderWidth: 1, borderColor: C.primary },
   text: { fontFamily: FontFamily.semibold, fontSize: 15, color: C.textSecondary },
   textOn: { color: C.primary },

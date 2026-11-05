@@ -1,515 +1,490 @@
 /**
- * Order detail and picking checklist.
- * Lists the order's real items for picking. Picks are saved on this device only.
- * The order comes from the store, or from the API when it is not in the store yet.
+ * Order detail and Pick & pack (PRD screens 12 and 13, first half).
+ *  - New offer: the offer (items, Accept, Decline with reason). No checklist until accepted.
+ *  - Accepted: one checklist. Tap a row when the item is in the bag, or "Can't find".
+ *    "Mark as packed" stays disabled until every item is checked or reported.
+ *  - Packed or later: a short summary and the way to the pickup screen.
+ * Picks are saved on this device only. Customer details: first name only, after acceptance.
  * File: mobile/app/(vendor)/order-detail.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useState, useEffect, useMemo } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  ActivityIndicator,
-  Platform,
-  StyleSheet,
-  useWindowDimensions,
-} from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
+import { BorderRadii, Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily } from '../../src/theme/typography';
 import useVendorStore from '../../src/store/useVendorStore';
-import type { Order } from '../../src/store/useVendorStore';
+import type { OrderItem } from '../../src/store/useVendorStore';
 import { useVendorSession } from '../../src/services/session';
 import { ordersApi } from '../../src/services/api';
 import ScreenShell from '../../src/components/ScreenShell';
+import {
+  OfferCard,
+  StatusStrip,
+  bucketOf,
+  formatAgo,
+  friendlyError,
+  statusMeta,
+  unitCount,
+  unitsLabel,
+  useOrder,
+  withTimeout,
+} from '../../src/features/orders';
+import { Banner, Card, PrimaryButton, SecondaryButton, StateView, StatusPill, ui } from '../../src/features/orders/ui';
 
-const STATUS_LABELS: Record<string, string> = {
-  PENDING: 'New offer',
-  ACCEPTED: 'Accepted',
-  PREPARING: 'Preparing',
-  PACKED: 'Packed',
-  READY_FOR_PICKUP: 'Ready for pickup',
-  DISPATCHED: 'Dispatched',
-  DELIVERED: 'Delivered',
-  CANCELLED: 'Cancelled',
-};
+type PickMark = 'picked' | 'missing';
+type PickState = Record<string, PickMark>;
 
-const formatINR = (value: number | undefined | null) =>
-  `₹${Number(value || 0).toLocaleString('en-IN')}`;
-
-/**
- * Reads one order: from the store when it is there, otherwise from the API.
- * Returns a state the screen can show as loading, error, not found, or ready.
- */
-function useOrderRecord(orderId: string | undefined) {
-  const storeOrder = useVendorStore(st => st.orders.find(o => o.orderId === orderId));
-  const [fetched, setFetched] = useState<Order | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'missing' | 'error'>('loading');
-  const [errorMessage, setErrorMessage] = useState('');
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    if (!orderId) {
-      setState('missing');
-      return;
-    }
-    if (storeOrder) {
-      setState('ready');
-      return;
-    }
-    let cancelled = false;
-    setState('loading');
-    ordersApi
-      .getById(orderId)
-      .then((res: any) => {
-        if (cancelled) return;
-        if (res?.order) {
-          setFetched(res.order);
-          setState('ready');
-        } else {
-          setState('missing');
-        }
-      })
-      .catch((err: any) => {
-        if (cancelled) return;
-        if (err?.status === 404) {
-          setState('missing');
-        } else {
-          setErrorMessage(err?.message || 'We could not reach the server.');
-          setState('error');
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [orderId, attempt, !!storeOrder]);
-
-  return {
-    order: storeOrder ?? fetched,
-    state: storeOrder ? 'ready' : state,
-    errorMessage,
-    retry: () => setAttempt(a => a + 1),
-  };
-}
-
-/** Picks are per order and per device, so a half-picked order survives leaving the screen. */
 const pickKey = (orderId: string) => `pick_state_${orderId}`;
+const itemKey = (it: OrderItem, idx: number) => it.productId || it.sku || `${idx}:${it.productName}`;
 
-interface PickState {
-  picked: Record<number, boolean>;
-  unavailable: Record<number, boolean>;
-}
-
-export default function OrderDetailScreen() {
+export default function PickAndPackScreen() {
   const router = useRouter();
-  const { width } = useWindowDimensions();
-  const isExpanded = width >= 1024;
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
-  const vendorSession = useVendorSession();
-  const VENDOR_ID = vendorSession.vendorId || '';
-  const { order, state, errorMessage: loadError, retry } = useOrderRecord(orderId);
-  const updateOrder = useVendorStore(st => st.updateOrder);
+  const session = useVendorSession();
+  const { order, state, error: loadError, retry } = useOrder(orderId);
+  const upsertOrder = useVendorStore(s => s.upsertOrder);
+  const updateOrder = useVendorStore(s => s.updateOrder);
 
-  const [pick, setPick] = useState<PickState>({ picked: {}, unavailable: {} });
-  const [pickLoaded, setPickLoaded] = useState(false);
-  const [search, setSearch] = useState('');
-  const [accepting, setAccepting] = useState(false);
-  const [actionError, setActionError] = useState('');
+  const [picks, setPicks] = useState<PickState>({});
+  const [picksLoaded, setPicksLoaded] = useState(false);
+  const [confirmMissing, setConfirmMissing] = useState(false);
+  const [packing, setPacking] = useState(false);
+  const [packError, setPackError] = useState('');
+  const [justPacked, setJustPacked] = useState(false);
+  const prepareSent = useRef(false);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = `Order #${orderId || ''} | GlowVAI Vendor`;
+      document.title = `Order #${orderId || ''} | GlowVai Vendor`;
     }
   }, [orderId]);
 
-  // Restore saved picks for this order.
   useEffect(() => {
     if (!orderId) return;
     let cancelled = false;
     AsyncStorage.getItem(pickKey(orderId))
       .then(raw => {
-        if (cancelled) return;
-        if (raw) {
-          try {
-            setPick(JSON.parse(raw));
-          } catch (_) {}
+        if (cancelled || !raw) return;
+        const parsed = JSON.parse(raw);
+        // Older saves used another shape; only keep valid marks.
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const clean: PickState = {};
+          Object.entries(parsed).forEach(([k, v]) => {
+            if (v === 'picked' || v === 'missing') clean[k] = v;
+          });
+          setPicks(clean);
         }
       })
       .catch(() => {})
       .finally(() => {
-        if (!cancelled) setPickLoaded(true);
+        if (!cancelled) setPicksLoaded(true);
       });
     return () => {
       cancelled = true;
     };
   }, [orderId]);
 
-  const updatePick = (next: PickState) => {
-    setPick(next);
-    if (orderId) AsyncStorage.setItem(pickKey(orderId), JSON.stringify(next)).catch(() => {});
-  };
-
-  const togglePicked = (idx: number) => {
-    if (pick.unavailable[idx]) return;
-    updatePick({ ...pick, picked: { ...pick.picked, [idx]: !pick.picked[idx] } });
-  };
-
-  const toggleUnavailable = (idx: number) => {
-    const isUnavailable = !pick.unavailable[idx];
-    updatePick({
-      picked: { ...pick.picked, [idx]: false },
-      unavailable: { ...pick.unavailable, [idx]: isUnavailable },
-    });
-  };
-
   const items = useMemo(() => order?.items ?? [], [order]);
-  const q = search.trim().toLowerCase();
-  const visibleItems = items
-    .map((item, idx) => ({ item, idx }))
-    .filter(({ item }) => !q || item.productName?.toLowerCase().includes(q) || item.sku?.toLowerCase().includes(q));
+  const keys = useMemo(() => items.map(itemKey), [items]);
+  const pickedCount = keys.filter(k => picks[k] === 'picked').length;
+  const missingCount = keys.filter(k => picks[k] === 'missing').length;
+  const handled = pickedCount + missingCount;
+  const allHandled = items.length > 0 && handled === items.length;
 
-  const handledCount = items.reduce((n, _, idx) => n + (pick.picked[idx] || pick.unavailable[idx] ? 1 : 0), 0);
-  const unavailableCount = items.reduce((n, _, idx) => n + (pick.unavailable[idx] ? 1 : 0), 0);
-  const allHandled = items.length > 0 && handledCount === items.length;
-  const progress = items.length ? Math.round((handledCount / items.length) * 100) : 0;
+  const save = (next: PickState) => {
+    setPicks(next);
+    setConfirmMissing(false);
+    setPackError('');
+    if (orderId) AsyncStorage.setItem(pickKey(orderId), JSON.stringify(next)).catch(() => {});
+    // Tell the server picking has started (ACCEPTED -> PREPARING). Best effort; the
+    // status shown only changes when the server answers.
+    if (order && !prepareSent.current && (order.status === 'ACCEPTED' || order.status === 'VENDOR_ACCEPTED')) {
+      prepareSent.current = true;
+      ordersApi
+        .prepare(order.orderId, session.vendorId || '')
+        .then((res: any) => res?.order && upsertOrder(res.order))
+        .catch(() => {
+          prepareSent.current = false;
+        });
+    }
+  };
 
-  const handleAccept = async () => {
-    if (!order || accepting) return;
-    setAccepting(true);
-    setActionError('');
+  const toggle = (key: string) => {
+    const next = { ...picks };
+    if (next[key] === 'picked') delete next[key];
+    else next[key] = 'picked';
+    save(next);
+  };
+
+  const markMissing = (key: string, missing: boolean) => {
+    const next = { ...picks };
+    if (missing) next[key] = 'missing';
+    else delete next[key];
+    save(next);
+  };
+
+  const pack = async () => {
+    if (!order || !allHandled || packing) return;
+    if (missingCount > 0 && !confirmMissing) {
+      setConfirmMissing(true);
+      return;
+    }
+    setPacking(true);
+    setPackError('');
     try {
-      await ordersApi.accept(order.orderId, VENDOR_ID);
-      updateOrder(order.orderId, { status: 'ACCEPTED', vendorId: VENDOR_ID });
-    } catch (err: any) {
-      setActionError(err?.message || 'Could not accept this order. Try again.');
+      const res: any = await withTimeout(
+        ordersApi.pack(order.orderId, session.vendorId || '', order.pickupBay || undefined),
+        15_000,
+      );
+      if (res?.order) upsertOrder(res.order);
+      else updateOrder(order.orderId, { status: 'PACKED', packedAt: Date.now() });
+      AsyncStorage.removeItem(pickKey(order.orderId)).catch(() => {});
+      setJustPacked(true);
+      setConfirmMissing(false);
+    } catch (err) {
+      setPackError(friendlyError(err, 'The order could not be marked as packed. Try again.'));
     } finally {
-      setAccepting(false);
+      setPacking(false);
     }
   };
 
   // ── Loading, missing and error states ──────────────────────────────────────
+  const header = { title: orderId ? `Order #${orderId}` : 'Order', showBack: true };
   if (state === 'loading') {
     return (
-      <ScreenShell header={{ title: 'Order', showBack: true }} scroll={false} backgroundColor={Colors.surface}>
-        <View style={s.centerBox}>
-          <ActivityIndicator color={Colors.primary} />
-          <Text style={s.mutedText}>Loading order</Text>
-        </View>
+      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
+        <StateView kind="loading" title="Loading order" />
       </ScreenShell>
     );
   }
-
-  if (state === 'missing' || !order) {
+  if (state === 'missing' || (!order && state !== 'error')) {
     return (
-      <ScreenShell header={{ title: 'Order', showBack: true }} scroll={false} backgroundColor={Colors.surface}>
-        <View style={s.centerBox}>
-          <Ionicons name="search-outline" size={32} color={Colors.textSubtle} />
-          <Text style={s.stateTitle}>Order not found</Text>
-          <Text style={s.stateSub}>It may have been removed, or the link is out of date.</Text>
-          <Pressable onPress={() => router.replace('/(vendor)/orders')} accessibilityRole="button" style={({ pressed }) => [s.primaryBtn, s.stateBtn, pressed && { opacity: 0.85 }]}>
-            <Text style={s.primaryBtnText}>Back to orders</Text>
-          </Pressable>
-        </View>
-      </ScreenShell>
-    );
-  }
-
-  if (state === 'error') {
-    return (
-      <ScreenShell header={{ title: `Order #${orderId}`, showBack: true }} scroll={false} backgroundColor={Colors.surface}>
-        <View style={s.centerBox}>
-          <Ionicons name="cloud-offline-outline" size={32} color={Colors.danger} />
-          <Text style={s.stateTitle}>We could not load this order</Text>
-          <Text style={s.stateSub}>{loadError} Check your connection and try again.</Text>
-          <Pressable onPress={retry} accessibilityRole="button" style={({ pressed }) => [s.primaryBtn, s.stateBtn, pressed && { opacity: 0.85 }]}>
-            <Text style={s.primaryBtnText}>Try again</Text>
-          </Pressable>
-        </View>
-      </ScreenShell>
-    );
-  }
-
-  // ── Ready ──────────────────────────────────────────────────────────────────
-  const statusLabel = STATUS_LABELS[order.status] ?? order.status;
-  const isNew = order.status === 'PENDING';
-  const isPicking = order.status === 'ACCEPTED' || order.status === 'PREPARING';
-  const isReady = order.status === 'PACKED' || order.status === 'READY_FOR_PICKUP';
-  const pricing = order.pricing;
-
-  let ctaLabel = '';
-  let ctaDisabled = false;
-  let ctaHelper = '';
-  let ctaAction: () => void = () => {};
-  if (isNew) {
-    ctaLabel = accepting ? 'Accepting…' : 'Accept order';
-    ctaDisabled = accepting;
-    ctaAction = handleAccept;
-  } else if (isPicking) {
-    ctaLabel = 'Start packing';
-    ctaDisabled = !allHandled || !pickLoaded;
-    ctaHelper = allHandled ? '' : `Pick or mark each item first. ${items.length - handledCount} left.`;
-    ctaAction = () => router.push({ pathname: '/(vendor)/pack-order', params: { orderId: order.orderId } } as any);
-  } else if (isReady) {
-    ctaLabel = 'Go to rider handover';
-    ctaAction = () => router.push({ pathname: '/(vendor)/ready-pickup', params: { orderId: order.orderId } } as any);
-  }
-
-  const showFooter = !!ctaLabel;
-
-  const checklist = (
-    <View style={s.card}>
-      <View style={s.sectionHead}>
-        <View style={{ flex: 1 }}>
-          <Text style={s.sectionTitle}>Items ({items.length})</Text>
-          <Text style={s.mutedText}>
-            {pickLoaded ? `${handledCount} of ${items.length} handled. Saved on this device.` : 'Loading picks'}
-          </Text>
-        </View>
-      </View>
-
-      {items.length > 3 && (
-        <TextInput
-          style={s.searchInput}
-          placeholder="Find an item"
-          placeholderTextColor={Colors.textSubtle}
-          value={search}
-          onChangeText={setSearch}
-          accessibilityLabel="Find an item"
+      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
+        <StateView
+          kind="empty"
+          icon="search-outline"
+          title="Order not found"
+          message="It may have been removed, or the link is out of date."
+          actionLabel="Back to orders"
+          onAction={() => router.replace('/(vendor)/orders')}
         />
-      )}
+      </ScreenShell>
+    );
+  }
+  if (state === 'error' || !order) {
+    return (
+      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
+        <StateView kind="error" title="We could not load this order" message={loadError} actionLabel="Retry" onAction={retry} />
+      </ScreenShell>
+    );
+  }
 
-      <View style={s.progressTrack} accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: progress }}>
-        <View style={[s.progressFill, { width: `${progress}%` }]} />
-      </View>
+  const bucket = bucketOf(order.status);
+  const units = unitCount(order);
 
-      {items.length === 0 ? (
-        <View style={s.emptyBlock}>
-          <Ionicons name="cube-outline" size={28} color={Colors.textSubtle} />
-          <Text style={s.stateTitle}>No items on this order</Text>
+  // ── New offer: decide first, no checklist yet ──────────────────────────────
+  if (bucket === 'incoming') {
+    return (
+      <ScreenShell header={{ ...header, title: 'New order offer' }} backgroundColor={Colors.surface} contentContainerStyle={s.scroll}>
+        <View style={s.stack}>
+          <Card><StatusStrip status={order.status} /></Card>
+          <Card style={{ paddingHorizontal: 0 }}>
+            <OfferCard
+              order={order}
+              variant="inline"
+              onClose={() => router.replace({ pathname: '/(vendor)/orders', params: { tab: 'incoming' } } as any)}
+            />
+          </Card>
         </View>
-      ) : visibleItems.length === 0 ? (
-        <Text style={[s.mutedText, { paddingVertical: Spacing.lg }]}>No items match “{search}”.</Text>
-      ) : (
-        visibleItems.map(({ item, idx }, pos) => {
-          const isPicked = !!pick.picked[idx];
-          const isUnavailable = !!pick.unavailable[idx];
-          return (
-            <View key={`${item.sku ?? item.productName}-${idx}`} style={[s.itemRow, pos > 0 && s.rowDivider]}>
-              <Pressable
-                onPress={() => togglePicked(idx)}
-                disabled={isUnavailable || !isPicking}
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: isPicked, disabled: isUnavailable || !isPicking }}
-                accessibilityLabel={`Picked: ${item.productName}`}
-                style={s.checkHit}
-              >
-                <View style={[s.checkbox, isPicked && s.checkboxOn, isUnavailable && s.checkboxUnavailable]}>
-                  {isPicked && <Ionicons name="checkmark" size={18} color="#FFFFFF" />}
-                  {isUnavailable && <Ionicons name="remove" size={18} color={Colors.warning} />}
-                </View>
-              </Pressable>
+      </ScreenShell>
+    );
+  }
 
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={[s.itemName, isPicked && s.itemNamePicked]} numberOfLines={2}>{item.productName}</Text>
-                <Text style={s.mutedText}>
-                  Qty {item.quantity}
-                  {item.sku ? ` • SKU ${item.sku}` : ''}
-                  {` • ${formatINR(item.price * item.quantity)}`}
-                </Text>
-                {isUnavailable && (
-                  <Text style={s.unavailableNote}>Marked unavailable. Contact support before packing.</Text>
-                )}
-              </View>
-
-              {isPicking && (
-                <Pressable
-                  onPress={() => toggleUnavailable(idx)}
-                  accessibilityRole="button"
-                  accessibilityLabel={isUnavailable ? `Undo unavailable for ${item.productName}` : `Mark ${item.productName} unavailable`}
-                  style={({ pressed }) => [s.smallBtn, isUnavailable && s.smallBtnOn, pressed && { opacity: 0.85 }]}
-                >
-                  <Text style={[s.smallBtnText, isUnavailable && s.smallBtnTextOn]}>
-                    {isUnavailable ? 'Undo' : 'Unavailable'}
-                  </Text>
-                </Pressable>
+  // ── Packed or later ────────────────────────────────────────────────────────
+  if (bucket !== 'preparing') {
+    const closed = bucket === 'cancelled' || bucket === 'other';
+    return (
+      <ScreenShell
+        header={header}
+        backgroundColor={Colors.surface}
+        contentContainerStyle={s.scroll}
+        stickyFooter={
+          bucket === 'ready' || bucket === 'completed' ? (
+            <View style={s.footer}>
+              <PrimaryButton
+                label={bucket === 'ready' ? 'Go to pickup' : 'View pickup status'}
+                tall
+                icon="bicycle-outline"
+                onPress={() => router.replace({ pathname: '/(vendor)/ready-pickup', params: { orderId: order.orderId } } as any)}
+              />
+              {justPacked && (
+                <SecondaryButton label="Next order" onPress={() => router.replace({ pathname: '/(vendor)/orders', params: { tab: 'preparing' } } as any)} />
               )}
             </View>
-          );
-        })
-      )}
-
-      {unavailableCount > 0 && (
-        <Pressable onPress={() => router.push('/(vendor)/support' as any)} accessibilityRole="link" accessibilityLabel="Contact support about unavailable items" style={s.linkHit}>
-          <Text style={s.linkText}>Contact support about unavailable items</Text>
-        </Pressable>
-      )}
-    </View>
-  );
-
-  const summary = (
-    <>
-      <View style={s.card}>
-        <Text style={s.sectionTitle}>Customer</Text>
-        <Text style={s.customerName}>{order.customerName || 'Name not shared'}</Text>
-        {!!order.shippingAddress?.fullAddress && (
-          <Text style={s.mutedText}>{order.shippingAddress.fullAddress}</Text>
-        )}
-        <Text style={s.privacyNote}>The customer's phone number is not shown in the vendor app.</Text>
-      </View>
-
-      <View style={s.card}>
-        <Text style={s.sectionTitle}>Payment</Text>
-        <View style={s.totalRow}><Text style={s.mutedText}>Subtotal</Text><Text style={s.totalVal}>{formatINR(pricing?.subtotal)}</Text></View>
-        {!!pricing?.discount && (
-          <View style={s.totalRow}><Text style={s.mutedText}>Discount</Text><Text style={s.totalVal}>-{formatINR(pricing.discount)}</Text></View>
-        )}
-        <View style={s.totalRow}><Text style={s.mutedText}>Delivery fee</Text><Text style={s.totalVal}>{formatINR(pricing?.deliveryFee)}</Text></View>
-        <View style={[s.totalRow, s.grandRow]}>
-          <Text style={s.grandLabel}>Order total</Text>
-          <Text style={s.grandVal}>{formatINR(pricing?.grandTotal)}</Text>
+          ) : undefined
+        }
+      >
+        <View style={s.stack}>
+          {!closed && <Card><StatusStrip status={order.status} /></Card>}
+          {justPacked ? (
+            <Card style={s.doneCard}>
+              <Ionicons name="checkmark-circle" size={44} color={Colors.success} />
+              <Text style={s.doneTitle}>Order packed</Text>
+              <Text style={s.doneSub}>GlowVai has it as packed. Keep it ready for the rider.</Text>
+            </Card>
+          ) : (
+            <Card style={{ gap: Spacing.sm }}>
+              <View style={s.refRow}>
+                <Text style={ui.code} selectable>#{order.orderId}</Text>
+                <StatusPill status={order.status} />
+              </View>
+              <Text style={ui.body}>
+                {closed
+                  ? order.rejectionReason
+                    ? `${statusMeta(order.status).label}: ${order.rejectionReason}`
+                    : 'This order is closed. Nothing more to do.'
+                  : 'Picking is done for this order.'}
+              </Text>
+            </Card>
+          )}
+          <ItemsSummary items={items} units={units} />
         </View>
-        {!!order.payment?.method && (
-          <Text style={s.mutedText}>
-            Paid by {order.payment.method}{order.payment.status ? ` • ${order.payment.status.toLowerCase()}` : ''}
-          </Text>
-        )}
-      </View>
+      </ScreenShell>
+    );
+  }
 
-      <Pressable onPress={() => router.push('/(vendor)/support' as any)} accessibilityRole="link" accessibilityLabel="Report an issue with this order" style={s.linkHit}>
-        <Text style={s.linkText}>Report an issue with this order</Text>
-      </Pressable>
-    </>
-  );
+  // ── Pick & pack ────────────────────────────────────────────────────────────
+  const helper = !picksLoaded
+    ? 'Loading saved picks'
+    : allHandled
+      ? missingCount > 0
+        ? `${missingCount} ${missingCount === 1 ? 'item' : 'items'} reported as can't find.`
+        : 'All items checked.'
+      : `Check every item first. ${items.length - handled} left.`;
 
   return (
     <ScreenShell
-      header={{
-        title: `Order #${order.orderId}`,
-        subtitle: statusLabel,
-        showBack: true,
-      }}
+      header={{ ...header, title: 'Pick & pack' }}
       backgroundColor={Colors.surface}
-      contentContainerStyle={s.scrollContent}
-      stickyFooter={showFooter ? (
+      contentContainerStyle={s.scroll}
+      stickyFooter={
         <View style={s.footer}>
-          {!!actionError && (
-            <View style={s.bannerError} accessibilityRole="alert">
-              <Ionicons name="alert-circle" size={18} color={Colors.danger} />
-              <Text style={s.bannerErrorText}>{actionError}</Text>
+          {!!packError && <Banner tone="danger" message={packError} />}
+          {confirmMissing ? (
+            <View style={s.confirm}>
+              <Banner
+                tone="warning"
+                title={`Pack without ${missingCount} ${missingCount === 1 ? 'item' : 'items'}?`}
+                message="Reporting a missing item from the app is not available yet. Call GlowVai support first so the customer can be told."
+              />
+              <View style={s.row}>
+                <SecondaryButton label="Go back" onPress={() => setConfirmMissing(false)} style={{ flex: 1 }} />
+                <PrimaryButton label="Pack anyway" onPress={pack} busy={packing} style={{ flex: 1 }} />
+              </View>
             </View>
+          ) : (
+            <>
+              <Text style={s.helper} accessibilityLiveRegion="polite">{helper}</Text>
+              <PrimaryButton
+                label="Mark as packed"
+                tall
+                icon="cube-outline"
+                onPress={pack}
+                disabled={!allHandled || !picksLoaded}
+                busy={packing}
+              />
+            </>
           )}
-          {!!ctaHelper && <Text style={s.ctaHelper}>{ctaHelper}</Text>}
-          <Pressable
-            onPress={ctaAction}
-            disabled={ctaDisabled}
-            accessibilityRole="button"
-            accessibilityLabel={ctaLabel}
-            accessibilityState={{ disabled: ctaDisabled, busy: accepting }}
-            style={({ pressed }) => [s.primaryBtn, ctaDisabled && s.primaryBtnDisabled, pressed && !ctaDisabled && { opacity: 0.85 }]}
-          >
-            <Text style={[s.primaryBtnText, ctaDisabled && s.primaryBtnTextDisabled]}>{ctaLabel}</Text>
-          </Pressable>
         </View>
-      ) : undefined}
+      }
     >
-      {isExpanded ? (
-        <View style={s.wideRow}>
-          <View style={s.wideLeft}>{checklist}</View>
-          <View style={s.wideRight}>{summary}</View>
-        </View>
-      ) : (
-        <View style={s.stack}>
-          {!isNew && !isPicking && !isReady && (
-            <View style={s.infoBox}>
-              <Ionicons name="information-circle-outline" size={18} color={Colors.primary} />
-              <Text style={s.infoText}>This order is {statusLabel.toLowerCase()}. There is nothing left to pick.</Text>
-            </View>
+      <View style={s.stack}>
+        <Card><StatusStrip status={order.status} /></Card>
+
+        <Card style={{ gap: Spacing.sm }}>
+          <View style={s.refRow}>
+            <Text style={ui.code} selectable>#{order.orderId}</Text>
+            <StatusPill status={order.status} />
+          </View>
+          <Text style={ui.muted}>
+            {[
+              order.customerFirstName ? `For ${order.customerFirstName}` : '',
+              unitsLabel(units),
+              order.acceptedAt ? `Accepted ${formatAgo(order.acceptedAt).toLowerCase()}` : '',
+              order.prepTimeMinutes ? `Pack within ${order.prepTimeMinutes} min` : '',
+            ].filter(Boolean).join(' · ')}
+          </Text>
+          <View style={s.progressHead}>
+            <Text style={s.progressText}>{pickedCount} of {items.length} picked</Text>
+            {missingCount > 0 && <Text style={s.missingText}>{missingCount} can't find</Text>}
+          </View>
+          <View
+            style={s.track}
+            accessibilityRole="progressbar"
+            accessibilityValue={{ min: 0, max: items.length, now: handled }}
+          >
+            <View style={[s.fill, { width: `${items.length ? (handled / items.length) * 100 : 0}%` }]} />
+          </View>
+          {!!order.packingInstructions && (
+            <Banner tone="info" title="Packing note" message={order.packingInstructions} />
           )}
-          {checklist}
-          {summary}
-        </View>
-      )}
+        </Card>
+
+        <Card style={{ paddingVertical: Spacing.xs }}>
+          {items.length === 0 ? (
+            <StateView kind="empty" icon="cube-outline" title="No items on this order" message="Contact GlowVai support: this order has no items to pack." />
+          ) : (
+            items.map((it, idx) => {
+              const key = keys[idx];
+              const mark = picks[key];
+              return (
+                <View key={key} style={[s.item, idx > 0 && ui.divider, mark === 'missing' && s.itemMissing]}>
+                  <Pressable
+                    onPress={() => (mark === 'missing' ? undefined : toggle(key))}
+                    disabled={mark === 'missing' || !picksLoaded}
+                    accessibilityRole="checkbox"
+                    accessibilityState={{ checked: mark === 'picked', disabled: mark === 'missing' }}
+                    accessibilityLabel={`${it.productName}${it.variant ? `, ${it.variant}` : ''}, quantity ${it.quantity}`}
+                    style={({ pressed }) => [s.itemMain, pressed && { opacity: 0.7 }]}
+                  >
+                    <View style={[s.box, mark === 'picked' && s.boxOn, mark === 'missing' && s.boxMissing]}>
+                      {mark === 'picked' && <Ionicons name="checkmark" size={20} color={Colors.background} />}
+                      {mark === 'missing' && <Ionicons name="remove" size={20} color={Colors.warning} />}
+                    </View>
+                    <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                      <Text style={[s.itemName, mark === 'picked' && s.itemNameDone]} numberOfLines={2}>{it.productName}</Text>
+                      {!!it.variant && <Text style={s.variant} numberOfLines={1}>{it.variant}</Text>}
+                      <View style={s.metaRow}>
+                        {!!it.sku && <Text style={s.sku}>SKU {it.sku}</Text>}
+                        {!!it.bin && (
+                          <View style={s.bin}><Text style={s.binText}>Bin {it.bin}</Text></View>
+                        )}
+                      </View>
+                    </View>
+                    <View style={s.qty}>
+                      <Text style={s.qtyText}>x{it.quantity}</Text>
+                    </View>
+                  </Pressable>
+                  {mark === 'missing' ? (
+                    <View style={s.missingRow}>
+                      <Text style={s.missingNote}>Reported as can't find. Not counted as packed.</Text>
+                      <Pressable onPress={() => markMissing(key, false)} accessibilityRole="button" accessibilityLabel={`Undo can't find for ${it.productName}`} style={s.linkBtn}>
+                        <Text style={s.linkText}>Undo</Text>
+                      </Pressable>
+                    </View>
+                  ) : mark !== 'picked' ? (
+                    <Pressable
+                      onPress={() => markMissing(key, true)}
+                      disabled={!picksLoaded}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Can't find ${it.productName}`}
+                      style={[s.linkBtn, s.cantFind]}
+                    >
+                      <Text style={s.cantFindText}>Can't find</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+              );
+            })
+          )}
+        </Card>
+        <Text style={s.savedNote}>Picks are saved on this device.</Text>
+      </View>
     </ScreenShell>
   );
 }
 
+function ItemsSummary({ items, units }: { items: OrderItem[]; units: number }) {
+  return (
+    <Card style={{ paddingVertical: Spacing.xs }}>
+      <Text style={[ui.sectionTitle, { paddingVertical: Spacing.sm }]}>Items · {unitsLabel(units)}</Text>
+      {items.map((it, idx) => (
+        <View key={`${itemKey(it, idx)}`} style={[s.summaryRow, ui.divider]}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.summaryName} numberOfLines={2}>{it.productName}</Text>
+            {!!it.variant && <Text style={ui.muted}>{it.variant}</Text>}
+          </View>
+          <Text style={s.summaryQty}>x{it.quantity}</Text>
+        </View>
+      ))}
+    </Card>
+  );
+}
+
 const s = StyleSheet.create({
-  scrollContent: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 24 },
-  stack: { gap: Spacing.lg },
-  wideRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.lg },
-  wideLeft: { flex: 7, minWidth: 0 },
-  wideRight: { flex: 5, minWidth: 0, gap: Spacing.lg },
-  centerBox: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, gap: Spacing.sm },
-  stateTitle: { fontFamily: FontFamily.bold, fontSize: 17, color: Colors.textPrimary, textAlign: 'center' },
-  stateSub: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 20, color: Colors.textSecondary, textAlign: 'center', maxWidth: 320 },
-  stateBtn: { alignSelf: 'stretch', minWidth: 180, marginTop: Spacing.md, flex: 0 },
+  scroll: { padding: Spacing.lg, paddingBottom: Spacing.xl },
+  stack: { gap: Spacing.md },
+  row: { flexDirection: 'row', gap: Spacing.sm },
+  footer: { gap: Spacing.sm, paddingBottom: Spacing.xs },
+  confirm: { gap: Spacing.sm },
+  helper: { fontFamily: FontFamily.medium, fontSize: 13, lineHeight: 18, color: Colors.textSecondary, textAlign: 'center' },
 
-  card: {
-    backgroundColor: Colors.background, borderRadius: BorderRadii.card,
-    borderWidth: 1, borderColor: Colors.border, padding: Spacing.lg, gap: Spacing.sm,
-  },
-  sectionHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  sectionTitle: { fontFamily: FontFamily.bold, fontSize: 16, lineHeight: 22, color: Colors.textPrimary },
-  mutedText: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle },
-  searchInput: {
-    minHeight: 44, borderRadius: BorderRadii.input, borderWidth: 1, borderColor: Colors.inputBorder,
-    paddingHorizontal: Spacing.md, fontFamily: FontFamily.regular, fontSize: 15, color: Colors.textPrimary,
-  },
-  progressTrack: { height: 6, borderRadius: 3, backgroundColor: Colors.border, overflow: 'hidden' },
-  progressFill: { height: 6, borderRadius: 3, backgroundColor: Colors.primary },
+  refRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
+  progressHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: Spacing.xs },
+  progressText: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary },
+  missingText: { fontFamily: FontFamily.semibold, fontSize: 13, color: Colors.warning },
+  track: { height: 6, borderRadius: 3, backgroundColor: Colors.border, overflow: 'hidden' },
+  fill: { height: 6, borderRadius: 3, backgroundColor: Colors.primary },
 
-  itemRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingVertical: 10 },
-  rowDivider: { borderTopWidth: 1, borderTopColor: Colors.border },
-  checkHit: { minWidth: 44, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  checkbox: {
-    width: 24, height: 24, borderRadius: 6, borderWidth: 1.5, borderColor: Colors.inputBorder,
-    backgroundColor: Colors.background, alignItems: 'center', justifyContent: 'center',
+  item: { paddingVertical: Spacing.sm },
+  itemMissing: {},
+  itemMain: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 64 },
+  box: {
+    width: 28,
+    height: 28,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: Colors.inputBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.card,
   },
-  checkboxOn: { backgroundColor: Colors.success, borderColor: Colors.success },
-  checkboxUnavailable: { backgroundColor: Colors.warningLight, borderColor: Colors.warning },
-  itemName: { fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: Colors.textPrimary },
-  itemNamePicked: { color: Colors.textSubtle, textDecorationLine: 'line-through' },
-  unavailableNote: { fontFamily: FontFamily.semibold, fontSize: 12, lineHeight: 16, color: Colors.warning, marginTop: 4 },
-  smallBtn: {
-    minHeight: 44, paddingHorizontal: 12, borderRadius: BorderRadii.input, borderWidth: 1,
-    borderColor: Colors.border, justifyContent: 'center',
+  boxOn: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  boxMissing: { backgroundColor: Colors.warningLight, borderColor: Colors.warningBorder },
+  itemName: { fontFamily: FontFamily.semibold, fontSize: 15, lineHeight: 21, color: Colors.textPrimary },
+  itemNameDone: { color: Colors.textSecondary },
+  variant: { fontFamily: FontFamily.bold, fontSize: 14, lineHeight: 20, color: Colors.textPrimary },
+  metaRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: Spacing.sm },
+  sku: { fontFamily: FontFamily.mono, fontSize: 12, lineHeight: 16, color: Colors.textMuted },
+  bin: { backgroundColor: Colors.binBg, borderColor: Colors.binBorder, borderWidth: 1, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 1 },
+  binText: { fontFamily: FontFamily.mono, fontSize: 12, color: Colors.binText },
+  qty: {
+    minWidth: 52,
+    height: 40,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: 10,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  smallBtnOn: { borderColor: Colors.warningBorder, backgroundColor: Colors.warningLight },
-  smallBtnText: { fontFamily: FontFamily.semibold, fontSize: 13, color: Colors.textSecondary },
-  smallBtnTextOn: { color: Colors.warning },
-  emptyBlock: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xl },
+  qtyText: { fontFamily: FontFamily.bold, fontSize: 18, color: Colors.textPrimary, fontVariant: ['tabular-nums'] },
 
-  customerName: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary },
-  privacyNote: { fontFamily: FontFamily.regular, fontSize: 12, lineHeight: 16, color: Colors.textSubtle, marginTop: 4 },
-  totalRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 2 },
-  totalVal: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.textPrimary },
-  grandRow: { borderTopWidth: 1, borderTopColor: Colors.border, marginTop: 6, paddingTop: 8 },
-  grandLabel: { fontFamily: FontFamily.bold, fontSize: 15, color: Colors.textPrimary },
-  grandVal: { fontFamily: FontFamily.bold, fontSize: 16, color: Colors.textPrimary },
-
-  linkHit: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start' },
+  linkBtn: { minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: Spacing.sm },
   linkText: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.primary },
-  infoBox: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md,
-    borderRadius: BorderRadii.card, backgroundColor: Colors.primaryLight, borderWidth: 1, borderColor: Colors.primaryBorder,
+  cantFind: { alignSelf: 'flex-start', marginLeft: 28 + Spacing.md - Spacing.sm },
+  cantFindText: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.textSecondary, textDecorationLine: 'underline' },
+  missingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    marginTop: Spacing.xs,
+    marginLeft: 28 + Spacing.md,
+    paddingLeft: Spacing.md,
+    borderRadius: BorderRadii.input,
+    backgroundColor: Colors.warningLight,
   },
-  infoText: { flex: 1, fontFamily: FontFamily.semibold, fontSize: 13, lineHeight: 18, color: '#1E3A8A' },
+  missingNote: { flex: 1, fontFamily: FontFamily.medium, fontSize: 13, lineHeight: 18, color: Colors.warning },
+  savedNote: { fontFamily: FontFamily.regular, fontSize: 12, color: Colors.textMuted, textAlign: 'center' },
 
-  footer: { gap: Spacing.sm },
-  ctaHelper: { fontFamily: FontFamily.semibold, fontSize: 13, color: Colors.textSubtle, textAlign: 'center' },
-  bannerError: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md,
-    backgroundColor: Colors.dangerLight, borderWidth: 1, borderColor: Colors.dangerBorder, borderRadius: BorderRadii.card,
-  },
-  bannerErrorText: { flex: 1, fontFamily: FontFamily.semibold, fontSize: 13, lineHeight: 18, color: '#7F1D1D' },
-  primaryBtn: {
-    minHeight: 48, borderRadius: BorderRadii.input, backgroundColor: Colors.primary,
-    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16,
-  },
-  primaryBtnDisabled: { backgroundColor: Colors.border },
-  primaryBtnText: { fontFamily: FontFamily.bold, fontSize: 16, color: '#FFFFFF' },
-  primaryBtnTextDisabled: { color: Colors.textSubtle },
+  doneCard: { alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xl },
+  doneTitle: { fontFamily: FontFamily.bold, fontSize: 19, color: Colors.textPrimary },
+  doneSub: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 20, color: Colors.textSecondary, textAlign: 'center' },
+
+  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 48, paddingVertical: Spacing.sm },
+  summaryName: { fontFamily: FontFamily.medium, fontSize: 14, lineHeight: 20, color: Colors.textPrimary },
+  summaryQty: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary, fontVariant: ['tabular-nums'] },
 });

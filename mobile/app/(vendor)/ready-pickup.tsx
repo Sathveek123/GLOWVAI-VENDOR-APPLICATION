@@ -1,399 +1,258 @@
 /**
- * Rider handover: the rider gives the 4-digit pickup PIN, the vendor enters it and confirms the handover.
- * Only the real order is shown. No rider details are invented: the order record does not carry them yet.
+ * Ready for pickup (PRD screen 13, handover half).
+ * Shows the pickup status, what to match with the rider, and rider details only when
+ * the server provides them. The vendor does not record pickup or delivery here:
+ * GlowVai records the pickup, and this screen follows it. QR verification is not built yet,
+ * and the customer's delivery code is never used as a handover PIN.
  * File: mobile/app/(vendor)/ready-pickup.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useState, useEffect, useMemo } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  ActivityIndicator,
-  Platform,
-  StyleSheet,
-  useWindowDimensions,
-} from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
-import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
+import React, { useEffect, useState } from 'react';
+import { Platform, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily } from '../../src/theme/typography';
-import useVendorStore from '../../src/store/useVendorStore';
-import type { Order } from '../../src/store/useVendorStore';
-import { ordersApi } from '../../src/services/api';
 import ScreenShell from '../../src/components/ScreenShell';
+import {
+  StatusStrip,
+  bucketOf,
+  formatClock,
+  unitCount,
+  unitsLabel,
+  useOrder,
+} from '../../src/features/orders';
+import { Banner, Card, PrimaryButton, SecondaryButton, StateView, ui } from '../../src/features/orders/ui';
 
-const STATUS_LABELS: Record<string, string> = {
-  PENDING: 'New offer',
-  ACCEPTED: 'Accepted',
-  PREPARING: 'Preparing',
-  PACKED: 'Packed',
-  READY_FOR_PICKUP: 'Ready for pickup',
-  DISPATCHED: 'Handed over',
-  DELIVERED: 'Delivered',
-  CANCELLED: 'Cancelled',
-};
+const REFRESH_MS = 20_000;
 
-const formatINR = (value: number | undefined | null) =>
-  `₹${Number(value || 0).toLocaleString('en-IN')}`;
-
-/** Reads one order: from the store when it is there, otherwise from the API. */
-function useOrderRecord(orderId: string | undefined) {
-  const storeOrder = useVendorStore(st => st.orders.find(o => o.orderId === orderId));
-  const [fetched, setFetched] = useState<Order | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'missing' | 'error'>('loading');
-  const [errorMessage, setErrorMessage] = useState('');
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    if (!orderId) {
-      setState('missing');
-      return;
-    }
-    if (storeOrder) {
-      setState('ready');
-      return;
-    }
-    let cancelled = false;
-    setState('loading');
-    ordersApi
-      .getById(orderId)
-      .then((res: any) => {
-        if (cancelled) return;
-        if (res?.order) {
-          setFetched(res.order);
-          setState('ready');
-        } else {
-          setState('missing');
-        }
-      })
-      .catch((err: any) => {
-        if (cancelled) return;
-        if (err?.status === 404) {
-          setState('missing');
-        } else {
-          setErrorMessage(err?.message || 'We could not reach the server.');
-          setState('error');
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [orderId, attempt, !!storeOrder]);
-
-  return {
-    order: storeOrder ?? fetched,
-    state: storeOrder ? 'ready' : state,
-    errorMessage,
-    retry: () => setAttempt(a => a + 1),
-  };
-}
-
-export default function ReadyPickupScreen() {
+export default function ReadyForPickupScreen() {
   const router = useRouter();
-  const { width } = useWindowDimensions();
-  const isExpanded = width >= 1024;
   const { orderId } = useLocalSearchParams<{ orderId: string }>();
-  const { order, state, errorMessage: loadError, retry } = useOrderRecord(orderId);
-  const updateOrder = useVendorStore(st => st.updateOrder);
-
-  const [pin, setPin] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
-  const [handedOver, setHandedOver] = useState(false);
+  const { order, state, error, retry, refresh } = useOrder(orderId);
+  const [checking, setChecking] = useState(false);
+  const [checkFailed, setCheckFailed] = useState(false);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = `Rider handover #${orderId || ''} | GlowVAI Vendor`;
+      document.title = `Pickup #${orderId || ''} | GlowVai Vendor`;
     }
   }, [orderId]);
 
-  // The PIN the rider must give. It comes only from the order record, never from a constant.
-  const pickupCode = order?.otp || '';
-  const items = useMemo(() => order?.items ?? [], [order]);
-  const itemCount = items.reduce((n, it) => n + (it.quantity || 0), 0);
+  // Follow the pickup while waiting for the rider.
+  const waiting = !!order && bucketOf(order.status) === 'ready';
+  useEffect(() => {
+    if (!waiting) return;
+    const timer = setInterval(() => { refresh(); }, REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [waiting, refresh]);
 
-  const isReadyToHand = !!order && (order.status === 'PACKED' || order.status === 'READY_FOR_PICKUP');
-  const alreadyDispatched = !!order && order.status === 'DISPATCHED';
-  const canConfirm = isReadyToHand && !!pickupCode && pin.length === 4 && !submitting;
+  const header = { title: 'Ready for pickup', showBack: true };
 
-  const handleConfirm = async () => {
-    if (!order || !canConfirm) return;
-    if (pin !== pickupCode) {
-      setSubmitError('The PIN does not match this order. Ask the rider to check it again.');
-      return;
-    }
-    setSubmitting(true);
-    setSubmitError('');
-    try {
-      await ordersApi.dispatch(order.orderId, { otp: pin });
-      updateOrder(order.orderId, { status: 'DISPATCHED', dispatchedAt: Date.now() });
-      setHandedOver(true);
-    } catch (err: any) {
-      setSubmitError(err?.message || 'Handover could not be confirmed. Try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // ── Loading, missing and error states ──────────────────────────────────────
   if (state === 'loading') {
     return (
-      <ScreenShell header={{ title: 'Rider handover', showBack: true }} scroll={false} backgroundColor={Colors.surface}>
-        <View style={s.centerBox}>
-          <ActivityIndicator color={Colors.primary} />
-          <Text style={s.mutedText}>Loading order</Text>
-        </View>
+      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
+        <StateView kind="loading" title="Loading order" />
       </ScreenShell>
     );
   }
-
-  if (state === 'missing' || !order) {
+  if (state === 'missing' || (!order && state !== 'error')) {
     return (
-      <ScreenShell header={{ title: 'Rider handover', showBack: true }} scroll={false} backgroundColor={Colors.surface}>
-        <View style={s.centerBox}>
-          <Ionicons name="search-outline" size={32} color={Colors.textSubtle} />
-          <Text style={s.stateTitle}>Order not found</Text>
-          <Text style={s.stateSub}>It may have been removed, or the link is out of date.</Text>
-          <Pressable onPress={() => router.replace('/(vendor)/orders')} accessibilityRole="button" style={({ pressed }) => [s.primaryBtn, s.stateBtn, pressed && { opacity: 0.85 }]}>
-            <Text style={s.primaryBtnText}>Back to orders</Text>
-          </Pressable>
-        </View>
+      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
+        <StateView
+          kind="empty"
+          icon="search-outline"
+          title="Order not found"
+          message="It may have been removed, or the link is out of date."
+          actionLabel="Back to orders"
+          onAction={() => router.replace('/(vendor)/orders')}
+        />
       </ScreenShell>
     );
   }
-
-  if (state === 'error') {
+  if (state === 'error' || !order) {
     return (
-      <ScreenShell header={{ title: `Order #${orderId}`, showBack: true }} scroll={false} backgroundColor={Colors.surface}>
-        <View style={s.centerBox}>
-          <Ionicons name="cloud-offline-outline" size={32} color={Colors.danger} />
-          <Text style={s.stateTitle}>We could not load this order</Text>
-          <Text style={s.stateSub}>{loadError} Check your connection and try again.</Text>
-          <Pressable onPress={retry} accessibilityRole="button" style={({ pressed }) => [s.primaryBtn, s.stateBtn, pressed && { opacity: 0.85 }]}>
-            <Text style={s.primaryBtnText}>Try again</Text>
-          </Pressable>
-        </View>
+      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
+        <StateView kind="error" title="We could not load this order" message={error} actionLabel="Retry" onAction={retry} />
       </ScreenShell>
     );
   }
 
-  // ── Handover confirmed ─────────────────────────────────────────────────────
-  if (handedOver || alreadyDispatched) {
+  const bucket = bucketOf(order.status);
+
+  if (bucket === 'incoming' || bucket === 'preparing') {
     return (
-      <ScreenShell header={{ title: `Order #${order.orderId}`, showBack: false }} scroll={false} backgroundColor={Colors.surface}>
-        <View style={s.centerBox}>
-          <View style={s.doneIcon}>
-            <Ionicons name="checkmark" size={36} color={Colors.success} />
-          </View>
-          <Text style={s.stateTitle}>{handedOver ? 'Handover confirmed' : 'Already handed over'}</Text>
-          <Text style={s.stateSub}>Order #{order.orderId} is with the delivery rider.</Text>
-          <Pressable onPress={() => router.replace('/(vendor)/orders')} accessibilityRole="button" style={({ pressed }) => [s.primaryBtn, s.stateBtn, pressed && { opacity: 0.85 }]}>
-            <Text style={s.primaryBtnText}>Back to orders</Text>
-          </Pressable>
-          <Pressable onPress={() => router.replace('/(vendor)/home')} accessibilityRole="button" style={({ pressed }) => [s.secondaryBtn, s.stateBtn, pressed && { opacity: 0.85 }]}>
-            <Text style={s.secondaryBtnText}>Back to home</Text>
-          </Pressable>
-        </View>
+      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
+        <StateView
+          kind="empty"
+          icon="basket-outline"
+          title="This order is not packed yet"
+          message="Finish Pick & pack first. The order comes here once it is marked as packed."
+          actionLabel="Go to Pick & pack"
+          onAction={() => router.replace({ pathname: '/(vendor)/order-detail', params: { orderId: order.orderId } } as any)}
+        />
       </ScreenShell>
     );
   }
 
-  // ── Ready ──────────────────────────────────────────────────────────────────
-  const statusLabel = STATUS_LABELS[order.status] ?? order.status;
-  const isPacking = order.status === 'ACCEPTED' || order.status === 'PREPARING';
+  const statusCard = (() => {
+    switch (order.status) {
+      case 'PACKED':
+        return {
+          icon: 'cube-outline' as const,
+          color: Colors.warning,
+          bg: Colors.warningLight,
+          title: 'Packed. Waiting for the rider',
+          sub: order.packedAt ? `Packed at ${formatClock(order.packedAt)}. Keep it at the pickup point.` : 'Keep it at the pickup point.',
+        };
+      case 'READY_FOR_PICKUP':
+        return {
+          icon: 'cube-outline' as const,
+          color: Colors.warning,
+          bg: Colors.warningLight,
+          title: 'Ready for pickup',
+          sub: 'Hand the package over when the rider arrives.',
+        };
+      case 'DISPATCHED':
+      case 'OUT_FOR_DELIVERY':
+        return {
+          icon: 'bicycle-outline' as const,
+          color: Colors.success,
+          bg: Colors.successLight,
+          title: 'Picked up by the rider',
+          sub: order.dispatchedAt ? `Pickup recorded at ${formatClock(order.dispatchedAt)}. Nothing more to do.` : 'Pickup recorded. Nothing more to do.',
+        };
+      case 'DELIVERED':
+        return {
+          icon: 'checkmark-circle-outline' as const,
+          color: Colors.success,
+          bg: Colors.successLight,
+          title: 'Delivered',
+          sub: 'The delivery was confirmed. Nothing more to do.',
+        };
+      default:
+        return {
+          icon: 'close-circle-outline' as const,
+          color: Colors.textSecondary,
+          bg: Colors.surface,
+          title: bucket === 'cancelled' ? 'This order was cancelled' : 'Status is updating',
+          sub: bucket === 'cancelled' ? 'Do not hand this package over. Contact GlowVai support if a rider arrives.' : 'Check again in a moment.',
+        };
+    }
+  })();
 
-  let footer: React.ReactNode = undefined;
-  if (isReadyToHand) {
-    footer = (
-      <View style={s.footer}>
-        {!!submitError && (
-          <View style={s.bannerError} accessibilityRole="alert">
-            <Ionicons name="alert-circle" size={18} color={Colors.danger} />
-            <Text style={s.bannerErrorText}>{submitError}</Text>
-          </View>
-        )}
-        <Pressable
-          onPress={handleConfirm}
-          disabled={!canConfirm}
-          accessibilityRole="button"
-          accessibilityLabel="Confirm handover to rider"
-          accessibilityState={{ disabled: !canConfirm, busy: submitting }}
-          style={({ pressed }) => [s.primaryBtn, !canConfirm && s.primaryBtnDisabled, pressed && canConfirm && { opacity: 0.85 }]}
-        >
-          {submitting
-            ? <ActivityIndicator color="#FFFFFF" />
-            : <Text style={[s.primaryBtnText, !canConfirm && s.primaryBtnTextDisabled]}>Confirm handover</Text>}
-        </Pressable>
-      </View>
-    );
-  }
-
-  const pinCard = (
-    <View style={s.card}>
-      <Text style={s.sectionTitle}>Rider PIN</Text>
-      <Text style={s.mutedText}>
-        {pickupCode
-          ? 'Ask the rider for the 4-digit pickup PIN and enter it here.'
-          : 'No pickup PIN is available for this order, so handover is blocked. Do not hand over the parcel.'}
-      </Text>
-      <TextInput
-        style={[s.pinInput, !pickupCode && s.pinInputDisabled]}
-        value={pin}
-        onChangeText={v => { setPin(v.replace(/\D/g, '').slice(0, 4)); setSubmitError(''); }}
-        keyboardType="number-pad"
-        maxLength={4}
-        editable={!!pickupCode && isReadyToHand && !submitting}
-        placeholder="0000"
-        placeholderTextColor={Colors.textSubtle}
-        accessibilityLabel="Rider pickup PIN"
-        accessibilityHint="Enter the 4-digit pickup PIN from the rider"
-      />
-      {!pickupCode && (
-        <Pressable onPress={() => router.push('/(vendor)/support' as any)} accessibilityRole="link" accessibilityLabel="Contact support about the pickup PIN" style={s.linkHit}>
-          <Text style={s.linkText}>Contact support</Text>
-        </Pressable>
-      )}
-    </View>
-  );
-
-  const orderCard = (
-    <View style={s.card}>
-      <View style={s.sectionHead}>
-        <Text style={s.sectionTitle}>Order #{order.orderId}</Text>
-        <View style={s.statusPill}>
-          <Text style={s.statusPillText}>{statusLabel}</Text>
-        </View>
-      </View>
-      {!!order.customerName && <Text style={s.customerName}>{order.customerName}</Text>}
-      {!!order.shippingAddress?.fullAddress && <Text style={s.mutedText}>{order.shippingAddress.fullAddress}</Text>}
-      <View style={s.factRow}>
-        <Text style={s.mutedText}>Pickup bay</Text>
-        <Text style={s.factVal}>{order.pickupBay || 'Not assigned yet'}</Text>
-      </View>
-      <View style={s.factRow}>
-        <Text style={s.mutedText}>Items</Text>
-        <Text style={s.factVal}>{itemCount} {itemCount === 1 ? 'unit' : 'units'}</Text>
-      </View>
-      <View style={s.factRow}>
-        <Text style={s.mutedText}>Order total</Text>
-        <Text style={s.factVal}>{formatINR(order.pricing?.grandTotal)}</Text>
-      </View>
-    </View>
-  );
-
-  const riderCard = (
-    <View style={s.card}>
-      <Text style={s.sectionTitle}>Rider</Text>
-      <Text style={s.mutedText}>Rider details are not on this order yet. Confirm the rider by their PIN.</Text>
-    </View>
-  );
+  const rider = order.rider;
+  const checkNow = async () => {
+    setChecking(true);
+    const ok = await refresh();
+    setCheckFailed(!ok);
+    setChecking(false);
+  };
 
   return (
     <ScreenShell
-      header={{ title: 'Rider handover', subtitle: `Order #${order.orderId}`, showBack: true }}
+      header={header}
       backgroundColor={Colors.surface}
-      contentContainerStyle={s.scrollContent}
-      keyboardAvoiding
-      stickyFooter={footer}
+      contentContainerStyle={s.scroll}
+      stickyFooter={
+        <View style={s.footer}>
+          {checkFailed && (
+            <Banner tone="warning" message="We could not check the status. Check your internet connection and try again." />
+          )}
+          {bucket === 'ready' ? (
+            <SecondaryButton label="Check pickup status" icon="refresh" onPress={checkNow} busy={checking} />
+          ) : (
+            <PrimaryButton label="Back to orders" onPress={() => router.replace('/(vendor)/orders')} />
+          )}
+        </View>
+      }
     >
-      {!isReadyToHand && (
-        <View style={[s.infoBox, { marginBottom: Spacing.lg }]}>
-          <Ionicons name="information-circle-outline" size={18} color={Colors.primary} />
-          <View style={{ flex: 1 }}>
-            <Text style={s.infoText}>
-              {isPacking
-                ? 'This order is not packed yet. Pack it before the rider arrives.'
-                : `This order is ${statusLabel.toLowerCase()}, so there is no handover to confirm.`}
-            </Text>
-            {isPacking && (
-              <Pressable onPress={() => router.push({ pathname: '/(vendor)/pack-order', params: { orderId: order.orderId } } as any)} accessibilityRole="link" accessibilityLabel="Go to packing" style={s.linkHit}>
-                <Text style={s.linkText}>Go to packing</Text>
-              </Pressable>
-            )}
-          </View>
-        </View>
-      )}
+      <View style={s.stack}>
+        <Card><StatusStrip status={order.status} /></Card>
 
-      {isExpanded ? (
-        <View style={s.wideRow}>
-          <View style={s.wideLeft}>{pinCard}</View>
-          <View style={s.wideRight}>
-            {orderCard}
-            {riderCard}
+        {/* Status */}
+        <Card style={s.statusCard}>
+          <View style={[s.statusIcon, { backgroundColor: statusCard.bg }]}>
+            <Ionicons name={statusCard.icon} size={28} color={statusCard.color} />
           </View>
-        </View>
-      ) : (
-        <View style={s.stack}>
-          {orderCard}
-          {riderCard}
-          {pinCard}
-        </View>
-      )}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.statusTitle} accessibilityLiveRegion="polite">{statusCard.title}</Text>
+            <Text style={ui.body}>{statusCard.sub}</Text>
+          </View>
+        </Card>
+
+        {/* What to match with the rider */}
+        <Card style={{ gap: Spacing.md }}>
+          <Text style={ui.sectionTitle}>Match with the rider</Text>
+          <Field label="Order reference" value={`#${order.orderId}`} mono />
+          <Field label="Package" value={unitsLabel(unitCount(order))} />
+          {!!order.pickupBay && <Field label="Pickup point" value={order.pickupBay} mono />}
+          {!!order.packageRef && <Field label="Package reference" value={order.packageRef} mono />}
+        </Card>
+
+        {/* Rider */}
+        <Card style={{ gap: Spacing.md }}>
+          <Text style={ui.sectionTitle}>Rider</Text>
+          {rider ? (
+            <View style={s.riderRow}>
+              <View style={s.riderAvatar}>
+                <Ionicons name="person-outline" size={22} color={Colors.textSecondary} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={s.riderName}>{rider.name || 'Rider assigned'}</Text>
+                <Text style={ui.muted}>
+                  {[
+                    rider.partner,
+                    typeof rider.etaMinutes === 'number' ? `Arriving in about ${rider.etaMinutes} min` : '',
+                    rider.status,
+                  ].filter(Boolean).join(' · ') || 'Details will update here.'}
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <Text style={ui.body}>
+              {bucket === 'ready'
+                ? 'No rider assigned yet. Rider details appear here when GlowVai assigns one.'
+                : 'Rider details were not shared for this order.'}
+            </Text>
+          )}
+        </Card>
+
+        {bucket === 'ready' && (
+          <Banner
+            tone="info"
+            title="QR pickup check is coming"
+            message="For now, check the order reference with the rider before handing over. GlowVai records the pickup, and this screen updates by itself."
+          />
+        )}
+      </View>
     </ScreenShell>
   );
 }
 
+function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <View style={s.field}>
+      <Text style={s.fieldLabel}>{label}</Text>
+      <Text style={[s.fieldValue, mono && s.fieldMono]} selectable numberOfLines={1}>{value}</Text>
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
-  scrollContent: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 24 },
-  stack: { gap: Spacing.lg },
-  wideRow: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.lg },
-  wideLeft: { flex: 6, minWidth: 0 },
-  wideRight: { flex: 5, minWidth: 0, gap: Spacing.lg },
-  centerBox: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, gap: Spacing.sm },
-  stateTitle: { fontFamily: FontFamily.bold, fontSize: 18, lineHeight: 24, color: Colors.textPrimary, textAlign: 'center' },
-  stateSub: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 20, color: Colors.textSecondary, textAlign: 'center', maxWidth: 320 },
-  stateBtn: { alignSelf: 'stretch', minWidth: 200, marginTop: Spacing.sm, flex: 0 },
-  doneIcon: {
-    width: 72, height: 72, borderRadius: 36, backgroundColor: Colors.successLight,
-    borderWidth: 1, borderColor: Colors.successBorder, alignItems: 'center', justifyContent: 'center', marginBottom: Spacing.md,
-  },
+  scroll: { padding: Spacing.lg, paddingBottom: Spacing.xl },
+  stack: { gap: Spacing.md },
+  footer: { gap: Spacing.sm, paddingBottom: Spacing.xs },
 
-  card: {
-    backgroundColor: Colors.background, borderRadius: BorderRadii.card,
-    borderWidth: 1, borderColor: Colors.border, padding: Spacing.lg, gap: Spacing.sm,
-  },
-  sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.sm },
-  sectionTitle: { fontFamily: FontFamily.bold, fontSize: 16, lineHeight: 22, color: Colors.textPrimary },
-  customerName: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary },
-  mutedText: { fontFamily: FontFamily.regular, fontSize: 13, lineHeight: 18, color: Colors.textSubtle },
-  factRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 2 },
-  factVal: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.textPrimary },
-  statusPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: BorderRadii.pill, backgroundColor: Colors.primaryLight },
-  statusPillText: { fontFamily: FontFamily.semibold, fontSize: 12, color: Colors.primary },
+  statusCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  statusIcon: { width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center' },
+  statusTitle: { fontFamily: FontFamily.bold, fontSize: 18, lineHeight: 24, color: Colors.textPrimary, marginBottom: 2 },
 
-  pinInput: {
-    alignSelf: 'center', width: 200, minHeight: 60, marginTop: Spacing.sm,
-    borderWidth: 1.5, borderColor: Colors.inputBorder, borderRadius: BorderRadii.input,
-    textAlign: 'center', fontFamily: FontFamily.bold, fontSize: 26, letterSpacing: 10,
-    color: Colors.textPrimary, backgroundColor: Colors.background,
-  },
-  pinInputDisabled: { backgroundColor: Colors.surface, borderColor: Colors.border },
-  linkHit: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start' },
-  linkText: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.primary },
+  field: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.md, minHeight: 28 },
+  fieldLabel: { fontFamily: FontFamily.regular, fontSize: 14, color: Colors.textSecondary },
+  fieldValue: { flexShrink: 1, fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary, textAlign: 'right' },
+  fieldMono: { fontFamily: FontFamily.monoBold, fontSize: 16 },
 
-  infoBox: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.sm, padding: Spacing.md,
-    borderRadius: BorderRadii.card, backgroundColor: Colors.primaryLight, borderWidth: 1, borderColor: Colors.primaryBorder,
-  },
-  infoText: { fontFamily: FontFamily.semibold, fontSize: 13, lineHeight: 18, color: '#1E3A8A' },
-
-  footer: { gap: Spacing.sm },
-  bannerError: {
-    flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, padding: Spacing.md,
-    backgroundColor: Colors.dangerLight, borderWidth: 1, borderColor: Colors.dangerBorder, borderRadius: BorderRadii.card,
-  },
-  bannerErrorText: { flex: 1, fontFamily: FontFamily.semibold, fontSize: 13, lineHeight: 18, color: '#7F1D1D' },
-  primaryBtn: {
-    minHeight: 48, borderRadius: BorderRadii.input, backgroundColor: Colors.primary,
-    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16,
-  },
-  primaryBtnDisabled: { backgroundColor: Colors.border },
-  primaryBtnText: { fontFamily: FontFamily.bold, fontSize: 16, color: '#FFFFFF' },
-  primaryBtnTextDisabled: { color: Colors.textSubtle },
-  secondaryBtn: {
-    minHeight: 48, borderRadius: BorderRadii.input, borderWidth: 1, borderColor: '#CBD5E1',
-    backgroundColor: Colors.background, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16,
-  },
-  secondaryBtnText: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary },
+  riderRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  riderAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center' },
+  riderName: { fontFamily: FontFamily.semibold, fontSize: 16, lineHeight: 22, color: Colors.textPrimary },
 });

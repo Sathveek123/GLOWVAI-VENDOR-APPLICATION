@@ -25,6 +25,7 @@ import { getResumeStep } from '../../src/features/onboarding/draft';
 import { checkVendorStatus, getCachedStatus, STATUS_ROUTE, LOGIN_ROUTE } from '../../src/features/onboarding/status';
 import { VendorTabBar, VendorSidebar, TAB_ROUTE_NAMES } from '../../src/components/MobileBottomNav';
 import { Colors, Breakpoints } from '../../src/theme/tokens';
+import { IncomingOfferHost } from '../../src/features/orders';
 
 type Gate = 'checking' | 'open';
 
@@ -120,6 +121,8 @@ export default function VendorLayout() {
           <Tabs.Screen name="profile" options={{ title: 'Profile' }} />
         </Tabs>
       </View>
+      {/* New order offers appear over every tab and screen. */}
+      <IncomingOfferHost />
     </View>
   );
 }

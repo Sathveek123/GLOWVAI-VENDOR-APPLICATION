@@ -1,3 +1,5 @@
+> **Superseded.** This document is kept for history only and does not describe the current app. The standalone console it describes (`docs/index.html`) has been deleted, together with `backend/src/views/admin.html`. Vendor approval and order oversight live in the GlowVai admin panel. For what the vendor app must do, read the GlowVai Vendor PRD (v1.0); for what is built and connected today, read the [project README](../README.md) and [CONNECTIONS.md](CONNECTIONS.md).
+
 # 👑 Enterprise Admin Console & Firebase Portal
 
 ## 🖥️ Overview

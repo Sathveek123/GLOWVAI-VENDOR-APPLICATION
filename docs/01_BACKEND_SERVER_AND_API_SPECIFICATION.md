@@ -1,3 +1,5 @@
+> **Superseded.** This document is kept for history only and does not describe the current app. It describes the legacy Express backend in `backend/`, which points at glowvai-v2, is not deployed and is being replaced by Firestore rules plus a few server functions. For what the vendor app must do, read the GlowVai Vendor PRD (v1.0); for what is built and connected today, read the [project README](../README.md) and [CONNECTIONS.md](CONNECTIONS.md).
+
 # ⚙️ GlowVAI Vendor Backend — 100% Complete Server & API Specification
 
 ## 🌐 Overview

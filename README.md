@@ -1,172 +1,140 @@
-# GlowVAI Vendor App
+# GlowVai Vendor App
 
-Vendor-side software for GlowVAI dark stores. Store staff use the mobile app to take and fulfil orders, and managers use the PC web command centre to watch the floor, stock, and payouts. A Node.js backend and an admin console support both.
+The app local beauty and skincare shops use to sell through GlowVai: register the store, list stock, go online, receive order offers, pack orders and hand them to a delivery partner. It is one of four GlowVai products (shop, admin panel, delivery partner app, vendor app) that share one Firebase project. The first market is a Vijayawada pilot.
 
-> **Status: front-end preview.** The mobile and PC web screens are built and reviewed. The backend is not yet connected to login, real orders, or live data, so screens that need live data show sample content (development builds) or a "Coming soon" view (production builds). See [Known limitations](#known-limitations).
+What the app must do is defined by the **GlowVai Vendor PRD (v1.0)**. This README says what is actually built and connected today.
 
-## Key features
+> **Status: front end built, not yet connected to live data.** The screens exist and follow the GlowVai design. The data layer still points at a legacy backend that is not deployed, and the server pieces the PRD needs (SMS sign-in, order offers, atomic accept, QR pickup) do not exist yet. A production build cannot sign a vendor in. Do not give it to real shops yet.
 
-**Mobile app (iOS, Android, and web)**
-- Vendor sign-in with a phone number and one-time code (front-end only for now)
-- Store onboarding in four steps: basic info with GPS location, documents, bank details, and categories and SKUs
-- Live order feed with an incoming-order alert, order detail with a picking list, and handover to a rider using a pickup PIN
-- Inventory, payouts, and profile screens, plus a support section
+## What is in this repo
 
-**PC web command centre**
-- Sidebar navigation across operations pages, with a top bar on small screens
-- Order board, stock views, payouts, and team pages
-- Toast notifications in place of browser alerts, and keyboard navigation
+| Path | What it is | State |
+|---|---|---|
+| `mobile/` | The vendor app: Expo SDK 51, Expo Router 3.5, React Native 0.74, TypeScript, Zustand | Main product. Android and web; iOS config exists but is untested. |
+| `mobile/src/config/` | `env.ts` (build config and the production config check) and `firebase.ts` (lazy Firebase client for glowvai-38bde) | New; not yet used by the screens |
+| `web/` | PC "command centre" prototype, a single static HTML page | Prototype, not connected. The PRD puts the desktop app after the mobile MVP. |
+| `backend/` | Express + Socket.IO server | **Legacy.** Points at the old Firebase project glowvai-v2 and is not deployed. See below. |
+| `render.yaml` | Render blueprint for the legacy backend | Never deployed |
+| `docs/` | Feature, screen, development and design docs; [CONNECTIONS.md](docs/CONNECTIONS.md) is the Firestore data contract | Some older specs are marked superseded |
+| `screen_docs/`, `web_screen_docs/` | Per-screen specs from before the redesign | Reference only |
 
-**Backend (Node.js, Express, Socket.IO)**
-- REST API and realtime order events
-- Firebase Admin integration for persistence, with a mock mode when no service key is set
+## Brand
 
-**Design system**
-- Three typefaces with defined jobs (Fraunces for titles and the wordmark, Plus Jakarta Sans for interface text, JetBrains Mono for codes), a 12px minimum size, and weights limited to 400–700. See [docs/12_TYPOGRAPHY_SYSTEM.md](docs/12_TYPOGRAPHY_SYSTEM.md).
-- Brand blue `#1D4ED8` throughout
+- **Type:** Inter for all text (weights 400 to 700, nothing under 12px); JetBrains Mono only for codes such as order IDs, pickup codes, UTRs and bin locations. See [docs/12_TYPOGRAPHY_SYSTEM.md](docs/12_TYPOGRAPHY_SYSTEM.md).
+- **Colour:** GlowVai blue `#0057FB` for the one primary action on a screen; white cards on a `#F4F6FA` canvas; muted text `#64748B`. Status colours are only for status.
+- **Tokens:** `mobile/src/theme/tokens.ts` and `mobile/src/theme/typography.ts`. Use them; do not add new hex values.
+- The same type and blue as the GlowVai shop and admin panel.
 
-## Architecture
+## Firebase: one shared project
 
-```
-          +-------------------+        +-------------------+
-          |  mobile/          |        |  web/             |
-          |  Expo Router app  |        |  PC command centre|
-          |  iOS, Android,web |        |  (HTML/JS)        |
-          +---------+---------+        +---------+---------+
-                    |  REST + Socket.IO          |
-                    +------------+---------------+
-                                 |
-                       +---------v---------+        +-------------------+
-                       |  backend/         |<------>|  Firebase          |
-                       |  Express, Socket.IO|       |  (Realtime DB)     |
-                       +-------------------+        +-------------------+
-```
+The vendor app uses the shared GlowVai project **`glowvai-38bde`**, the same project as the shop and the admin panel. Its web config is in `mobile/.env.example` (these values identify the project; they are not secrets, and access is controlled by security rules).
 
-The mobile app keeps state in a Zustand store (`mobile/src/store/useVendorStore.ts`). The realtime connection is a single Socket.IO client (`mobile/src/services/socket.ts`), and REST calls go through one fetch-based client (`mobile/src/services/api.ts`).
+- `mobile/src/config/firebase.ts` reads only `EXPO_PUBLIC_FIREBASE_*`, has no hardcoded fallbacks, and throws a clear error if the config is missing or names another project. Realtime Database is not used.
+- The data contract the app will use (vendor applications, vendor profile, per-vendor stock, a vendor-safe order view, read-only products) is in [docs/CONNECTIONS.md](docs/CONNECTIONS.md).
+- The legacy backend and the old docs refer to **glowvai-v2**. That project is not part of the platform: nothing the vendor app writes there reaches the shop or the admin panel.
 
-## Repository layout
+## What is connected and what is not
 
-| Path | What it is |
-|---|---|
-| `mobile/` | Expo app for iOS, Android, and web (Expo Router, TypeScript) |
-| `mobile/app/` | Routes: `(auth)`, `(onboarding)`, `(vendor)`, plus splash and admin |
-| `mobile/src/` | Components, services, store, and the typography theme |
-| `web/` | PC web command centre (single-page HTML/JS in `index.html`) |
-| `backend/` | Node.js REST and Socket.IO server (`src/server.js`) |
-| `docs/` | Architecture, API, typography, and the audit reports |
-| `docs/index.html` | Admin console (standalone page) |
-| `screen_docs/`, `web_screen_docs/` | Per-screen specifications for mobile and web |
-| `admin/` | An unused React component kept for reference; not built |
+| Area | Today | Needed |
+|---|---|---|
+| Sign-in by SMS code | Screens exist. No SMS is sent; the legacy backend only accepts a fixed development code. | An SMS provider and a server function that checks the code and returns a Firebase custom token |
+| Store registration | Four onboarding steps collect the details on the device | Write `vendorApplications/VAPP-{uid}` in the shop's shape, upload documents to Storage (see CONNECTIONS.md) |
+| Approval | Not connected | Admin panel server action that creates `vendors/{uid}` and sets the vendor claim |
+| Online / offline | Toggle in the app, not saved anywhere real | Write `isOnline` and a `lastSeenAt` heartbeat to `vendors/{uid}` |
+| Inventory | Screens exist; legacy backend only | `vendors/{uid}/vendorInventory/{productId}` against the published catalogue |
+| Order offers (45 s), atomic accept, stock reservation | **Not built.** The legacy backend sends each order to one fixed vendor and has no server-owned expiry. | Server functions (place order and offer, accept offer, expire offers) |
+| Packing and QR pickup | Packing checklist in the app; no pickup verification | Server-issued, signed, single-use QR token, verified by the rider app |
+| Earnings | No real figures; commission and payout rules are not stated in the app | Server-written ledger using each vendor's agreement |
+| Push notifications | None | FCM from the server for new offers |
 
-## Requirements
+Rules the app follows regardless: it never shows sample data or fake success; it never shows a customer's phone number, address or location (a first name after acceptance at most); a vendor never marks an order delivered; rejecting an order always needs a reason.
 
-- Node.js 20 or newer, and npm
-- For the mobile app: Expo Go on a phone, or an Android or iOS simulator
-- For Android builds: Android Studio
+### The legacy backend (`backend/`)
 
-## Quick start
+`backend/src/server.js` is an Express + Socket.IO server with a mock mode. It defaults to **glowvai-v2**, is **not deployed** anywhere, and has known security gaps (public order-creation and return routes, a payment check that always succeeds, delivery and handover checks that can be skipped). It is kept only so the current screens can be exercised locally. The plan is to replace it with Firestore security rules plus a few Cloud Functions (see the roadmap). Do not deploy it or point it at glowvai-38bde as it is.
 
-### 1. Mobile app
+## Run it
+
+Requirements: Node.js 20+, npm. For a phone: Expo Go or a development build. For Android builds: Android Studio.
 
 ```bash
 cd mobile
 npm install
-cp .env.example .env      # then fill in the values
-npx expo start            # press "w" for web, or scan the QR code with Expo Go
+cp .env.example .env        # glowvai-38bde config is already filled in
+npx expo start              # press "w" for web, or scan the QR code
 ```
 
-### 2. PC web command centre
-
-No build step is needed.
-
-```bash
-cd web
-npm run start             # serves on http://localhost:8082
-```
-
-You can also open `web/index.html` directly in a browser.
-
-### 3. Backend (optional for the front-end preview)
+Optional, to exercise the screens against the legacy backend in mock mode (no Firebase credentials needed):
 
 ```bash
 cd backend
 npm install
-cp .env.example .env      # then fill in the values
-npm start                 # serves on http://localhost:4000
+npm start                   # http://localhost:4000, check /health
 ```
 
-Check it is running: `http://localhost:4000/health`.
+On a phone, set `EXPO_PUBLIC_VENDOR_API_URL` in `mobile/.env` to your computer's LAN address, for example `http://192.168.1.20:4000`.
 
-## Environment variables
+The PC prototype needs no build: open `web/index.html` or run `npm run start` in `web/`.
 
-Mobile (`mobile/.env`, see `mobile/.env.example`):
+## Environment variables (`mobile/.env`)
 
 | Variable | Purpose |
 |---|---|
-| `EXPO_PUBLIC_VENDOR_API_URL` | Backend base URL. Use your computer's LAN IP when testing on a phone. |
-| `EXPO_PUBLIC_VENDOR_ID`, `EXPO_PUBLIC_STORE_ID` | Vendor and store identifiers for the session |
-| `EXPO_PUBLIC_ENABLE_SOCKET` | Turns the realtime connection on or off |
-| `EXPO_PUBLIC_ORDER_POLL_INTERVAL_MS` | How often orders are polled as a fallback to the socket |
-| `EXPO_PUBLIC_FIREBASE_*` | Firebase web configuration (project identifiers, not secrets) |
-| `EXPO_PUBLIC_CUSTOMER_APP_URL` | Optional. Shows the customer storefront link when set. Not in `.env.example`; add it when needed. |
+| `EXPO_PUBLIC_VENDOR_API_URL` | Vendor API base URL. Development: localhost or a LAN address. |
+| `EXPO_PUBLIC_CUSTOMER_APP_URL` | Optional link to the GlowVai shop |
+| `EXPO_PUBLIC_FIREBASE_*` | glowvai-38bde web config (six keys) |
 
-Backend (`backend/.env`, see `backend/.env.example`): `PORT`, `NODE_ENV`, `FIREBASE_SERVICE_ACCOUNT_PATH`, `JWT_SECRET`, and `CORS_ORIGINS`. These are secrets. Keep them out of version control. The full table is in [docs/development/02-environment-variables.md](docs/development/02-environment-variables.md).
+Everything prefixed `EXPO_PUBLIC_` is compiled into the app, so never put a secret there. There is no vendor or store id variable: ids come only from the signed-in session. Full table: [docs/development/02-environment-variables.md](docs/development/02-environment-variables.md).
 
-## Engineering standards
+**Production config check.** `mobile/src/config/env.ts` exports `getConfigStatus()`. In a production build (`__DEV__` false) it fails when `EXPO_PUBLIC_VENDOR_API_URL` is missing, points at localhost or a private network address, or is not `https://`, and when the Firebase config is missing or is not glowvai-38bde. The root layout should call it once and, when `ok` is false, show `CONFIG_ERROR_COPY` instead of the app, so a misconfigured build fails loudly rather than silently calling localhost. In development it only logs a warning.
 
-- **No secrets in git.** `.env` files, keystores, `local.properties`, and service-account JSON files are excluded by `.gitignore`. Check before every push.
-- **Demo content is development-only.** Sample orders, test OTPs, and developer test strips are gated behind `__DEV__` and do not ship in production builds.
-- **Honest states.** Screens show Loading, Empty, and Error states, and do not present unverified data as confirmed.
-- **Type-safe.** `npx tsc --noEmit` passes with no errors in `mobile/`.
+## Build
 
-## Security notes
+```bash
+cd mobile
+npx tsc --noEmit                           # type check, must pass
+npx expo export --platform web             # web bundle in dist/
+npx expo run:android --variant release     # Android release build (needs Android Studio)
+```
 
-- The Firebase web API key in `docs/index.html` and `backend/src/views/admin.html` identifies the project; it is not a secret. Restrict it in the Firebase console to your domains.
-- Authentication is not yet server-side. The login and OTP screens do not verify codes with a server. Do not use the app with real merchant accounts until this is built.
-- Handover PIN checks and financial calculations currently run on the device. They must move to the server before launch.
+The release build reads `mobile/.env` at build time, so set the real public API URL first; with a localhost URL the build will show the configuration error screen.
 
-## Building
+### Release signing: not ready for the Play Store
 
-- Mobile web export: `cd mobile && npx expo export --platform web`
-- Android: `cd mobile && npx expo run:android`
-- Type check: `cd mobile && npx tsc --noEmit`
+`mobile/android/app/build.gradle` signs **release builds with the debug keystore**. A build signed this way must not be uploaded to the Play Store: the debug key is a throwaway development key that anyone with the project can use. Before the first store upload, create a real upload keystore or set up EAS credentials (there is no `eas.json` yet), keep the keystore and its passwords out of git (`.gitignore` already excludes `*.keystore`, `*.jks`, `*.p12`, `*.p8`, `*.pem`, `credentials.json`, `google-services.json`), and point the release `signingConfig` at it.
 
-## Tech stack
+## Roadmap
 
-| Area | Technology |
-|---|---|
-| Mobile client | React Native 0.74, Expo SDK 51, Expo Router 3.5 |
-| Mobile state | Zustand 4.5 |
-| Realtime | Socket.IO client 4.7 |
-| Web build | react-native-web 0.19 |
-| Fonts and icons | Fraunces, Plus Jakarta Sans, JetBrains Mono; Ionicons and Feather |
-| Backend | Node.js, Express 4, Socket.IO 4, Firebase Admin 12 |
-| Web command centre | HTML, CSS, and JavaScript (no framework) |
+Aligned with PRD section 13.1 (Phase 1, all P0). The order matters: the PRD asks to prove one real order end to end before building more screens.
 
-## Known limitations
+| P0 item | State | Next step |
+|---|---|---|
+| Vendor login and authentication | Screens only | SMS provider + OTP server function + `signInWithCustomToken` |
+| Business registration and approval | Screens only | Write `vendorApplications/VAPP-{uid}`; admin approval creates `vendors/{uid}` |
+| Store location and operating details | Collected in onboarding | Save with the application; changes after approval go through admin review |
+| Inventory onboarding and stock updates | Screens only | `vendorInventory` subcollection, catalogue pick, CSV import |
+| Online/offline toggle | Screen only | `isOnline` + `lastSeenAt` heartbeat on `vendors/{uid}` |
+| Incoming order offers | Not built | Server places offers with a 45-second server-owned expiry; FCM push |
+| Atomic order acceptance | Not built | `acceptOffer` transaction; losers get `ORDER_ALREADY_ASSIGNED` |
+| Stock reservation | Legacy backend only | Reserve inside the accept transaction |
+| Order details and packing checklist | Screens built | Read the vendor-safe `vendorOrders` projection |
+| Mark as packed | Screen built | Server function; only after the checklist is complete |
+| Delivery partner assignment integration | Not built | Shared order states with the delivery partner app |
+| QR pickup verification | Not built | Signed single-use token, verified by the rider app |
+| Vendor, customer and delivery permissions | Not built | Firestore and Storage rules in glowvai-38bde, App Check |
+| Order history | Screen built | From `vendorOrders` |
+| Basic earnings ledger | Screen built, no data | Server-written ledger entries per the vendor's agreement |
+| Admin vendor and order management | In the GlowVai admin panel | Approval action and order oversight there |
 
-- **Authentication:** no OTP send or verify endpoint exists. Login is a front-end stub.
-- **Live data:** most vendor screens are not connected to the backend. Those screens show a "Coming soon" view in production builds, and sample content in development builds.
-- **Onboarding:** step B needs document uploads to the server, which are not built. Documents are picked on the device only.
-- **Home screen:** on a live backend, the home screen can stall after the realtime connection is made. Not yet root-caused. Test on a device.
-- **Android:** not yet tested on hardware. Font weights and icons may differ from the simulator.
-- **PC web app:** most data is sample data. Some developer test strips remain visible in the prototype.
+Also before launch: upgrade from Expo SDK 51 (many dependency advisories are fixed only in later SDKs), set up release signing, and test on real Android phones.
 
 ## Documentation
 
-The full index is in [docs/README.md](docs/README.md). It covers:
-
-- **Features:** 12 feature docs in [docs/features/](docs/features/)
-- **Mobile screens:** 11 files in [docs/mobile/](docs/mobile/), one group per flow
-- **Web pages:** 10 files in [docs/web/](docs/web/), one group per area
-- **Development:** setup, environment, testing, release, and troubleshooting in [docs/development/](docs/development/)
-- **Design:** colour, components, and states in [docs/design/](docs/design/), plus [typography](docs/12_TYPOGRAPHY_SYSTEM.md)
-- **Architecture specs** from earlier phases, numbered 00 to 11 in [docs/](docs/)
-
-## Branches
-
-- `frontend-preview`: the current front-end work (this branch).
+- [docs/README.md](docs/README.md): index of feature, screen, development and design docs
+- [docs/CONNECTIONS.md](docs/CONNECTIONS.md): the Firestore data contract
+- [docs/12_TYPOGRAPHY_SYSTEM.md](docs/12_TYPOGRAPHY_SYSTEM.md): type system
+- Docs 00, 01, 02, 04, 07 and 09 in `docs/` describe an older design that was never built and are marked superseded.
 
 ## License
 
-Copyright © 2026 GlowVAI Team. All rights reserved. Confidential and proprietary.
+Copyright © 2026 GlowVai. All rights reserved. Confidential and proprietary.

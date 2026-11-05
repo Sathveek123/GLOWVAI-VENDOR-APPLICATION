@@ -733,8 +733,8 @@ function NotificationsScreen() {
                     <Switch
                       value={p.value}
                       onValueChange={p.set}
-                      trackColor={{ false: '#CBD5E1', true: '#BFDBFE' }}
-                      thumbColor={p.value ? Colors.primary : '#94A3B8'}
+                      trackColor={{ false: '#CBD5E1', true: '#C7DAFE' }}
+                      thumbColor={p.value ? Colors.primary : '#64748B'}
                     />
                   </View>
                 ))}

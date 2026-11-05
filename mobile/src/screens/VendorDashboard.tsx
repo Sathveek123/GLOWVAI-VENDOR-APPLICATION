@@ -366,7 +366,7 @@ export const VendorDashboard: React.FC<{
             <View key={ord.orderId} style={styles.orderCardItem}>
               <View style={styles.orderTopRow}>
                 <Text style={styles.orderIdText}>#{ord.orderId}</Text>
-                <View style={[styles.orderStatusPill, { backgroundColor: ord.status === 'READY' ? '#ecfdf5' : '#eff6ff' }]}>
+                <View style={[styles.orderStatusPill, { backgroundColor: ord.status === 'READY' ? '#ecfdf5' : '#EEF4FF' }]}>
                   <Text style={[styles.orderStatusText, { color: ord.status === 'READY' ? '#16a34a' : '#2563eb' }]}>
                     {ord.status}
                   </Text>
@@ -401,7 +401,7 @@ export const VendorDashboard: React.FC<{
             
             {/* Header */}
             <View style={styles.broadcastPillHeader}>
-              <Ionicons name="flash" size={14} color="#d97706" />
+              <Ionicons name="flash" size={14} color="#B45309" />
               <Text style={styles.broadcastPillText}>INCOMING 10-MIN SLA QUICK-COMMERCE OFFER</Text>
             </View>
 
@@ -415,7 +415,7 @@ export const VendorDashboard: React.FC<{
             <View style={styles.offerDetailsBox}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                 <Text style={styles.offerOrderId}>Order #{activeOffer?.orderId}</Text>
-                <Text style={{ fontSize: 13, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: '#16a34a' }}>
+                <Text style={{ fontSize: 13, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: '#16a34a' }}>
                   Your Net: ₹{activeOffer?.pricing.vendorEarnings}
                 </Text>
               </View>
@@ -463,7 +463,7 @@ export const VendorDashboard: React.FC<{
 // ── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc' },
+  safeArea: { flex: 1, backgroundColor: '#F4F6FA' },
   scrollContainer: { padding: isTablet ? 32 : 16, alignItems: 'center', paddingBottom: 50 },
 
   // Massive Toggle
@@ -499,8 +499,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statusPulseCore: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#ffffff' },
-  toggleStatusHeading: { fontSize: 13.5, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: '#0f172a' },
-  toggleStatusSub: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: '#64748b', marginTop: 2 },
+  toggleStatusHeading: { fontSize: 13.5, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: '#0f172a' },
+  toggleStatusSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748b', marginTop: 2 },
   toggleSwitchKnob: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
 
   // Card Box
@@ -518,19 +518,19 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
   },
   cardHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  cardTitle: { fontSize: 16, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: '#0f172a' },
-  activeOrdersCountPill: { backgroundColor: '#eff6ff', color: '#2563eb', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', fontSize: 12 },
+  cardTitle: { fontSize: 16, fontFamily: 'Inter_700Bold', fontWeight: '700', color: '#0f172a' },
+  activeOrdersCountPill: { backgroundColor: '#EEF4FF', color: '#2563eb', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600', fontSize: 12 },
 
   // Metrics
   metricsTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
-  metricLabel: { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: '#64748b', letterSpacing: 0.5 },
-  metricBigAmount: { fontSize: 34, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: '#0f172a', letterSpacing: -1, marginTop: 4 },
+  metricLabel: { fontSize: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: '#64748b', letterSpacing: 0.5 },
+  metricBigAmount: { fontSize: 34, fontFamily: 'Inter_700Bold', fontWeight: '700', color: '#0f172a', letterSpacing: -1, marginTop: 4 },
   growthBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#ecfdf5', paddingVertical: 4, paddingHorizontal: 8, borderRadius: 8, borderWidth: 1, borderColor: '#a7f3d0' },
-  growthText: { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: '#16a34a' },
-  metricsGrid: { flexDirection: 'row', backgroundColor: '#f8fafc', borderRadius: 14, padding: 14, justifyContent: 'space-around', alignItems: 'center' },
+  growthText: { fontSize: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: '#16a34a' },
+  metricsGrid: { flexDirection: 'row', backgroundColor: '#F4F6FA', borderRadius: 14, padding: 14, justifyContent: 'space-around', alignItems: 'center' },
   metricItem: { alignItems: 'center' },
-  metricItemVal: { fontSize: 18, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: '#0f172a' },
-  metricItemLabel: { fontSize: 12, color: '#64748b', fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', marginTop: 2 },
+  metricItemVal: { fontSize: 18, fontFamily: 'Inter_700Bold', fontWeight: '700', color: '#0f172a' },
+  metricItemLabel: { fontSize: 12, color: '#64748b', fontFamily: 'Inter_600SemiBold', fontWeight: '600', marginTop: 2 },
   metricDivider: { width: 1, height: 26, backgroundColor: '#e2e8f0' },
 
   // Chart
@@ -538,39 +538,39 @@ const styles = StyleSheet.create({
   chartBarRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 110 },
   chartCol: { alignItems: 'center', flex: 1 },
   chartBarFill: { width: 18, backgroundColor: '#2563eb', borderRadius: 6 },
-  chartDayLabel: { fontSize: 12, color: '#64748b', fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', marginTop: 8 },
+  chartDayLabel: { fontSize: 12, color: '#64748b', fontFamily: 'Inter_600SemiBold', fontWeight: '600', marginTop: 8 },
 
   // Orders
   orderCardItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },
   orderTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  orderIdText: { fontSize: 14, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: '#0f172a' },
+  orderIdText: { fontSize: 14, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: '#0f172a' },
   orderStatusPill: { paddingVertical: 3, paddingHorizontal: 8, borderRadius: 6 },
-  orderStatusText: { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' },
-  orderCustomerText: { fontSize: 12.5, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: '#334155', marginTop: 4 },
-  orderAddressText: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: '#64748b', marginTop: 2 },
+  orderStatusText: { fontSize: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600' },
+  orderCustomerText: { fontSize: 12.5, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: '#334155', marginTop: 4 },
+  orderAddressText: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748b', marginTop: 2 },
   orderBottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 },
-  orderAmountText: { fontSize: 15, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: '#0f172a' },
+  orderAmountText: { fontSize: 15, fontFamily: 'Inter_700Bold', fontWeight: '700', color: '#0f172a' },
   advanceBtn: { backgroundColor: '#0f172a', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 10 },
-  advanceBtnText: { color: '#ffffff', fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' },
+  advanceBtnText: { color: '#ffffff', fontSize: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600' },
 
   // Broadcast Modal
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(15,23,42,0.7)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   broadcastAlertCard: { width: '100%', maxWidth: 480, backgroundColor: '#ffffff', borderRadius: 24, padding: 24, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 15 },
   broadcastPillHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#fef3c7', padding: 8, borderRadius: 10, justifyContent: 'center', marginBottom: 16 },
-  broadcastPillText: { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: '#d97706' },
+  broadcastPillText: { fontSize: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: '#B45309' },
   countdownBox: { alignItems: 'center', marginBottom: 16 },
-  countdownBigNumber: { fontSize: 44, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: '#dc2626' },
-  countdownSub: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: '#64748b', marginTop: 2 },
-  offerDetailsBox: { backgroundColor: '#f8fafc', borderRadius: 14, padding: 14, marginBottom: 18, borderWidth: 1, borderColor: '#e2e8f0' },
-  offerOrderId: { fontSize: 15, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: '#0f172a' },
-  offerAddress: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12.5, color: '#64748b', marginTop: 4 },
+  countdownBigNumber: { fontSize: 44, fontFamily: 'Inter_700Bold', fontWeight: '700', color: '#dc2626' },
+  countdownSub: { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#64748b', marginTop: 2 },
+  offerDetailsBox: { backgroundColor: '#F4F6FA', borderRadius: 14, padding: 14, marginBottom: 18, borderWidth: 1, borderColor: '#e2e8f0' },
+  offerOrderId: { fontSize: 15, fontFamily: 'Inter_700Bold', fontWeight: '700', color: '#0f172a' },
+  offerAddress: { fontFamily: 'Inter_400Regular', fontSize: 12.5, color: '#64748b', marginTop: 4 },
   offerItemsStrip: { marginTop: 10, borderTopWidth: 1, borderTopColor: '#e2e8f0', paddingTop: 8 },
-  offerItemText: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12.5, color: '#334155', marginVertical: 1 },
+  offerItemText: { fontFamily: 'Inter_400Regular', fontSize: 12.5, color: '#334155', marginVertical: 1 },
   offerActionsRow: { flexDirection: 'row', gap: 12 },
   declineBtn: { flex: 1, backgroundColor: '#fee2e2', paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
-  declineBtnText: { color: '#dc2626', fontSize: 14, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' },
+  declineBtnText: { color: '#dc2626', fontSize: 14, fontFamily: 'Inter_600SemiBold', fontWeight: '600' },
   acceptBtn: { flex: 2, backgroundColor: '#16a34a', paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
-  acceptBtnText: { color: '#ffffff', fontSize: 14, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' },
+  acceptBtnText: { color: '#ffffff', fontSize: 14, fontFamily: 'Inter_600SemiBold', fontWeight: '600' },
 });
 
 export default VendorDashboard;

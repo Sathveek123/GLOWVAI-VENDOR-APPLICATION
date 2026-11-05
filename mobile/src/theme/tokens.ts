@@ -5,21 +5,21 @@
 
 export const Colors = {
   // Brand Blue Tokens
-  primary: '#1D4ED8',        // Royal Blue (Buttons, Active Tabs, Switches)
-  primaryPressed: '#1E40AF', // Pressed State Blue
-  primaryLight: '#EFF6FF',   // Soft Blue Highlight (Selected Chips, Light Backings)
-  primaryBorder: '#BFDBFE',  // Light Blue Borders
+  primary: '#0057FB',        // Royal Blue (Buttons, Active Tabs, Switches)
+  primaryPressed: '#0046CC', // Pressed State Blue
+  primaryLight: '#EEF4FF',   // Soft Blue Highlight (Selected Chips, Light Backings)
+  primaryBorder: '#C7DAFE',  // Light Blue Borders
 
   // Canvas & Surfaces
   background: '#FFFFFF',     // Pure White Screen Background
-  surface: '#F8FAFC',        // Slate Tint for Page Sections & Input Fills
+  surface: '#F4F6FA',        // Slate Tint for Page Sections & Input Fills
   card: '#FFFFFF',           // Crisp White Card Container
   border: '#E2E8F0',         // Clean Border
 
   // Typography Contrast (WCAG AA Compliant)
   textPrimary: '#0F172A',    // Deep Slate Text
   textSecondary: '#475569',  // Medium Slate Text
-  textMuted: '#94A3B8',      // Muted Gray Labels (decorative only; below AA for text)
+  textMuted: '#64748B',      // Muted grey labels (4.7:1 on white, passes AA)
   textSubtle: '#64748B',     // Helper text and placeholders (4.7:1 on white)
   inputBorder: '#8291A7',    // Input outline (3.2:1 on white, meets non-text contrast)
 
@@ -28,7 +28,7 @@ export const Colors = {
   successLight: '#F0FDF4',   // Green Tint
   successBorder: '#BBF7D0',
 
-  warning: '#D97706',        // Amber (Low Stock, Countdown Timers)
+  warning: '#B45309',        // Amber (Low Stock, Countdown Timers)
   warningLight: '#FFFBEB',   // Amber Tint
   warningBorder: '#FDE68A',
 
@@ -37,9 +37,9 @@ export const Colors = {
   dangerBorder: '#FCA5A5',
 
   // Bin Coordinate Pill (Dark Store Warehouse Bins)
-  binBg: '#EFF6FF',
-  binText: '#1D4ED8',
-  binBorder: '#BFDBFE',
+  binBg: '#EEF4FF',
+  binText: '#0057FB',
+  binBorder: '#C7DAFE',
 };
 
 export const Spacing = {
@@ -58,7 +58,7 @@ export const BorderRadii = {
 };
 
 export const Typography = {
-  fontFamily: 'PlusJakartaSans_400Regular',
+  fontFamily: 'Inter_400Regular',
   sizes: {
     xs: 12,
     sm: 14,

@@ -1011,7 +1011,7 @@ const s = StyleSheet.create({
     marginBottom: 4,
   },
   bubbleNameVendor: {
-    color: '#BFDBFE',
+    color: '#C7DAFE',
   },
   bubbleText: {
     ...TypeScale.body,

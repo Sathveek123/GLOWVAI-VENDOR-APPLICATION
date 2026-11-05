@@ -3,7 +3,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * Compact, interactive floating button for vendor navigation bars:
  *   • Direct link to GlowVAI Customer App & Web Storefront
- *   • Brand Royal Blue border glow (#1D4ED8) with live pulse beacon
+ *   • Brand Royal Blue border glow (#0057FB) with live pulse beacon
  *   • Compact footprint designed for mobile viewports
  * ═══════════════════════════════════════════════════════════════════════════
  */
@@ -69,7 +69,7 @@ export const CustomerAppRedirectButton: React.FC<CustomerAppRedirectButtonProps>
           <Text style={styles.mainText}>customer app</Text>
         </View>
 
-        <Feather name="arrow-up-right" size={12} color="#1D4ED8" style={styles.arrowIcon} />
+        <Feather name="arrow-up-right" size={12} color="#0057FB" style={styles.arrowIcon} />
       </View>
     </TouchableOpacity>
   );
@@ -81,10 +81,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#ffffff',
     borderRadius: 16,
     borderWidth: 1.5,
-    borderColor: '#1D4ED8',
+    borderColor: '#0057FB',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    shadowColor: '#1D4ED8',
+    shadowColor: '#0057FB',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.18,
     shadowRadius: 4,
@@ -105,7 +105,7 @@ const styles = StyleSheet.create({
     width: 18,
     height: 18,
     borderRadius: 9,
-    backgroundColor: '#1D4ED8',
+    backgroundColor: '#0057FB',
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
@@ -126,14 +126,14 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
-    color: '#1D4ED8',
+    color: '#0057FB',
     letterSpacing: -0.2,
   },
   mainText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#64748b',
     marginTop: -1,

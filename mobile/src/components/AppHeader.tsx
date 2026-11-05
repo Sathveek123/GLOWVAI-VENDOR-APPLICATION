@@ -118,7 +118,7 @@ export default function AppHeader({
               <TextInput
                 style={s.searchFieldInput}
                 placeholder={title || "Search products, orders..."}
-                placeholderTextColor={Colors.textMuted || '#94A3B8'}
+                placeholderTextColor={Colors.textMuted || '#64748B'}
                 value={searchValue}
                 onChangeText={onSearchChange}
                 autoFocus
@@ -234,7 +234,7 @@ const s = StyleSheet.create({
   },
   backIcon: {
     fontSize: 22,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textPrimary || '#0F172A',
   },
@@ -248,14 +248,14 @@ const s = StyleSheet.create({
   },
   titleText: {
     fontSize: 18,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textPrimary || '#0F172A',
     letterSpacing: -0.3,
   },
   subtitleText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_500Medium',
+    fontFamily: 'Inter_500Medium',
     fontWeight: '500',
     color: Colors.textSecondary || '#64748B',
     marginTop: 1,
@@ -268,14 +268,14 @@ const s = StyleSheet.create({
     gap: 4,
   },
   bellIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 20,
   },
   bellBadge: {
     position: 'absolute',
     top: 8,
     right: 8,
-    backgroundColor: Colors.primary || '#1D4ED8',
+    backgroundColor: Colors.primary || '#0057FB',
     minWidth: 16,
     height: 16,
     borderRadius: 8,
@@ -286,7 +286,7 @@ const s = StyleSheet.create({
   bellBadgeText: {
     color: '#FFFFFF',
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
   searchFieldWrap: {
@@ -298,13 +298,13 @@ const s = StyleSheet.create({
     height: 38,
   },
   searchFieldIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 14,
     marginRight: 6,
   },
   searchFieldInput: {
     flex: 1,
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 14,
     color: Colors.textPrimary || '#0F172A',
     padding: 0,
@@ -313,9 +313,9 @@ const s = StyleSheet.create({
     padding: 4,
   },
   searchClearIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
-    color: Colors.textMuted || '#94A3B8',
+    color: Colors.textMuted || '#64748B',
   },
   cancelSearchBtn: {
     paddingHorizontal: 12,
@@ -323,9 +323,9 @@ const s = StyleSheet.create({
   },
   cancelSearchText: {
     fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
-    color: Colors.primary || '#1D4ED8',
+    color: Colors.primary || '#0057FB',
   },
   largeTitleRow: {
     paddingHorizontal: 16,
@@ -334,7 +334,7 @@ const s = StyleSheet.create({
   },
   largeTitleText: {
     fontSize: 28,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary || '#0F172A',
     letterSpacing: -0.6,

@@ -119,13 +119,13 @@ const s = StyleSheet.create({
   },
   label: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textSecondary || '#64748B',
   },
   activeLabel: {
-    color: Colors.primary || '#1D4ED8',
-    fontFamily: 'PlusJakartaSans_700Bold',
+    color: Colors.primary || '#0057FB',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
   },
   activeIndicator: {
@@ -133,7 +133,7 @@ const s = StyleSheet.create({
     top: -6,
     width: 20,
     height: 3,
-    backgroundColor: Colors.primary || '#1D4ED8',
+    backgroundColor: Colors.primary || '#0057FB',
     borderRadius: 2,
   },
 });

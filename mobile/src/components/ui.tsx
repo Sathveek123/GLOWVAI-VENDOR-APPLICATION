@@ -59,7 +59,7 @@ const pill = StyleSheet.create({
   },
   text: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 });
@@ -137,8 +137,8 @@ const li = StyleSheet.create({
     borderBottomColor: Colors.line,
   },
   left:  { flex: 1 },
-  t1:    { fontSize: 14, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: Colors.ink },
-  t2:    { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: Colors.sub, marginTop: 2 },
+  t1:    { fontSize: 14, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: Colors.ink },
+  t2:    { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.sub, marginTop: 2 },
   right: { alignItems: 'flex-end', marginLeft: 8 },
 });
 
@@ -158,7 +158,7 @@ export function OnlineToggle({
         value={isOnline}
         onValueChange={onToggle}
         trackColor={{ false: '#dddddd', true: '#86EFAC' }}
-        thumbColor={isOnline ? Colors.green : '#94A3B8'}
+        thumbColor={isOnline ? Colors.green : '#64748B'}
         ios_backgroundColor="#dddddd"
       />
     </View>
@@ -175,8 +175,8 @@ const ot = StyleSheet.create({
     borderRadius: Radius.card,
     marginBottom: 16,
   },
-  title: { fontSize: 14, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: Colors.ink },
-  sub:   { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: Colors.sub, marginTop: 2 },
+  title: { fontSize: 14, fontFamily: 'Inter_700Bold', fontWeight: '700', color: Colors.ink },
+  sub:   { fontFamily: 'Inter_400Regular', fontSize: 12, color: Colors.sub, marginTop: 2 },
 });
 
 // ── Timer Box ─────────────────────────────────────────────────────────────────
@@ -204,7 +204,7 @@ const tb = StyleSheet.create({
     marginBottom: 14,
   },
   num:  { ...Typography.timer, color: '#fff' },
-  sub:  { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: '#cccccc', marginTop: 4 },
+  sub:  { fontFamily: 'Inter_400Regular', fontSize: 12, color: '#cccccc', marginTop: 4 },
 });
 
 // ── Progress Bar (4-step onboarding) ──────────────────────────────────────────
@@ -303,7 +303,7 @@ const btn = StyleSheet.create({
     borderRadius: Radius.lg,
     alignItems: 'center',
   },
-  primaryText: { color: '#fff', fontSize: 14.5, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' },
+  primaryText: { color: '#fff', fontSize: 14.5, fontFamily: 'Inter_700Bold', fontWeight: '700' },
   disabled:    { opacity: 0.5 },
   secondary: {
     backgroundColor: Colors.bg,
@@ -313,7 +313,7 @@ const btn = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.ink,
   },
-  secondaryText: { color: Colors.ink, fontSize: 15, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' },
+  secondaryText: { color: Colors.ink, fontSize: 15, fontFamily: 'Inter_700Bold', fontWeight: '700' },
   danger: {
     backgroundColor: Colors.bg,
     paddingVertical: 15,
@@ -322,7 +322,7 @@ const btn = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#f0d0cd',
   },
-  dangerText: { color: Colors.red, fontSize: 15, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' },
+  dangerText: { color: Colors.red, fontSize: 15, fontFamily: 'Inter_700Bold', fontWeight: '700' },
 });
 
 // ── Form Field ────────────────────────────────────────────────────────────────
@@ -368,9 +368,9 @@ const ub = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  icon:  { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 20, marginBottom: 4 },
-  label: { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12.5, color: Colors.sub, textAlign: 'center' },
-  tap:   { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600', color: Colors.ink, marginTop: 4 },
+  icon:  { fontFamily: 'Inter_400Regular', fontSize: 20, marginBottom: 4 },
+  label: { fontFamily: 'Inter_400Regular', fontSize: 12.5, color: Colors.sub, textAlign: 'center' },
+  tap:   { fontSize: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600', color: Colors.ink, marginTop: 4 },
 });
 
 // ── Logo Dot ──────────────────────────────────────────────────────────────────
@@ -382,14 +382,14 @@ export function LogoDot({
   const fs = size * 0.4;
   return (
     <View style={[ld.wrap, { width: size, height: size, borderRadius: size * 0.28, backgroundColor: bgColor }]}>
-      <Text style={[ld.text, { fontFamily: 'PlusJakartaSans_400Regular', fontSize: fs }]}>{letter}</Text>
+      <Text style={[ld.text, { fontFamily: 'Inter_400Regular', fontSize: fs }]}>{letter}</Text>
     </View>
   );
 }
 
 const ld = StyleSheet.create({
   wrap: { alignItems: 'center', justifyContent: 'center' },
-  text: { color: '#fff', fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' },
+  text: { color: '#fff', fontFamily: 'Inter_700Bold', fontWeight: '700' },
 });
 
 // ── Shelf Tag (Beauty Product Location Tag) ──────────────────────────────────
@@ -404,9 +404,9 @@ export function ShelfTag({ tag }: { tag?: string }) {
 
 const st = StyleSheet.create({
   wrap: {
-    backgroundColor: '#EFF6FF',
+    backgroundColor: '#EEF4FF',
     borderWidth: 1,
-    borderColor: '#BFDBFE',
+    borderColor: '#C7DAFE',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
@@ -416,7 +416,7 @@ const st = StyleSheet.create({
     
     fontFamily: 'JetBrainsMono_500Medium',
     fontWeight: '600',
-    color: '#1D4ED8',
+    color: '#0057FB',
   },
 });
 
@@ -429,7 +429,7 @@ export function CountdownBar({ progress, isUrgent }: { progress: number; isUrgen
           cb.fill,
           {
             width: `${Math.max(0, Math.min(100, progress * 100))}%`,
-            backgroundColor: isUrgent ? '#D97706' : '#1D4ED8',
+            backgroundColor: isUrgent ? '#B45309' : '#0057FB',
           },
         ]}
       />

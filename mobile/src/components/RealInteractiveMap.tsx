@@ -130,7 +130,7 @@ export default function RealInteractiveMap({
 
   <div class="info-bar">
     <span id="locStatus">📍 <span class="hint">Click or Drag pin</span> to your shop entrance</span>
-    <span id="coordsDisplay" style="color:#94a3b8; font-family:monospace; font-size:11px;">${latitude.toFixed(4)}, ${longitude.toFixed(4)}</span>
+    <span id="coordsDisplay" style="color:#64748B; font-family:monospace; font-size:11px;">${latitude.toFixed(4)}, ${longitude.toFixed(4)}</span>
   </div>
 
   <script>
@@ -310,7 +310,7 @@ const styles = StyleSheet.create({
   fallbackText: {
     fontSize: 13,
     color: Colors.ink,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 });

@@ -842,13 +842,13 @@ const s = StyleSheet.create({
     justifyContent: 'center',
   },
   railBrandLogoIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 20,
   },
   railBrandSub: {
     fontSize: 12,
     color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
   railNavGroup: {
@@ -868,13 +868,13 @@ const s = StyleSheet.create({
   },
   railNavLabel: {
     fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textSecondary,
   },
   railNavLabelActive: {
     color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
   },
   railFooter: {
@@ -893,7 +893,7 @@ const s = StyleSheet.create({
   railHelpText: {
     fontSize: 12,
     color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 
@@ -945,17 +945,17 @@ const s = StyleSheet.create({
   },
   breadcrumbLink: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.primary,
   },
   breadcrumbSep: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textMuted,
   },
   breadcrumbCurrent: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textSecondary,
   },
@@ -967,7 +967,7 @@ const s = StyleSheet.create({
   },
   pageTitle: {
     fontSize: 22,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary,
   },
@@ -981,7 +981,7 @@ const s = StyleSheet.create({
   },
   verifiedPillText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.success,
   },
@@ -1009,7 +1009,7 @@ const s = StyleSheet.create({
   },
   simTitle: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textMuted,
     letterSpacing: 0.5,
@@ -1024,7 +1024,7 @@ const s = StyleSheet.create({
   },
   sampleChipText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.warning,
   },
@@ -1046,13 +1046,13 @@ const s = StyleSheet.create({
   },
   simChipText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textSecondary,
   },
   simChipTextActive: {
     color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
   },
 
@@ -1068,7 +1068,7 @@ const s = StyleSheet.create({
   errorBannerText: {
     flex: 1,
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.danger,
   },
@@ -1079,7 +1079,7 @@ const s = StyleSheet.create({
   },
   errorBannerLink: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.danger,
     textDecorationLine: 'underline',
@@ -1113,7 +1113,7 @@ const s = StyleSheet.create({
     paddingVertical: Spacing.xxl,
   },
   loadingText: {
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     fontSize: 12,
     color: Colors.textSecondary,
@@ -1149,25 +1149,25 @@ const s = StyleSheet.create({
   },
   scoreValText: {
     fontSize: 42,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary,
   },
   scoreEmptyText: {
     fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary,
     marginBottom: 4,
   },
   starsRow: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 16,
     color: Colors.primary,
     marginVertical: 2,
   },
   countSubText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textMuted,
     textAlign: 'center',
@@ -1180,7 +1180,7 @@ const s = StyleSheet.create({
   },
   breakdownHeaderTitle: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textMuted,
     letterSpacing: 0.5,
@@ -1193,7 +1193,7 @@ const s = StyleSheet.create({
   },
   barLabel: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textSecondary,
     width: 110,
@@ -1212,13 +1212,13 @@ const s = StyleSheet.create({
   },
   barScore: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textPrimary,
     width: 28,
   },
   barCount: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textMuted,
     width: 80,
@@ -1241,13 +1241,13 @@ const s = StyleSheet.create({
   },
   trendTitle: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textMuted,
     letterSpacing: 0.5,
   },
   trendEmptyText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textSecondary,
   },
@@ -1262,7 +1262,7 @@ const s = StyleSheet.create({
   },
   viewTableToggleBtnText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.primary,
   },
@@ -1284,7 +1284,7 @@ const s = StyleSheet.create({
   },
   chartValText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textPrimary,
     marginBottom: 6,
@@ -1304,7 +1304,7 @@ const s = StyleSheet.create({
   },
   chartLabelText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textSecondary,
     marginTop: 6,
@@ -1312,7 +1312,7 @@ const s = StyleSheet.create({
   },
   chartTrendText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.success,
   },
@@ -1335,7 +1335,7 @@ const s = StyleSheet.create({
   tableHeaderCell: {
     flex: 1,
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textMuted,
   },
@@ -1348,21 +1348,21 @@ const s = StyleSheet.create({
   },
   tableCell: {
     flex: 1,
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textSecondary,
   },
   tableCellBold: {
     flex: 1,
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textPrimary,
   },
   tableCellTrend: {
     flex: 1,
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.success,
   },
@@ -1389,13 +1389,13 @@ const s = StyleSheet.create({
   },
   filterPillText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textSecondary,
   },
   filterPillTextActive: {
     color: Colors.background,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
   },
 
@@ -1429,14 +1429,14 @@ const s = StyleSheet.create({
   },
   customerNameText: {
     fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary,
   },
   orderIdTag: {
     fontSize: 12,
     color: Colors.textMuted,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
   verifiedMarkerChip: {
@@ -1449,14 +1449,14 @@ const s = StyleSheet.create({
   },
   verifiedMarkerChipText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.success,
   },
   orderedItemText: {
     fontSize: 12,
     color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     marginTop: 2,
   },
@@ -1464,18 +1464,18 @@ const s = StyleSheet.create({
     alignItems: 'flex-end',
   },
   starsText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 16,
     color: Colors.primary,
   },
   dateText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textMuted,
     marginTop: 2,
   },
   reviewQuoteText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 14,
     fontStyle: 'italic',
     color: Colors.textPrimary,
@@ -1495,7 +1495,7 @@ const s = StyleSheet.create({
   categoryTagText: {
     fontSize: 12,
     color: Colors.textSecondary,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 
@@ -1517,7 +1517,7 @@ const s = StyleSheet.create({
   },
   replyTitleText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.primary,
   },
@@ -1528,19 +1528,19 @@ const s = StyleSheet.create({
   },
   moderationStatusText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.success,
   },
   replyBodyText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textPrimary,
     lineHeight: 17,
   },
   moderationReasonText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.danger,
     marginTop: 4,
@@ -1557,14 +1557,14 @@ const s = StyleSheet.create({
     borderTopColor: Colors.border,
   },
   replyPolicyHintText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textSubtle,
     flexShrink: 1,
   },
   draftSavedHintText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.primary,
     flexShrink: 1,
@@ -1581,7 +1581,7 @@ const s = StyleSheet.create({
   replyActionBtnText: {
     color: Colors.background,
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 
@@ -1594,14 +1594,14 @@ const s = StyleSheet.create({
   },
   emptyTitle: {
     fontSize: 17,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary,
     marginTop: Spacing.xs,
     textAlign: 'center',
   },
   emptySub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     lineHeight: 17,
     color: Colors.textSecondary,
@@ -1618,7 +1618,7 @@ const s = StyleSheet.create({
   emptyActionBtnText: {
     color: Colors.background,
     fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 
@@ -1637,7 +1637,7 @@ const s = StyleSheet.create({
   toastText: {
     color: Colors.background,
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 
@@ -1665,12 +1665,12 @@ const s = StyleSheet.create({
   },
   modalTitleText: {
     fontSize: 17,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: Colors.textPrimary,
   },
   modalSubText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textSecondary,
     marginTop: 2,
@@ -1701,19 +1701,19 @@ const s = StyleSheet.create({
     marginBottom: 4,
   },
   quoteStarsText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 14,
     color: Colors.primary,
   },
   quoteTagText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textMuted,
     textTransform: 'uppercase',
   },
   quoteBodyText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 13,
     fontStyle: 'italic',
     color: Colors.textPrimary,
@@ -1724,7 +1724,7 @@ const s = StyleSheet.create({
   },
   fieldLabel: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textPrimary,
     marginBottom: 6,
@@ -1736,7 +1736,7 @@ const s = StyleSheet.create({
     borderColor: Colors.border,
     borderRadius: BorderRadii.input,
     padding: Spacing.md,
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 13,
     color: Colors.textPrimary,
     textAlignVertical: 'top',
@@ -1746,13 +1746,13 @@ const s = StyleSheet.create({
     marginTop: 4,
   },
   charCountText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: Colors.textMuted,
   },
   errorText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.danger,
     marginTop: 6,
@@ -1770,7 +1770,7 @@ const s = StyleSheet.create({
     fontSize: 12,
     color: Colors.primary,
     lineHeight: 16,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 
@@ -1793,7 +1793,7 @@ const s = StyleSheet.create({
   },
   saveDraftBtnText: {
     fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.textSecondary,
   },
@@ -1807,7 +1807,7 @@ const s = StyleSheet.create({
   },
   postReplyPrimaryBtnText: {
     fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.background,
   },

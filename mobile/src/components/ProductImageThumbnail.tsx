@@ -36,7 +36,7 @@ export default function ProductImageThumbnail({
   if (!hasValidUri || error) {
     return (
       <View style={[styles.fallbackContainer, { width: size, height: size, borderRadius: size > 40 ? 10 : 8 }]}>
-        <Text style={[styles.fallbackEmoji, { fontFamily: 'PlusJakartaSans_400Regular', fontSize: size * 0.45 }]}>{getCategoryEmoji(category)}</Text>
+        <Text style={[styles.fallbackEmoji, { fontFamily: 'Inter_400Regular', fontSize: size * 0.45 }]}>{getCategoryEmoji(category)}</Text>
       </View>
     );
   }
@@ -76,15 +76,15 @@ const styles = StyleSheet.create({
   },
   loadingOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: '#F4F6FA',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 1,
   },
   fallbackContainer: {
-    backgroundColor: '#EFF6FF',
+    backgroundColor: '#EEF4FF',
     borderWidth: 1,
-    borderColor: '#BFDBFE',
+    borderColor: '#C7DAFE',
     justifyContent: 'center',
     alignItems: 'center',
   },

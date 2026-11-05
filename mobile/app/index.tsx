@@ -279,7 +279,7 @@ const s = StyleSheet.create({
   resolutionTagText: {
     color: '#38BDF8',
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     letterSpacing: 0.5,
   },
@@ -316,11 +316,11 @@ const s = StyleSheet.create({
     width: 76,
     height: 76,
     borderRadius: 22,
-    backgroundColor: '#1D4ED8', // Royal Blue
+    backgroundColor: '#0057FB', // Royal Blue
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 20,
-    shadowColor: '#1D4ED8',
+    shadowColor: '#0057FB',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.25,
     shadowRadius: 18,
@@ -329,7 +329,7 @@ const s = StyleSheet.create({
   logoLetter: {
     color: '#FFFFFF',
     fontSize: 38,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     
   },
@@ -337,7 +337,7 @@ const s = StyleSheet.create({
   /* Typography */
   title: {
     fontSize: 28,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: '#0F172A', // Ink Navy
     letterSpacing: -0.6,
@@ -345,7 +345,7 @@ const s = StyleSheet.create({
   },
   subtitle: {
     fontSize: 14.5,
-    fontFamily: 'PlusJakartaSans_500Medium',
+    fontFamily: 'Inter_500Medium',
     fontWeight: '500',
     color: '#64748B', // Secondary Slate
     marginTop: 6,
@@ -373,7 +373,7 @@ const s = StyleSheet.create({
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#1D4ED8', // Royal Blue gradient fill
+    backgroundColor: '#0057FB', // Royal Blue gradient fill
     borderRadius: 3,
   },
   statusMetaRow: {
@@ -385,16 +385,16 @@ const s = StyleSheet.create({
   },
   discreetStatusText: {
     fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#475569',
     letterSpacing: 0.1,
   },
   percentText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
-    color: '#1D4ED8',
+    color: '#0057FB',
   },
 
   /* Error State fallback */
@@ -405,18 +405,18 @@ const s = StyleSheet.create({
   },
   errorTitle: {
     fontSize: 14,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: '#DC2626',
   },
   maintenanceTitle: {
     fontSize: 14,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
-    color: '#D97706',
+    color: '#B45309',
   },
   errorSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12.5,
     color: '#64748B',
     textAlign: 'center',
@@ -427,7 +427,7 @@ const s = StyleSheet.create({
     marginTop: 6,
   },
   primaryRetryBtn: {
-    backgroundColor: '#1D4ED8',
+    backgroundColor: '#0057FB',
     paddingHorizontal: 18,
     paddingVertical: 9,
     borderRadius: 10,
@@ -435,7 +435,7 @@ const s = StyleSheet.create({
   primaryRetryText: {
     color: '#FFFFFF',
     fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
   secondaryRetryBtn: {
@@ -449,7 +449,7 @@ const s = StyleSheet.create({
   secondaryRetryText: {
     color: '#475569',
     fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
 
@@ -476,7 +476,7 @@ const s = StyleSheet.create({
     elevation: 1,
   },
   lockIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
   },
   securityDot: {
@@ -487,7 +487,7 @@ const s = StyleSheet.create({
   },
   footerText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#475569',
   },

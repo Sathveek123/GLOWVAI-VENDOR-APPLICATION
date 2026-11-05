@@ -1,7 +1,7 @@
 /**
  * GlowVAI Vendor App — Universal Animated Loader (popular-owl-27 style)
  * ═══════════════════════════════════════════════════════════════════════════
- * High-performance, cross-platform animated liquid-dot loader with #1D4ED8 glow
+ * High-performance, cross-platform animated liquid-dot loader with #0057FB glow
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -16,7 +16,7 @@ interface OwlLoaderProps {
 
 export const OwlLoader: React.FC<OwlLoaderProps> = ({
   label = 'Loading live data...',
-  color = '#1D4ED8',
+  color = '#0057FB',
   size = 'medium',
 }) => {
   const dot1 = useRef(new Animated.Value(0)).current;
@@ -153,7 +153,7 @@ const styles = StyleSheet.create({
     height: 36,
   },
   dot: {
-    shadowColor: '#1D4ED8',
+    shadowColor: '#0057FB',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.35,
     shadowRadius: 4,
@@ -161,7 +161,7 @@ const styles = StyleSheet.create({
   },
   label: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     marginTop: 6,
     letterSpacing: 0.3,

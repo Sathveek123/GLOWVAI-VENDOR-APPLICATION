@@ -21,7 +21,7 @@ import Feather from '@expo/vector-icons/Feather';
 import { soundService } from '../src/services/sound';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const BRAND_COLOR = '#1D4ED8';
+const BRAND_COLOR = '#0057FB';
 const GREEN_COLOR = '#16A34A';
 const RED_COLOR   = '#DC2626';
 
@@ -387,7 +387,7 @@ function AdminConsole() {
                       <Text style={s.ticketStorePillText}>{t.storeCode}</Text>
                     </View>
                   </View>
-                  <Text style={[s.ticketPriorityText, { color: t.priority === 'CRITICAL' ? RED_COLOR : '#d97706' }]}>
+                  <Text style={[s.ticketPriorityText, { color: t.priority === 'CRITICAL' ? RED_COLOR : '#B45309' }]}>
                     {t.priority}
                   </Text>
                 </View>
@@ -452,7 +452,7 @@ function AdminConsole() {
 const s = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#F4F6FA',
   },
   headerBar: {
     flexDirection: 'row',
@@ -473,12 +473,12 @@ const s = StyleSheet.create({
   },
   headerTitle: {
     fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: '#0f172a',
   },
   headerSubTitle: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: '#64748b',
     marginTop: 1,
@@ -487,7 +487,7 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#EFF6FF',
+    backgroundColor: '#EEF4FF',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
@@ -500,7 +500,7 @@ const s = StyleSheet.create({
   },
   livePulseText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: BRAND_COLOR,
   },
@@ -527,22 +527,22 @@ const s = StyleSheet.create({
   },
   metricLabel: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#64748b',
     letterSpacing: 0.4,
   },
   metricValue: {
     fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: '#0f172a',
     marginTop: 3,
   },
   metricSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
-    color: '#94a3b8',
+    color: '#64748B',
     marginTop: 2,
   },
 
@@ -571,7 +571,7 @@ const s = StyleSheet.create({
   },
   tabBtnText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#64748b',
   },
@@ -585,7 +585,7 @@ const s = StyleSheet.create({
   },
   sectionHeading: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#64748b',
     letterSpacing: 0.6,
@@ -608,23 +608,23 @@ const s = StyleSheet.create({
   },
   hubCodeBadge: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: BRAND_COLOR,
-    backgroundColor: '#EFF6FF',
+    backgroundColor: '#EEF4FF',
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
   },
   hubName: {
     fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#0f172a',
     flex: 1,
   },
   hubLocality: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: '#64748b',
     marginTop: 2,
@@ -650,12 +650,12 @@ const s = StyleSheet.create({
   },
   hubStatusText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
   hubStatsStrip: {
     flexDirection: 'row',
-    backgroundColor: '#f8fafc',
+    backgroundColor: '#F4F6FA',
     borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 10,
@@ -673,12 +673,12 @@ const s = StyleSheet.create({
   hubStatLabel: {
     fontSize: 12,
     color: '#64748b',
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
   hubStatValue: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#0f172a',
     marginTop: 1,
@@ -690,7 +690,7 @@ const s = StyleSheet.create({
     paddingTop: 4,
   },
   hubManagerText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: '#64748b',
   },
@@ -700,7 +700,7 @@ const s = StyleSheet.create({
   },
   hubActionBtnText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: BRAND_COLOR,
   },
@@ -716,19 +716,19 @@ const s = StyleSheet.create({
   },
   batchIdText: {
     fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#0f172a',
   },
   batchStoreText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: '#64748b',
     marginTop: 1,
   },
   batchAmountText: {
     fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: BRAND_COLOR,
   },
@@ -742,7 +742,7 @@ const s = StyleSheet.create({
     borderTopColor: '#f1f5f9',
   },
   batchDetailSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: '#64748b',
   },
@@ -757,7 +757,7 @@ const s = StyleSheet.create({
   },
   approveBtnText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#ffffff',
   },
@@ -769,7 +769,7 @@ const s = StyleSheet.create({
   },
   settledTagText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: GREEN_COLOR,
   },
@@ -791,7 +791,7 @@ const s = StyleSheet.create({
   },
   ticketIdText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#0f172a',
   },
@@ -803,18 +803,18 @@ const s = StyleSheet.create({
   },
   ticketStorePillText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#475569',
   },
   ticketPriorityText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
   },
   ticketTitleText: {
     fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#0f172a',
     lineHeight: 17,
@@ -826,7 +826,7 @@ const s = StyleSheet.create({
     marginTop: 10,
   },
   ticketTimeText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: '#64748b',
   },
@@ -838,13 +838,13 @@ const s = StyleSheet.create({
   },
   resolveBtnText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#ffffff',
   },
   resolvedText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: GREEN_COLOR,
   },
@@ -871,12 +871,12 @@ const s = StyleSheet.create({
   },
   complianceTitle: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#0f172a',
   },
   complianceDesc: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 12,
     color: '#64748b',
     marginTop: 2,
@@ -889,7 +889,7 @@ const s = StyleSheet.create({
   },
   compliancePillText: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: GREEN_COLOR,
   },

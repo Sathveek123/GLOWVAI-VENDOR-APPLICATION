@@ -18,7 +18,7 @@ export const Colors = {
   greenBg:    '#F0FDF4',
   red:        '#DC2626', // Offline duty red
   redBg:      '#FEF2F2',
-  amber:      '#b5820a',
+  amber:      '#B45309',
   amberBg:    '#fbeecb',
 
   danger:       '#DC2626',
@@ -26,14 +26,14 @@ export const Colors = {
   dangerBorder: '#FCA5A5',
   successTint:  '#DCFCE7',
 
-  // Vibrant Brand Royal Blue Palette (#1D4ED8)
-  primary:      '#1D4ED8',
-  primaryDark:  '#1E40AF',
-  primaryLight: '#EFF6FF',
-  primaryBorder:'#BFDBFE',
+  // Vibrant Brand Royal Blue Palette (#0057FB)
+  primary:      '#0057FB',
+  primaryDark:  '#0046CC',
+  primaryLight: '#EEF4FF',
+  primaryBorder:'#C7DAFE',
 
   // Brand Primary
-  brand:        '#1D4ED8',
+  brand:        '#0057FB',
   brandText:    '#ffffff',
 
   // Dark Carbon
@@ -46,34 +46,34 @@ export const Colors = {
 } as const;
 
 export const Typography = {
-  h1:        { fontSize: 20, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const, letterSpacing: -0.5 },
-  h2:        { fontSize: 17, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const, letterSpacing: -0.2 },
-  h3:        { fontSize: 15, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' as const },
-  section:   { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' as const, textTransform: 'uppercase' as const, letterSpacing: 0.8, color: Colors.sub },
-  body:      { fontSize: 14, fontFamily: 'PlusJakartaSans_400Regular', fontWeight: '400' as const },
-  bodyBold:  { fontSize: 14, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' as const },
-  small:     { fontSize: 12.5, fontFamily: 'PlusJakartaSans_400Regular', fontWeight: '400' as const, color: Colors.sub },
-  label:     { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' as const, color: Colors.sub },
-  big:       { fontSize: 34, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const, letterSpacing: -0.8 },
-  stat:      { fontSize: 20, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const },
-  timer:     { fontSize: 28, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const },
+  h1:        { fontSize: 20, fontFamily: 'Inter_700Bold', fontWeight: '700' as const, letterSpacing: -0.5 },
+  h2:        { fontSize: 17, fontFamily: 'Inter_700Bold', fontWeight: '700' as const, letterSpacing: -0.2 },
+  h3:        { fontSize: 15, fontFamily: 'Inter_600SemiBold', fontWeight: '600' as const },
+  section:   { fontSize: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600' as const, textTransform: 'uppercase' as const, letterSpacing: 0.8, color: Colors.sub },
+  body:      { fontSize: 14, fontFamily: 'Inter_400Regular', fontWeight: '400' as const },
+  bodyBold:  { fontSize: 14, fontFamily: 'Inter_600SemiBold', fontWeight: '600' as const },
+  small:     { fontSize: 12.5, fontFamily: 'Inter_400Regular', fontWeight: '400' as const, color: Colors.sub },
+  label:     { fontSize: 12, fontFamily: 'Inter_600SemiBold', fontWeight: '600' as const, color: Colors.sub },
+  big:       { fontSize: 34, fontFamily: 'Inter_700Bold', fontWeight: '700' as const, letterSpacing: -0.8 },
+  stat:      { fontSize: 20, fontFamily: 'Inter_700Bold', fontWeight: '700' as const },
+  timer:     { fontSize: 28, fontFamily: 'Inter_700Bold', fontWeight: '700' as const },
 
   // Syne Semi-Bold & Bold Brand Wordmarks
   syneSemiBold: {
     
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600' as const,
     letterSpacing: -0.3,
   },
   syneBold: {
     
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700' as const,
     letterSpacing: -0.5,
   },
   syneExtraBold: {
     
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700' as const,
     letterSpacing: -0.8,
   },

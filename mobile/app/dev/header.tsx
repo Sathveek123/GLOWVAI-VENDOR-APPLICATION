@@ -158,13 +158,13 @@ const styles = StyleSheet.create({
   },
   backBtnText: {
     fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.primary,
   },
   controlTitle: {
     fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
+    fontFamily: 'Inter_700Bold',
     fontWeight: '700',
     color: '#0F172A',
   },
@@ -180,7 +180,7 @@ const styles = StyleSheet.create({
   },
   toggleLabel: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: '#475569',
   },
@@ -227,7 +227,7 @@ const styles = StyleSheet.create({
   },
   variantLabel: {
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
+    fontFamily: 'Inter_600SemiBold',
     fontWeight: '600',
     color: Colors.primary,
     letterSpacing: 0.5,
@@ -254,7 +254,7 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   shellDemoText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
+    fontFamily: 'Inter_400Regular',
     fontSize: 13,
     color: '#475569',
     lineHeight: 20,

@@ -1,5 +1,5 @@
 /**
- * GlowVAI wordmark. "Glow" in Fraunces italic, "VAI" in tracked Plus Jakarta Sans.
+ * GlowVai wordmark in Inter, the same type as the shop and admin panel.
  * Use this instead of typing the brand name as plain text.
  */
 import React from 'react';

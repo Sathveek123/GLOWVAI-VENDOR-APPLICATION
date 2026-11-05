@@ -131,28 +131,11 @@ export const ordersApi = {
       body:   JSON.stringify({ vendorId, pickupBay }),
     }),
 
-  handover: (orderId: string, rider?: { riderId?: string; riderName?: string; riderPhone?: string }) =>
-    apiFetch(`/api/orders/${orderId}/handover`, {
-      method: 'PATCH',
-      body:   JSON.stringify(rider || {}),
-    }),
-
+  // Vendors never hand over, dispatch or deliver: pickup is verified by the delivery workflow (PRD 3.4, 5 screen 13).
   pack: (orderId: string, vendorId: string, pickupBay?: string) =>
     apiFetch(`/api/orders/${orderId}/pack`, {
       method: 'PATCH',
       body:   JSON.stringify({ vendorId, pickupBay }),
-    }),
-
-  dispatch: (orderId: string, rider: { riderId?: string; riderName?: string; riderPhone?: string; otp?: string }) =>
-    apiFetch(`/api/orders/${orderId}/dispatch`, {
-      method: 'PATCH',
-      body:   JSON.stringify(rider),
-    }),
-
-  deliver: (orderId: string, otp: string) =>
-    apiFetch(`/api/orders/${orderId}/deliver`, {
-      method: 'PATCH',
-      body:   JSON.stringify({ otp }),
     }),
 
   cancel: (orderId: string, reason: string) =>
@@ -261,15 +244,6 @@ export const analyticsApi = {
   getDashboard: (storeId: string) => apiFetch(`/api/analytics/${storeId}`),
 };
 
-// ── Test / Simulation ─────────────────────────────────────────────────────────
-export const testApi = {
-  simulateOrder: (storeId?: string, vendorId?: string) =>
-    apiFetch('/api/test/simulate-order', {
-      method: 'POST',
-      body:   JSON.stringify({ storeId, vendorId }),
-    }),
-};
-
 export const healthApi = {
   check: () => apiFetch('/health'),
 };
@@ -284,6 +258,5 @@ export default {
   earningsApi,
   notificationsApi,
   analyticsApi,
-  testApi,
   healthApi,
 };

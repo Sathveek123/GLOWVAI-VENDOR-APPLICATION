@@ -1,154 +1,86 @@
 /**
- * Account and store profile. Everything shown comes from the signed-in account (GET /api/vendor/me).
- * Fields the account does not have yet read "Not added yet" instead of placeholder details.
+ * Profile (PRD screen 25): store information, documents and verification status, hours,
+ * store location and service area, people with access, payouts, and sign-in & security.
+ * The former Team, Locations and Security screens are folded in here.
+ *
+ * Data: GET /api/vendor/me. Edits: PATCH /api/vendor/:id, limited to contact email and
+ * opening hours. Name and address changes need verification, so they go through support.
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  Pressable,
-  ActivityIndicator,
-  StyleSheet,
-} from 'react-native';
+import { StyleSheet, Text, TextInput, View } from 'react-native';
+import MobileBottomNav from '../../src/components/MobileBottomNav';
 import ScreenShell from '../../src/components/ScreenShell';
+import { friendlyError, maskTail } from '../../src/features/money/format';
+import { readBankAccount, type BankAccount } from '../../src/features/money/records';
+import { Button, Card, ErrorCard, InfoRow, LinkRow, LoadingCard, Note, Pill, SectionLabel, page } from '../../src/features/money/ui';
+import { toAccount, type Account } from '../../src/features/profile/account';
+import { SupportContactActions } from '../../src/features/support/contact';
 import { vendorApi } from '../../src/services/api';
 import { clearSession, getSession } from '../../src/services/session';
-import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
-import { TypeScale } from '../../src/theme/typography';
+import { Colors, Spacing } from '../../src/theme/tokens';
+import { FontFamily, TypeScale } from '../../src/theme/typography';
 
-type LoadState = 'loading' | 'ready' | 'error';
+type Load = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; account: Account; bank: BankAccount | null };
 
-/** The fields the backend accepts on PATCH /api/vendor/:vendorId, as the form edits them. */
-interface Draft {
-  name: string;
-  shopName: string;
-  email: string;
-  address: string;
-  locality: string;
-  city: string;
-  pinCode: string;
-  openTime: string;
-  closeTime: string;
-}
-
-interface Account extends Partial<Draft> {
-  vendorId?: string;
-  storeId?: string;
-  phone?: string;
-  kycStatus?: 'PENDING' | 'APPROVED' | 'REJECTED' | string;
-  verificationStatus?: string;
-  kycRejectionReason?: string | null;
-  bankName?: string;
-  accountNumber?: string;
-  isOnline?: boolean;
-}
-
-function toDraft(a: Account): Draft {
-  return {
-    name: a.name || '',
-    shopName: a.shopName || '',
-    email: a.email || '',
-    address: a.address || '',
-    locality: a.locality || '',
-    city: a.city || '',
-    pinCode: a.pinCode || '',
-    openTime: a.openTime || '',
-    closeTime: a.closeTime || '',
-  };
-}
-
-/** Shows only the last four digits of a phone number or account number. */
-function maskDigits(value?: string | null, prefix = '••••••'): string | null {
-  const digits = (value || '').replace(/\D/g, '');
-  if (digits.length < 4) return null;
-  return `${prefix}${digits.slice(-4)}`;
-}
-
-const NOT_ADDED = 'Not added yet';
+const NOT_ADDED = 'Not added';
+const TIME_RE = /^([01]?\d|2[0-3])(:[0-5]\d)?\s?(am|pm)?$/i;
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const [state, setState] = useState<LoadState>('loading');
-  const [account, setAccount] = useState<Account | null>(null);
+  const [load, setLoad] = useState<Load>({ state: 'loading' });
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const [draft, setDraft] = useState({ email: '', openTime: '', closeTime: '' });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [confirmingSignOut, setConfirmingSignOut] = useState(false);
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
-  const load = useCallback(async () => {
-    setState('loading');
+  const fetchData = useCallback(async () => {
+    setLoad({ state: 'loading' });
     try {
       const res = await vendorApi.me();
-      setAccount(res?.vendor || {});
-      setState('ready');
-    } catch (_) {
-      setState('error');
+      setLoad({ state: 'ready', account: toAccount(res?.vendor ?? {}), bank: readBankAccount(res?.vendor) });
+    } catch (err) {
+      setLoad({ state: 'error', message: friendlyError(err) });
     }
   }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    fetchData();
+  }, [fetchData]);
 
-  const startEditing = () => {
-    if (!account) return;
-    setDraft(toDraft(account));
+  const startEditing = (a: Account) => {
+    setDraft({ email: a.email || '', openTime: a.openTime || '', closeTime: a.closeTime || '' });
     setSaveError(null);
     setEditing(true);
   };
 
-  const cancelEditing = () => {
-    setEditing(false);
-    setDraft(null);
-    setSaveError(null);
-  };
-
-  const update = (key: keyof Draft, value: string) => {
-    setDraft(prev => (prev ? { ...prev, [key]: value } : prev));
-  };
-
   const save = async () => {
-    if (!draft || !account) return;
-    const name = draft.name.trim();
-    const shopName = draft.shopName.trim();
+    if (load.state !== 'ready') return;
     const email = draft.email.trim();
-    if (!name || !shopName) {
-      setSaveError('Owner name and store name are required.');
+    const openTime = draft.openTime.trim();
+    const closeTime = draft.closeTime.trim();
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+      setSaveError('Enter a valid email address, or leave it empty.');
       return;
     }
-    if (email && !/^\S+@\S+\.\S+$/.test(email)) {
-      setSaveError('Enter a valid email address.');
+    if ((openTime && !TIME_RE.test(openTime)) || (closeTime && !TIME_RE.test(closeTime))) {
+      setSaveError('Enter times like 9:00 AM or 21:30.');
       return;
     }
     setSaving(true);
     setSaveError(null);
     try {
-      const session = await getSession();
-      const vendorId = account.vendorId || session.vendorId;
-      if (!vendorId) throw new Error('No vendor id');
-      const payload: Draft = {
-        ...draft,
-        name,
-        shopName,
-        email,
-        address: draft.address.trim(),
-        locality: draft.locality.trim(),
-        city: draft.city.trim(),
-        pinCode: draft.pinCode.trim(),
-        openTime: draft.openTime.trim(),
-        closeTime: draft.closeTime.trim(),
-      };
-      const res = await vendorApi.updateProfile(vendorId, payload);
-      setAccount({ ...account, ...(res?.vendor || payload) });
+      const vendorId = load.account.vendorId || (await getSession()).vendorId;
+      if (!vendorId) throw new Error('missing vendor');
+      const res = await vendorApi.updateProfile(vendorId, { email, openTime, closeTime });
+      const next = res?.vendor ? toAccount(res.vendor) : { ...load.account, email, openTime, closeTime };
+      setLoad({ ...load, account: next });
       setEditing(false);
-      setDraft(null);
-    } catch (_) {
-      setSaveError('Your changes were not saved. Check your connection and try again.');
+    } catch (err) {
+      setSaveError(`Your changes were not saved. ${friendlyError(err)}`);
     } finally {
       setSaving(false);
     }
@@ -160,414 +92,239 @@ export default function ProfileScreen() {
     router.replace('/(auth)/login');
   };
 
-  const shown = (value?: string | null) => (value && value.trim() ? value : NOT_ADDED);
-  const kyc = account?.kycStatus || account?.verificationStatus;
-  const kycTone = KYC_TONE[kyc as keyof typeof KYC_TONE] || KYC_TONE.NONE;
-  const initial = (account?.shopName || account?.name || '?').trim().charAt(0).toUpperCase();
+  const a = load.state === 'ready' ? load.account : null;
+  const bank = load.state === 'ready' ? load.bank : null;
+  const v = a?.verification;
+  const phone = maskTail(a?.phone);
+  const addressText = a ? [a.address, a.locality, a.city, a.pinCode].filter(Boolean).join(', ') : '';
+  const initial = (a?.storeName || a?.ownerName || 'G').trim().charAt(0).toUpperCase();
 
   return (
-    <ScreenShell
-      header={{ title: 'Account', showBack: true }}
-      backgroundColor={Colors.surface}
-      contentContainerStyle={s.content}
-      keyboardAvoiding={editing}
-    >
-      {state === 'error' ? (
-        <View style={s.errorBox} accessibilityRole="alert">
-          <Ionicons name="alert-circle-outline" size={20} color={Colors.danger} />
-          <View style={{ flex: 1 }}>
-            <Text style={s.errorTitle}>We could not load your account</Text>
-            <Text style={s.errorBody}>Check your connection and try again.</Text>
-          </View>
-          <Pressable onPress={load} accessibilityRole="button" style={({ pressed }) => [s.retryBtn, pressed && { opacity: 0.7 }]}>
-            <Text style={s.retryText}>Retry</Text>
-          </Pressable>
-        </View>
-      ) : null}
+    <View style={s.screen}>
+      <ScreenShell header={{ title: 'Profile' }} backgroundColor={Colors.surface} contentContainerStyle={s.content} keyboardAvoiding={editing}>
+        <View style={page.body}>
+          {load.state === 'loading' ? <LoadingCard label="Loading your profile" /> : null}
+          {load.state === 'error' ? <ErrorCard title="Could not load your profile" message={load.message} onRetry={fetchData} /> : null}
 
-      {state === 'loading' ? (
-        <View style={s.loadingBox}>
-          <ActivityIndicator color={Colors.primary} />
-          <Text style={s.loadingText}>Loading your account</Text>
-        </View>
-      ) : (
-        <>
-          {/* Identity */}
-          <View style={s.identity}>
-            <View style={s.avatar}>
-              <Text style={s.avatarText}>{initial}</Text>
-            </View>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={s.storeName} numberOfLines={2}>{shown(account?.shopName)}</Text>
-              <Text style={s.ownerName} numberOfLines={1}>{shown(account?.name)}</Text>
-              <View style={[s.pill, { backgroundColor: kycTone.bg, borderColor: kycTone.border }]}>
-                <Text style={[s.pillText, { color: kycTone.text }]}>{kycTone.label}</Text>
-              </View>
-            </View>
-          </View>
+          {a && v ? (
+            <>
+              {/* Identity */}
+              <Card style={s.identity}>
+                <View style={s.avatar}>
+                  <Text style={s.avatarText}>{initial}</Text>
+                </View>
+                <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                  <Text style={s.storeName} numberOfLines={2}>
+                    {a.storeName || 'Store name not added'}
+                  </Text>
+                  {a.ownerName ? <Text style={s.owner}>{a.ownerName}</Text> : null}
+                  <Pill label={v.label} tone={v.tone} />
+                </View>
+              </Card>
 
-          {editing && draft ? (
-            <View style={s.card}>
-              <Text style={s.cardTitle}>Edit details</Text>
-              <Field label="Owner name" value={draft.name} onChangeText={v => update('name', v)} autoCapitalize="words" />
-              <Field label="Store name" value={draft.shopName} onChangeText={v => update('shopName', v)} autoCapitalize="words" />
-              <Field label="Email" value={draft.email} onChangeText={v => update('email', v)} keyboardType="email-address" autoCapitalize="none" />
-              <Field label="Address" value={draft.address} onChangeText={v => update('address', v)} autoCapitalize="sentences" />
-              <View style={s.twoCol}>
-                <View style={{ flex: 1 }}>
-                  <Field label="Locality" value={draft.locality} onChangeText={v => update('locality', v)} autoCapitalize="words" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Field label="City" value={draft.city} onChangeText={v => update('city', v)} autoCapitalize="words" />
-                </View>
-              </View>
-              <View style={s.twoCol}>
-                <View style={{ flex: 1 }}>
-                  <Field label="PIN code" value={draft.pinCode} onChangeText={v => update('pinCode', v)} keyboardType="number-pad" maxLength={6} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Field label="Opens" value={draft.openTime} onChangeText={v => update('openTime', v)} placeholder="09:00 AM" />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Field label="Closes" value={draft.closeTime} onChangeText={v => update('closeTime', v)} placeholder="10:00 PM" />
-                </View>
-              </View>
-
-              {saveError ? (
-                <Text style={s.formError} accessibilityRole="alert">{saveError}</Text>
+              {v.banner ? (
+                <Card style={[s.banner, v.tone === 'danger' ? s.bannerDanger : s.bannerWarn]}>
+                  <Text style={s.bannerText} accessibilityRole="alert">
+                    {v.banner}
+                  </Text>
+                  {v.reason ? <Text style={s.bannerReason}>Reason: {v.reason}</Text> : null}
+                  {v.label === 'Suspended' ? (
+                    <SupportContactActions subject="Store suspended" />
+                  ) : (
+                    <Text style={s.link} accessibilityRole="link" onPress={() => router.push('/(onboarding)/pending')}>
+                      View application status
+                    </Text>
+                  )}
+                </Card>
               ) : null}
 
-              <View style={s.formActions}>
-                <Pressable
-                  onPress={cancelEditing}
-                  disabled={saving}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [s.secondaryBtn, pressed && { opacity: 0.8 }]}
-                >
-                  <Text style={s.secondaryText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  onPress={save}
-                  disabled={saving}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [s.primaryBtn, (pressed || saving) && { opacity: 0.85 }]}
-                >
-                  {saving ? <ActivityIndicator color={Colors.background} /> : <Text style={s.primaryText}>Save changes</Text>}
-                </Pressable>
-              </View>
-            </View>
-          ) : (
-            <Pressable
-              onPress={startEditing}
-              accessibilityRole="button"
-              accessibilityLabel="Edit store details"
-              style={({ pressed }) => [s.editBtn, pressed && { opacity: 0.8 }]}
-            >
-              <Ionicons name="create-outline" size={18} color={Colors.primary} />
-              <Text style={s.editText}>Edit details</Text>
-            </Pressable>
-          )}
+              {/* Store */}
+              <SectionLabel>Store</SectionLabel>
+              <Card padded={false}>
+                {a.storeType ? <InfoRow label="Store type" value={a.storeType} /> : null}
+                {a.categories.length ? <InfoRow label="Categories" value={a.categories.join(', ')} /> : null}
+                <InfoRow label="Contact email" value={a.email || NOT_ADDED} muted={!a.email} last />
+              </Card>
 
-          <Text style={s.sectionLabel}>Store details</Text>
-          <View style={s.card}>
-            <Row label="Owner name" value={shown(account?.name)} />
-            <Row label="Store name" value={shown(account?.shopName)} />
-            <Row label="Phone" value={maskDigits(account?.phone) || NOT_ADDED} />
-            <Row label="Email" value={shown(account?.email)} />
-            <Row label="Address" value={shown(account?.address)} />
-            <Row label="Locality" value={shown(account?.locality)} />
-            <Row label="City" value={shown(account?.city)} />
-            <Row label="PIN code" value={shown(account?.pinCode)} last />
-          </View>
-
-          <Text style={s.sectionLabel}>Opening hours</Text>
-          <View style={s.card}>
-            <Row label="Opens" value={shown(account?.openTime)} />
-            <Row label="Closes" value={shown(account?.closeTime)} last />
-          </View>
-
-          <Text style={s.sectionLabel}>Payouts</Text>
-          <View style={s.card}>
-            <Row label="Bank" value={shown(account?.bankName)} />
-            <Row label="Account" value={maskDigits(account?.accountNumber, '•••• ') || NOT_ADDED} />
-            <LinkRow label="Manage bank account" onPress={() => router.push('/(vendor)/bank-edit')} last />
-          </View>
-
-          <Text style={s.sectionLabel}>Verification</Text>
-          <View style={s.card}>
-            <Row label="Status" value={kycTone.label} />
-            {account?.kycRejectionReason ? (
-              <Row label="Reason" value={account.kycRejectionReason} />
-            ) : null}
-            <LinkRow label="Tax and documents" onPress={() => router.push('/(vendor)/tax-documents')} last />
-          </View>
-
-          <Text style={s.sectionLabel}>Security</Text>
-          <View style={s.card}>
-            <LinkRow label="Security and sign-in" onPress={() => router.push('/(vendor)/security')} last />
-          </View>
-
-          <Text style={s.sectionLabel}>Help</Text>
-          <View style={s.card}>
-            <LinkRow label="Help and support" onPress={() => router.push('/(vendor)/support')} last />
-          </View>
-
-          <Text style={s.sectionLabel}>Session</Text>
-          <View style={s.card}>
-            <View style={s.signOutBox}>
-              {!confirmingSignOut ? (
-                <Pressable
-                  onPress={() => setConfirmingSignOut(true)}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [s.dangerOutline, pressed && { opacity: 0.8 }]}
-                >
-                  <Text style={s.dangerOutlineText}>Sign out</Text>
-                </Pressable>
-              ) : (
-                <>
-                  <Text style={s.signOutBody}>Sign out of GlowVAI on this device now?</Text>
-                  <View style={s.confirmRow}>
-                    <Pressable
-                      onPress={() => setConfirmingSignOut(false)}
-                      disabled={signingOut}
-                      accessibilityRole="button"
-                      style={({ pressed }) => [s.secondaryBtn, pressed && { opacity: 0.8 }]}
-                    >
-                      <Text style={s.secondaryText}>Cancel</Text>
-                    </Pressable>
-                    <Pressable
-                      onPress={signOut}
-                      disabled={signingOut}
-                      accessibilityRole="button"
-                      style={({ pressed }) => [s.dangerSolid, (pressed || signingOut) && { opacity: 0.8 }]}
-                    >
-                      {signingOut ? <ActivityIndicator color={Colors.background} /> : <Text style={s.dangerSolidText}>Sign out</Text>}
-                    </Pressable>
+              {/* Hours */}
+              <SectionLabel>Opening hours</SectionLabel>
+              {editing ? (
+                <Card style={{ gap: Spacing.md }}>
+                  <Field label="Contact email" value={draft.email} onChange={(t) => setDraft({ ...draft, email: t })} keyboardType="email-address" placeholder="name@example.com" />
+                  <View style={s.twoCol}>
+                    <Field label="Opens at" value={draft.openTime} onChange={(t) => setDraft({ ...draft, openTime: t })} placeholder="9:00 AM" />
+                    <Field label="Closes at" value={draft.closeTime} onChange={(t) => setDraft({ ...draft, closeTime: t })} placeholder="9:00 PM" />
                   </View>
-                </>
+                  {saveError ? (
+                    <Text style={s.formError} accessibilityRole="alert">
+                      {saveError}
+                    </Text>
+                  ) : null}
+                  <View style={s.twoCol}>
+                    <Button label="Cancel" variant="secondary" onPress={() => setEditing(false)} disabled={saving} style={{ flex: 1 }} />
+                    <Button label="Save" onPress={save} loading={saving} style={{ flex: 1 }} />
+                  </View>
+                </Card>
+              ) : (
+                <Card padded={false}>
+                  <InfoRow label="Opens at" value={a.openTime || NOT_ADDED} muted={!a.openTime} />
+                  <InfoRow label="Closes at" value={a.closeTime || NOT_ADDED} muted={!a.closeTime} />
+                  <LinkRow label="Edit hours and contact email" icon="create-outline" onPress={() => startEditing(a)} last />
+                </Card>
               )}
-            </View>
-          </View>
-        </>
-      )}
-    </ScreenShell>
-  );
-}
 
-// ── Pieces ───────────────────────────────────────────────────────────────────
+              {/* Location */}
+              <SectionLabel>Store location</SectionLabel>
+              <Card padded={false}>
+                <InfoRow label="Registered address" value={addressText || NOT_ADDED} muted={!addressText} />
+                <InfoRow
+                  label="Taking orders"
+                  value={a.isOnline === null ? 'Not available' : a.isOnline ? 'Online, accepting orders' : 'Offline'}
+                  muted={a.isOnline === null}
+                />
+                <InfoRow
+                  label="Service area"
+                  value={a.serviceRadiusKm !== null ? `Within ${a.serviceRadiusKm} km of your store` : 'Not shown in the app yet'}
+                  muted={a.serviceRadiusKm === null}
+                  last
+                />
+              </Card>
+              <Note icon="lock-closed-outline">Contact support to change your registered address. Address changes need to be verified first.</Note>
 
-const KYC_TONE = {
-  APPROVED: { label: 'Approved', bg: Colors.successLight, border: Colors.successBorder, text: '#15803D' },
-  PENDING: { label: 'Under review', bg: Colors.warningLight, border: Colors.warningBorder, text: '#B45309' },
-  REJECTED: { label: 'Rejected', bg: Colors.dangerLight, border: Colors.dangerBorder, text: Colors.danger },
-  NONE: { label: 'Not submitted', bg: Colors.surface, border: Colors.border, text: Colors.textSecondary },
-};
+              {/* Documents */}
+              <SectionLabel>Documents and verification</SectionLabel>
+              <Card padded={false}>
+                <InfoRow label="Verification status" value={v.label} />
+                {a.documents.map((d) => (
+                  <InfoRow key={d.label} label={d.label} value={d.value} muted={!d.provided} />
+                ))}
+                <LinkRow label="Store activity" icon="time-outline" detail="Important changes on your store" onPress={() => router.push('/(vendor)/compliance')} last />
+              </Card>
 
-function Row({ label, value, last }: { label: string; value: string; last?: boolean }) {
-  const missing = value === NOT_ADDED;
-  return (
-    <View style={[s.row, last && { borderBottomWidth: 0 }]}>
-      <Text style={s.rowLabel}>{label}</Text>
-      <Text style={[s.rowValue, missing && { color: Colors.textSubtle }]} selectable>{value}</Text>
+              {/* Payouts */}
+              <SectionLabel>Payouts</SectionLabel>
+              <Card padded={false}>
+                <LinkRow
+                  label="Bank account"
+                  icon="card-outline"
+                  detail={bank ? [bank.bankName, bank.accountMasked].filter(Boolean).join(' ') : 'No account on file'}
+                  onPress={() => router.push('/(vendor)/bank-edit')}
+                />
+                <LinkRow label="Settlements" icon="swap-horizontal-outline" onPress={() => router.push('/(vendor)/payout-detail')} />
+                <LinkRow label="Tax documents" icon="document-text-outline" onPress={() => router.push('/(vendor)/tax-documents')} last />
+              </Card>
+
+              {/* People */}
+              <SectionLabel>People with access</SectionLabel>
+              <Card padded={false}>
+                <View style={s.person}>
+                  <View style={s.personAvatar}>
+                    <Ionicons name="person-outline" size={18} color={Colors.primary} />
+                  </View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={s.personName}>{a.ownerName || 'Store owner'}</Text>
+                    <Text style={s.personMeta}>{phone ? `Owner · ${phone}` : 'Owner'}</Text>
+                  </View>
+                </View>
+              </Card>
+              <Note>Only you can sign in to this store. Adding staff is not available yet.</Note>
+
+              {/* Security */}
+              <SectionLabel>Sign-in & security</SectionLabel>
+              <Card padded={false}>
+                <InfoRow label="Phone number used to sign in" value={phone || NOT_ADDED} mono={!!phone} />
+                <View style={s.signOut}>
+                  {confirmSignOut ? (
+                    <>
+                      <Text style={s.owner}>Sign out of GlowVai on this device?</Text>
+                      <View style={s.twoCol}>
+                        <Button label="Cancel" variant="secondary" onPress={() => setConfirmSignOut(false)} style={{ flex: 1 }} />
+                        <Button label="Sign out" variant="danger" onPress={signOut} loading={signingOut} style={{ flex: 1 }} />
+                      </View>
+                    </>
+                  ) : (
+                    <Button label="Sign out" variant="danger" icon="log-out-outline" onPress={() => setConfirmSignOut(true)} />
+                  )}
+                </View>
+              </Card>
+            </>
+          ) : null}
+
+          {/* Help is reachable even when the profile fails to load. */}
+          <SectionLabel>Help</SectionLabel>
+          <Card padded={false}>
+            <LinkRow label="Help and support" icon="help-buoy-outline" onPress={() => router.push('/(vendor)/support')} />
+            <LinkRow label="Notifications" icon="notifications-outline" onPress={() => router.push('/(vendor)/notifications')} />
+            <LinkRow label="Store summary" icon="stats-chart-outline" detail="Today's orders and top items" onPress={() => router.push('/(vendor)/analytics')} last />
+          </Card>
+        </View>
+      </ScreenShell>
+      <MobileBottomNav currentTab="profile" />
     </View>
-  );
-}
-
-function LinkRow({ label, onPress, last }: { label: string; onPress: () => void; last?: boolean }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      style={({ pressed }) => [s.linkRow, last && { borderBottomWidth: 0 }, pressed && { backgroundColor: Colors.surface }]}
-    >
-      <Text style={s.linkText}>{label}</Text>
-      <Ionicons name="chevron-forward" size={18} color={Colors.textSubtle} />
-    </Pressable>
   );
 }
 
 function Field({
   label,
   value,
-  onChangeText,
+  onChange,
   placeholder,
-  ...rest
+  keyboardType,
 }: {
   label: string;
   value: string;
-  onChangeText: (v: string) => void;
+  onChange: (t: string) => void;
   placeholder?: string;
-  keyboardType?: 'default' | 'email-address' | 'number-pad';
-  autoCapitalize?: 'none' | 'sentences' | 'words';
-  maxLength?: number;
+  keyboardType?: 'default' | 'email-address';
 }) {
   return (
-    <View style={s.field}>
+    <View style={{ flex: 1, gap: 6 }}>
       <Text style={s.fieldLabel}>{label}</Text>
       <TextInput
         value={value}
-        onChangeText={onChangeText}
-        placeholder={placeholder || NOT_ADDED}
+        onChangeText={onChange}
+        placeholder={placeholder}
         placeholderTextColor={Colors.textSubtle}
         accessibilityLabel={label}
         autoCorrect={false}
-        style={s.fieldInput}
-        {...rest}
+        autoCapitalize="none"
+        keyboardType={keyboardType}
+        style={s.input}
       />
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  content: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.xxl },
-
-  errorBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    backgroundColor: Colors.dangerLight,
-    borderWidth: 1,
-    borderColor: Colors.dangerBorder,
-    borderRadius: BorderRadii.card,
-    padding: Spacing.lg,
-    marginBottom: Spacing.xl,
-  },
-  errorTitle: { ...TypeScale.bodyStrong, color: Colors.textPrimary },
-  errorBody: { ...TypeScale.caption, color: Colors.textSecondary, marginTop: 2 },
-  retryBtn: { minHeight: 44, minWidth: 44, paddingHorizontal: Spacing.md, justifyContent: 'center', alignItems: 'center' },
-  retryText: { ...TypeScale.bodyStrong, color: Colors.primary },
-  loadingBox: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, paddingVertical: Spacing.xl },
-  loadingText: { ...TypeScale.body, color: Colors.textSecondary },
-
-  identity: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.lg,
-    backgroundColor: Colors.background,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
-  },
-  avatar: {
-    width: 56, height: 56, borderRadius: 16,
-    backgroundColor: Colors.primaryLight,
-    alignItems: 'center', justifyContent: 'center',
-  },
-  avatarText: { ...TypeScale.title, color: Colors.primary },
+  screen: { flex: 1, backgroundColor: Colors.surface },
+  content: { paddingBottom: 96 },
+  identity: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
+  avatar: { width: 56, height: 56, borderRadius: 16, backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  avatarText: { ...TypeScale.headline, color: Colors.primary },
   storeName: { ...TypeScale.title, color: Colors.textPrimary },
-  ownerName: { ...TypeScale.body, color: Colors.textSecondary, marginTop: 2 },
-  pill: { paddingHorizontal: Spacing.sm, paddingVertical: 3, borderRadius: BorderRadii.pill, borderWidth: 1, alignSelf: 'flex-start', marginTop: Spacing.sm },
-  pillText: { ...TypeScale.label },
-
-  editBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.xs,
-    minHeight: 44,
-    borderRadius: BorderRadii.input,
-    borderWidth: 1,
-    borderColor: Colors.primaryBorder,
-    backgroundColor: Colors.background,
-    marginBottom: Spacing.lg,
-  },
-  editText: { ...TypeScale.bodyStrong, color: Colors.primary },
-
-  sectionLabel: { ...TypeScale.label, color: Colors.textSecondary, textTransform: 'uppercase', marginTop: Spacing.md, marginBottom: Spacing.sm },
-  card: {
-    backgroundColor: Colors.background,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: Spacing.lg,
-    marginBottom: Spacing.lg,
-  },
-  cardTitle: { ...TypeScale.title, color: Colors.textPrimary, paddingTop: Spacing.lg, marginBottom: Spacing.md },
-
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: Spacing.md,
-    minHeight: 44,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  rowLabel: { ...TypeScale.body, color: Colors.textSecondary, flexShrink: 0 },
-  rowValue: { ...TypeScale.bodyStrong, color: Colors.textPrimary, textAlign: 'right', flexShrink: 1 },
-  linkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 44,
-    paddingVertical: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-  },
-  linkText: { ...TypeScale.bodyStrong, color: Colors.primary },
-
-  field: { marginBottom: Spacing.md },
-  fieldLabel: { ...TypeScale.label, color: Colors.textSecondary, marginBottom: Spacing.xs },
-  fieldInput: {
-    minHeight: 44,
-    borderWidth: 1,
-    borderColor: Colors.inputBorder,
-    borderRadius: BorderRadii.input,
-    paddingHorizontal: Spacing.md,
+  owner: { ...TypeScale.body, color: Colors.textSecondary },
+  banner: { gap: Spacing.sm, borderWidth: 1 },
+  bannerWarn: { backgroundColor: Colors.warningLight, borderColor: Colors.warningBorder },
+  bannerDanger: { backgroundColor: Colors.dangerLight, borderColor: Colors.dangerBorder },
+  bannerText: { ...TypeScale.bodyStrong, color: Colors.textPrimary },
+  bannerReason: { ...TypeScale.body, color: Colors.textPrimary },
+  link: { ...TypeScale.bodyStrong, color: Colors.primary, paddingVertical: Spacing.sm },
+  twoCol: { flexDirection: 'row', gap: Spacing.md },
+  fieldLabel: { ...TypeScale.caption, fontFamily: FontFamily.medium, color: Colors.textSecondary },
+  input: {
     ...TypeScale.body,
     color: Colors.textPrimary,
-  },
-  twoCol: { flexDirection: 'row', gap: Spacing.sm },
-  formError: { ...TypeScale.body, color: Colors.danger, marginBottom: Spacing.md },
-  formActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: Spacing.sm, paddingBottom: Spacing.lg },
-  primaryBtn: {
     minHeight: 44,
-    minWidth: 140,
-    borderRadius: BorderRadii.input,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.lg,
-  },
-  primaryText: { ...TypeScale.bodyStrong, color: Colors.background },
-  secondaryBtn: {
-    minHeight: 44,
-    minWidth: 96,
-    borderRadius: BorderRadii.input,
     borderWidth: 1,
     borderColor: Colors.inputBorder,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.lg,
+    borderRadius: 8,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.card,
   },
-  secondaryText: { ...TypeScale.bodyStrong, color: Colors.textPrimary },
-
-  signOutBox: { paddingVertical: Spacing.lg },
-  signOutBody: { ...TypeScale.body, color: Colors.textSecondary, marginBottom: Spacing.md },
-  dangerOutline: {
-    minHeight: 44,
-    borderRadius: BorderRadii.input,
-    borderWidth: 1,
-    borderColor: Colors.dangerBorder,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.lg,
-    alignSelf: 'flex-start',
-  },
-  dangerOutlineText: { ...TypeScale.bodyStrong, color: Colors.danger },
-  confirmRow: { flexDirection: 'row', gap: Spacing.sm, flexWrap: 'wrap' },
-  dangerSolid: {
-    minHeight: 44,
-    minWidth: 96,
-    borderRadius: BorderRadii.input,
-    backgroundColor: Colors.danger,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.lg,
-  },
-  dangerSolidText: { ...TypeScale.bodyStrong, color: Colors.background },
+  formError: { ...TypeScale.body, color: Colors.danger },
+  person: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, padding: Spacing.lg },
+  personAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  personName: { ...TypeScale.body, fontFamily: FontFamily.medium, color: Colors.textPrimary },
+  personMeta: { ...TypeScale.caption, color: Colors.textMuted, marginTop: 2 },
+  signOut: { padding: Spacing.lg, gap: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.border },
 });

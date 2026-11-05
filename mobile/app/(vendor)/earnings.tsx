@@ -8,7 +8,6 @@
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { RefreshControl, StyleSheet, Text, View } from 'react-native';
-import MobileBottomNav from '../../src/components/MobileBottomNav';
 import ScreenShell from '../../src/components/ScreenShell';
 import { breakdown, loadEarnings, type EarningsData, type PeriodKey } from '../../src/features/money/earnings';
 import { formatDateIST, formatINR, friendlyError } from '../../src/features/money/format';
@@ -130,7 +129,6 @@ export default function EarningsScreen() {
           <Note>Amounts come from GlowVai's records for your store. Fees and deductions follow your agreement with GlowVai.</Note>
         </View>
       </ScreenShell>
-      <MobileBottomNav currentTab="earnings" />
     </View>
   );
 }
@@ -193,7 +191,7 @@ function ReceiveCard({ data, period, onRetry }: { data: EarningsData; period: Pe
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.surface },
-  content: { paddingBottom: 96 },
+  content: { paddingBottom: Spacing.lg },
   label: { ...TypeScale.body, color: Colors.textSecondary },
   big: { fontFamily: FontFamily.semibold, fontSize: 32, lineHeight: 40, color: Colors.textPrimary, marginTop: Spacing.xs, fontVariant: ['tabular-nums'] },
   mid: { ...TypeScale.title, color: Colors.textPrimary, marginTop: 2, fontVariant: ['tabular-nums'] },

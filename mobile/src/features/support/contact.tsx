@@ -1,9 +1,10 @@
 /**
  * How a vendor reaches GlowVai support today.
  *
- * The official phone number and email come from build config
- * (EXPO_PUBLIC_SUPPORT_PHONE, EXPO_PUBLIC_SUPPORT_EMAIL). Nothing is invented here:
- * without config the copy points to the contact GlowVai shared during onboarding.
+ * The official phone number and email come from the shared seller-support config
+ * (features/onboarding/support.ts: EXPO_PUBLIC_SELLER_SUPPORT_EMAIL / _PHONE).
+ * Nothing is invented here: without config the copy points to the contact GlowVai
+ * shared during onboarding.
  */
 import React from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
@@ -11,9 +12,11 @@ import { Button } from '../money/ui';
 import { Colors, Spacing } from '../../theme/tokens';
 import { TypeScale } from '../../theme/typography';
 
-export const SUPPORT_PHONE = (process.env.EXPO_PUBLIC_SUPPORT_PHONE || '').trim();
-export const SUPPORT_EMAIL = (process.env.EXPO_PUBLIC_SUPPORT_EMAIL || '').trim();
-export const HAS_SUPPORT_CONTACT = !!(SUPPORT_PHONE || SUPPORT_EMAIL);
+import { SELLER_SUPPORT, hasSellerSupport } from '../onboarding/support';
+
+const SUPPORT_PHONE = SELLER_SUPPORT.phone;
+const SUPPORT_EMAIL = SELLER_SUPPORT.email;
+const HAS_SUPPORT_CONTACT = hasSellerSupport();
 
 /** Call or email buttons when configured; otherwise one plain sentence. */
 export function SupportContactActions({ subject }: { subject?: string }) {

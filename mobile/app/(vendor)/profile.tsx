@@ -10,7 +10,6 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
-import MobileBottomNav from '../../src/components/MobileBottomNav';
 import ScreenShell from '../../src/components/ScreenShell';
 import { friendlyError, maskTail } from '../../src/features/money/format';
 import { readBankAccount, type BankAccount } from '../../src/features/money/records';
@@ -259,7 +258,6 @@ export default function ProfileScreen() {
           </Card>
         </View>
       </ScreenShell>
-      <MobileBottomNav currentTab="profile" />
     </View>
   );
 }
@@ -297,7 +295,7 @@ function Field({
 
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.surface },
-  content: { paddingBottom: 96 },
+  content: { paddingBottom: Spacing.lg },
   identity: { flexDirection: 'row', alignItems: 'center', gap: Spacing.lg },
   avatar: { width: 56, height: 56, borderRadius: 16, backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
   avatarText: { ...TypeScale.headline, color: Colors.primary },

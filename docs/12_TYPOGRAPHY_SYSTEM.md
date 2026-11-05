@@ -1,64 +1,74 @@
-# GlowVAI Typography System
+# GlowVai Typography System
 
 **Audience:** designers and front-end developers.
-**Source of truth:** `mobile/src/theme/typography.ts` (mobile) and the `.wordmark` rules plus the Google Fonts link in `web/index.html` and `docs/index.html` (web and admin).
+**Source of truth:** `mobile/src/theme/typography.ts` (families, weights, type scale) and `mobile/src/theme/tokens.ts` (colours). Fonts are loaded in `mobile/app/_layout.tsx`.
+
+The vendor app uses the same type as the GlowVai shop and admin panel, so the three products read as one brand.
 
 ## 1. Families and their jobs
 
-| Family | Role | Mobile name | Web |
-|---|---|---|---|
-| **Fraunces** (600 SemiBold, 700 Bold, 600 Italic) | Brand wordmark, page titles, logo letter | `Fraunces_600SemiBold`, `Fraunces_700Bold`, `Fraunces_600SemiBold_Italic` | `Fraunces` |
-| **Plus Jakarta Sans** (400 to 700) | All interface text: body, labels, buttons, numbers in metric cards | `PlusJakartaSans_400Regular` … `_700Bold` | `Plus Jakarta Sans` |
-| **JetBrains Mono** (500, 700) | Codes: order IDs, UTR numbers, bin locations, PINs, SKU codes | `JetBrainsMono_500Medium`, `_700Bold` | `JetBrains Mono` |
+| Family | Role | Mobile family names |
+|---|---|---|
+| **Inter** (400, 500, 600, 700) | Everything: titles, body, labels, buttons, metric values, the wordmark | `Inter_400Regular`, `Inter_500Medium`, `Inter_600SemiBold`, `Inter_700Bold` |
+| **JetBrains Mono** (500, 700) | Codes only: order IDs, pickup and verification codes, UTR numbers, bin locations, SKU codes | `JetBrainsMono_500Medium`, `JetBrainsMono_700Bold` |
 
-Why these three: Fraunces gives the brand a warm, editorial character suited to beauty retail without looking decorative. Plus Jakarta Sans is open and legible at small sizes on busy store screens. JetBrains Mono keeps codes unambiguous (0 vs O, 1 vs l).
+Why: Inter is neutral, very legible at small sizes and matches the rest of GlowVai. JetBrains Mono keeps codes unambiguous (0 vs O, 1 vs l) when a shop owner reads them aloud to a rider or support.
+
+Fraunces and Plus Jakarta Sans were used before the redesign and are no longer part of the system. Do not use them in new work.
 
 ## 2. Weights
 
-Use **400, 500, 600, 700 only.** The previous UI used 800 in roughly 565 places, which made every label compete with every heading. Hierarchy now comes from size and family, not from weight alone.
+Use **400, 500, 600 and 700 only.** Hierarchy comes from size and colour first, weight second.
 
 - 400: body copy
 - 500: subtitles, supporting text
 - 600: labels, buttons, emphasis in running text
-- 700: titles, metric values
+- 700: screen titles, card titles, metric values
 
-## 3. Size scale (mobile, in `TypeScale`)
+## 3. Size scale (`TypeScale`)
 
-| Token | Size / line height | Use |
+| Token | Size / line height | Family | Use |
+|---|---|---|---|
+| caption | 12 / 16 | Inter 400 | footnotes, helper text |
+| label | 12 / 16, +0.2 tracking | Inter 600 | field labels, chips |
+| body | 14 / 21 | Inter 400 | paragraphs, list rows |
+| bodyStrong | 14 / 21 | Inter 600 | emphasised rows |
+| subtitle | 16 / 24 | Inter 500 | section intros |
+| title | 18 / 24, -0.2 tracking | Inter 700 | card titles |
+| headline | 22 / 28, -0.3 tracking | Inter 700 | screen headings |
+| display | 28 / 34, -0.5 tracking | Inter 700 | hero text (sign-in, approval) |
+| metric | 24 / 30, -0.4 tracking | Inter 700 | KPI values |
+| code | 13 / 18 | JetBrains Mono 500 | IDs and codes |
+
+**Floor: 12px.** Nothing in the app renders smaller.
+
+## 4. Colour with type
+
+| Token | Value | Use |
 |---|---|---|
-| caption | 12 / 16 | footnotes, helper text |
-| label | 12 / 16, +0.2 tracking | field labels, chips |
-| body | 14 / 21 | paragraphs, list rows |
-| bodyStrong | 14 / 21, 600 | emphasised rows |
-| subtitle | 16 / 24, 500 | section intros |
-| title | 18 / 24 | card titles |
-| headline | 22 / 28 | screen headings |
-| display | 28 / 34, Fraunces | page titles, hero text |
-| metric | 24 / 30 | KPI values |
-| code | 13 / 18, mono | IDs and codes |
+| `Colors.textPrimary` | `#0F172A` | headings and body |
+| `Colors.textMuted` | `#64748B` | secondary text (4.7:1 on white, passes AA) |
+| `Colors.primary` | `#0057FB` | links, the one primary action per screen, the "vai" in the wordmark |
 
-**Floor: 12px.** Nothing in the app renders smaller. Previously 440 declarations were 11px, 199 were 10px and some were 8px.
+Text sits on white cards over the `#F4F6FA` canvas. Status colours are only for status labels, never for decoration.
 
-## 4. The wordmark
+## 5. The wordmark
 
-"Glow" is set in Fraunces italic. "VAI" is set in Plus Jakarta Sans bold, tracked at +1.2 and coloured in the brand blue. The brand is always written **GlowVAI**, never `GLOWVAI` or `GlowVai`, except in code identifiers.
+The brand is written **GlowVai** in running text. On screen, use `<Wordmark />` from `mobile/src/components/Wordmark.tsx` rather than typing the name in a header. It renders "Glow" and "Vai" in Inter, with the second part in the brand blue; `lowercase` gives the website's "glowvai" lockup used on sign-in and onboarding.
 
-- Mobile: `<Wordmark size={…} />` from `src/components/Wordmark.tsx`. Used on the splash screen, login, and all navigation rails.
-- Web: `<span class="wordmark"><em>Glow</em><b>VAI</b></span>`. Used in the sidebar, login heading, and settings heading.
+## 6. Rules for new screens
 
-## 5. Rules for new screens
-
-1. Never set a `fontWeight` above 700.
+1. Never set a `fontWeight` above 700, and never pass `'800'` or `'900'` to `familyForWeight`.
 2. Never set a `fontSize` below 12.
-3. Use `FontFamily` tokens, not raw strings. Codes always use the mono family.
-4. Titles use Fraunces (`display` or `displayBold`). Everything else uses Plus Jakarta Sans.
-5. Use the `Wordmark` component for the brand. Do not type the brand name as plain text in a header.
-6. Use vector icons (Ionicons on mobile, Font Awesome on web) rather than emoji for interface icons. Emoji are acceptable inside user-generated or message text.
+3. Use `FontFamily` and `TypeScale` tokens, not raw family strings. Codes always use the mono family.
+4. Use theme colour tokens, never new hex values.
+5. Use vector icons (Ionicons or Feather), not emoji, for interface icons and controls.
 
-## 6. Implementation notes
+## 7. Implementation notes
 
-- Fonts are loaded per face from sub-paths (for example '@expo-google-fonts/fraunces/600SemiBold'), so only the nine faces in use ship. Font payload in the web export: about 1.4 MB (down from about 4.8 MB).
-- Icons are imported per set ('@expo/vector-icons/Ionicons', '@expo/vector-icons/Feather'). Importing the package root pulled in every icon font (about 3.5 MB).
-- On Android a weight is selected by family name, not by fontWeight, so each weight is its own family name. Keep the mapping in 'familyForWeight' when adding styles.
-- Brand blue is #1D4ED8 everywhere. The legacy #0050ff palette was removed from the theme, the admin screen, and the shared components.
-- The admin map HTML inside the mobile app still uses the generic monospace fallback, because it runs in a WebView without the app fonts.
+- Fonts are loaded per face from sub-paths (for example `@expo-google-fonts/inter/600SemiBold`), so only the six faces in use ship.
+- Icons are imported per set (`@expo/vector-icons/Ionicons`, `@expo/vector-icons/Feather`). Importing the package root pulls in every icon font.
+- On Android a weight is selected by family name, not by `fontWeight`, so each weight is its own family. Keep the mapping in `familyForWeight` when adding styles.
+- `app/_layout.tsx` sets Inter 400 as the default family for any `Text` without an explicit one.
+- The PC web command centre (`web/index.html`) still loads the pre-redesign fonts (Fraunces, Plus Jakarta Sans). It should move to Inter and JetBrains Mono when that page is redesigned.
+- `@expo-google-fonts/fraunces` and `@expo-google-fonts/plus-jakarta-sans` are still listed in `mobile/package.json` but no longer imported; they can be removed.

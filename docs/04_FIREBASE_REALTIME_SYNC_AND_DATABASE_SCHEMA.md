@@ -1,3 +1,5 @@
+> **Superseded.** This document is kept for history only and does not describe the current app. It describes a Realtime Database "hybrid" sync on glowvai-v2. The vendor app now targets Cloud Firestore in the shared project glowvai-38bde; the data contract is in [CONNECTIONS.md](CONNECTIONS.md). For what the vendor app must do, read the GlowVai Vendor PRD (v1.0); for what is built and connected today, read the [project README](../README.md) and [CONNECTIONS.md](CONNECTIONS.md).
+
 # 🔥 Firebase Realtime Sync & Database Schemas
 
 ## ☁️ Overview

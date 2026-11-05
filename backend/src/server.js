@@ -2740,17 +2740,10 @@ app.get('/api/admin/vendor/:vendorId', requireAdmin, async (req, res) => {
   }
 });
 
-// ── Web Admin Panel (Clean White / Light Theme Fleet Command) ─────────────────
+// ── Root ──────────────────────────────────────────────────────────────────────
+// The old HTML admin console (/admin) was removed: the GlowVai admin panel replaces it.
 app.get('/', (_req, res) => {
-  res.redirect('/admin');
-});
-
-app.get('/admin', (_req, res) => {
-  const adminHtmlPath = path.join(__dirname, 'views', 'admin.html');
-  if (fs.existsSync(adminHtmlPath)) {
-    return res.sendFile(adminHtmlPath);
-  }
-  return res.send('Admin panel loading...');
+  res.json({ ok: true, service: 'glowvai-vendor-backend (legacy)', health: '/health' });
 });
 
 // ── 404 Handler ───────────────────────────────────────────────────────────────

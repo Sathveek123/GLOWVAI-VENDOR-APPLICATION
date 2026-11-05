@@ -18,7 +18,7 @@
 **Title:** "Fleet supervisor and multi-store dashboard".
 
 - This page is a placeholder with little content. It should be built out or removed before release.
-- It is not the same as the standalone admin console (`docs/index.html`, see [Development: release and deployment](../development/04-release-and-deployment.md)).
+- The old standalone admin console (`docs/index.html`) was deleted; platform administration lives in the GlowVai admin panel.
 
 ## Integrations (`page-integrations`)
 

@@ -8,18 +8,16 @@ Expo exposes only variables prefixed `EXPO_PUBLIC_` to the app. Anything else is
 
 | Variable | Purpose | Example |
 |---|---|---|
-| `EXPO_PUBLIC_VENDOR_API_URL` | Backend base URL | `http://192.168.1.20:4000` on a phone, `http://localhost:4000` on web |
-| `EXPO_PUBLIC_VENDOR_ID` | Vendor identifier used by the session and socket | `VND-…` |
-| `EXPO_PUBLIC_STORE_ID` | Store identifier | `DS-VIJ-01` |
-| `EXPO_PUBLIC_ENABLE_SOCKET` | Turn the realtime connection on or off | `true` |
-| `EXPO_PUBLIC_ORDER_POLL_INTERVAL_MS` | How often orders are polled as a fallback to the socket | `15000` |
-| `EXPO_PUBLIC_FIREBASE_API_KEY` | Firebase web key (identifies the project; restrict it in the console) | |
-| `EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN` | Firebase auth domain | |
-| `EXPO_PUBLIC_FIREBASE_PROJECT_ID` | Firebase project ID | |
-| `EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET` | Firebase storage bucket | |
-| `EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | Messaging sender ID | |
-| `EXPO_PUBLIC_FIREBASE_APP_ID` | Firebase app ID | |
-| `EXPO_PUBLIC_CUSTOMER_APP_URL` | Optional. Shows the customer storefront button when set. Not in `.env.example`; add it when needed. | `https://…` |
+| `EXPO_PUBLIC_VENDOR_API_URL` | Backend base URL. Production builds refuse to start when it is missing, local or not `https://` (`src/config/env.ts`). | `http://192.168.1.20:4000` on a phone, `http://localhost:4000` on web |
+| `EXPO_PUBLIC_CUSTOMER_APP_URL` | Optional. Shows the customer storefront button when set. | `https://…` |
+| `EXPO_PUBLIC_FIREBASE_API_KEY` | Firebase web key of glowvai-38bde (identifies the project; restrict it in the console) | in `.env.example` |
+| `EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN` | `glowvai-38bde.firebaseapp.com` | |
+| `EXPO_PUBLIC_FIREBASE_PROJECT_ID` | Must be `glowvai-38bde`, the shared project. Any other value fails the config check. | |
+| `EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET` | `glowvai-38bde.firebasestorage.app` | |
+| `EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | Messaging sender ID | in `.env.example` |
+| `EXPO_PUBLIC_FIREBASE_APP_ID` | Firebase app ID | in `.env.example` |
+
+There is no vendor or store id variable: ids come only from the signed-in session. (`EXPO_PUBLIC_VENDOR_ID`, `EXPO_PUBLIC_STORE_ID`, `EXPO_PUBLIC_ENABLE_SOCKET`, `EXPO_PUBLIC_ORDER_POLL_INTERVAL_MS` and `EXPO_PUBLIC_FIREBASE_DATABASE_URL` were removed; delete them from old `.env` files.)
 
 ## Backend (`backend/.env`)
 
@@ -34,7 +32,7 @@ Expo exposes only variables prefixed `EXPO_PUBLIC_` to the app. Anything else is
 | `VENDOR_DEV_OTP` | Test OTP accepted outside production. Default `4892`. |
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | Service account JSON (raw or base64). Leave unset, with no key file, to run in mock mode. |
 | `FIREBASE_SERVICE_ACCOUNT_PATH` | Local alternative: path to the key file. The file must stay out of git. |
-| `FIREBASE_STORAGE_BUCKET` | Bucket for product photos. Default `glowvai-v2.firebasestorage.app`. |
+| `FIREBASE_STORAGE_BUCKET` | Bucket for product photos. Default `glowvai-v2.firebasestorage.app` (legacy project, see the README). |
 | `ALLOWED_ORIGINS` | Extra CORS origins. glowvai.in, www.glowvai.in and localhost:3100 are always allowed. |
 
 Secrets (`VENDOR_TOKEN_SECRET`, `ADMIN_API_KEY`, the service account) stay on the server. They must never appear in `mobile/.env`. Deployment: `docs/deploy/render.md`.
@@ -46,5 +44,5 @@ Secrets (`VENDOR_TOKEN_SECRET`, `ADMIN_API_KEY`, the service account) stay on th
 
 ## Known gaps
 
-- `EXPO_PUBLIC_CUSTOMER_APP_URL` is read in code but missing from `mobile/.env.example`.
-- The Firebase web key appears in `docs/index.html` and `backend/src/views/admin.html`. Restrict it to your domains in the Firebase console.
+- The legacy backend still defaults to the old Firebase project glowvai-v2; the vendor app targets glowvai-38bde. See the README and [CONNECTIONS.md](../CONNECTIONS.md).
+- The old glowvai-v2 web key is still in git history (it was in the deleted `docs/index.html` and `backend/src/views/admin.html`). Lock down that project's Realtime Database rules if it is not used.

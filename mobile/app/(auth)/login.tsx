@@ -23,7 +23,7 @@ import { normalizeIndianMobile, formatMobile, validateMobile } from '../../src/f
 import { FontFamily } from '../../src/theme/typography';
 
 const CHECKLIST = [
-  'GSTIN and PAN of your business',
+  'PAN of your business or the owner, and your GSTIN if you are GST-registered',
   'Bank account number and IFSC',
   'A photo of your shop front with the name board',
   'ID proof of the owner (Aadhaar, PAN card, passport or driving licence)',
@@ -67,7 +67,7 @@ export default function LoginScreen() {
       <Text accessibilityRole="header" style={[st.title, !isPhone && { fontSize: 26, lineHeight: 32 }]}>
         Sign in or register your store
       </Text>
-      <Text style={st.lead}>Enter your mobile number. We{'’'}ll send a one-time code to verify it.</Text>
+      <Text style={st.lead}>Enter your mobile number. You{'’'}ll confirm it with a one-time code on the next screen.</Text>
 
       {submitError ? <Banner tone="error" message={submitError} /> : null}
 
@@ -92,16 +92,16 @@ export default function LoginScreen() {
 
       <Button
         testID="login-submit"
-        label={loading ? 'Please wait' : 'Get verification code'}
+        label="Continue"
+        iconRight="arrow-forward"
         onPress={handleSend}
-        disabled={!valid}
         loading={loading}
       />
 
       <View style={st.newRow}>
         <Ionicons name="storefront-outline" size={18} color={C.textSecondary} style={{ marginRight: 8, marginTop: 1 }} />
         <Text style={st.newText}>
-          <Text style={{ fontFamily: FontFamily.semibold, color: C.textPrimary }}>New to glowvai? </Text>
+          <Text style={{ fontFamily: FontFamily.semibold, color: C.textPrimary }}>New to GlowVai? </Text>
           Use this form to register. After you verify your number, we{'’'}ll take you through 4 short steps to set up your store.
         </Text>
       </View>
@@ -133,9 +133,9 @@ export default function LoginScreen() {
           {isDesktop ? (
             <View style={st.desktop}>
               <View style={st.intro}>
-                <Text style={st.eyebrow}>glowvai Sellers</Text>
+                <Text style={st.eyebrow}>GlowVai Seller</Text>
                 <Text accessibilityRole="header" style={st.introTitle}>
-                  Sell your beauty products on glowvai
+                  Sell your skincare products on GlowVai
                 </Text>
                 <Text style={st.introText}>
                   Manage your store, orders, stock and payouts from one place.
@@ -164,12 +164,13 @@ const st = StyleSheet.create({
   intro: { flex: 1 },
   eyebrow: { fontFamily: FontFamily.semibold, fontSize: 14, color: C.primary, marginBottom: S.sm },
   introTitle: { fontFamily: FontFamily.bold, fontSize: 34, lineHeight: 42, letterSpacing: -0.6, color: C.textPrimary },
-  introText: { fontSize: 17, lineHeight: 26, color: C.textSecondary, marginTop: S.md },
+  introText: { fontSize: 16, lineHeight: 24, color: C.textSecondary, marginTop: S.md },
   title: { fontFamily: FontFamily.bold, fontSize: 24, lineHeight: 30, letterSpacing: -0.4, color: C.textPrimary },
   lead: { fontSize: 15, lineHeight: 22, color: C.textSecondary, marginTop: S.sm, marginBottom: S.xl },
+
   newRow: { flexDirection: 'row', alignItems: 'flex-start', marginTop: S.xl, paddingTop: S.lg, borderTopWidth: 1, borderTopColor: C.border },
   newText: { flex: 1, fontSize: 14, lineHeight: 21, color: C.textSecondary },
   checkTitle: { fontFamily: FontFamily.bold, fontSize: 16, lineHeight: 22, color: C.textPrimary, marginBottom: S.md },
-  checkRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: S.sm + 2 },
+  checkRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: S.md },
   checkText: { flex: 1, fontSize: 15, lineHeight: 22, color: C.textSecondary },
 });

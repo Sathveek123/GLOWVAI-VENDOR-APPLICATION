@@ -13,21 +13,44 @@ export const DRAFT_KEYS = {
 
 /** The phone number the drafts belong to, so another seller on this device never sees them. */
 const DRAFT_OWNER_KEY = 'onb_owner_phone';
-/** Read by app/index.tsx to resume onboarding at the right step. */
+/** The onboarding step to resume (read by the splash router in status.ts). Holds step names only. */
 const RESUME_KEY = 'vendor_onboarding_status';
 
 export type StepRoute = 'step-a' | 'step-b' | 'step-c' | 'step-d';
 
+/**
+ * Business types offered in step A. `gstRequired` makes GSTIN and the GST certificate
+ * mandatory in step B; for the others GSTIN is optional and PAN is enough.
+ * Confirm this list and the GST rule with the GlowVai compliance team before launch.
+ */
+export const BUSINESS_TYPES = [
+  { id: 'retail', label: 'Beauty or cosmetics shop', desc: 'A store that sells to customers', gstRequired: false },
+  { id: 'salon', label: 'Salon or spa', desc: 'Sells products alongside services', gstRequired: false },
+  { id: 'pharmacy', label: 'Pharmacy or chemist', desc: 'Licensed medical store', gstRequired: false },
+  { id: 'distributor', label: 'Distributor or wholesaler', desc: 'Sells in bulk to other businesses', gstRequired: true },
+] as const;
+
+export type BusinessType = (typeof BUSINESS_TYPES)[number]['id'];
+
+export function businessTypeNeedsGst(id?: string | null): boolean {
+  return BUSINESS_TYPES.some(t => t.id === id && t.gstRequired);
+}
+
+export function businessTypeLabel(id?: string | null): string {
+  return BUSINESS_TYPES.find(t => t.id === id)?.label ?? '';
+}
+
 export interface StoreDraft {
   storeName: string;
   ownerName: string;
+  businessType: BusinessType | '';
   email: string;
   address: string;
   locality: string;
   city: string;
   pincode: string;
-  openTime: string;   // "08:00 AM"
-  closeTime: string;  // "10:00 PM"
+  openTime: string;   // 24-hour "HH:MM", e.g. "09:00" (older drafts may hold "09:00 AM")
+  closeTime: string;  // 24-hour "HH:MM", e.g. "21:00"
   latitude: number | null;
   longitude: number | null;
   updatedAt?: string;
@@ -81,9 +104,15 @@ export async function saveDraft(key: string, data: object): Promise<void> {
   await AsyncStorage.setItem(key, JSON.stringify({ ...data, updatedAt: new Date().toISOString() }));
 }
 
-export async function setResumeStep(step: StepRoute | 'pending'): Promise<void> {
+export async function setResumeStep(step: StepRoute): Promise<void> {
   try {
     await AsyncStorage.setItem(RESUME_KEY, step);
+  } catch (_) {}
+}
+
+export async function clearResumeStep(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(RESUME_KEY);
   } catch (_) {}
 }
 

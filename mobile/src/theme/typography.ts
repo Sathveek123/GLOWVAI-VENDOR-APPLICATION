@@ -58,8 +58,8 @@ export const TypeScale = {
   code: { fontSize: 13, lineHeight: 18, fontFamily: FontFamily.mono },
 } as const;
 
-/** Brand wordmark: "Glow" and "Vai" in Inter. */
+/** Brand wordmark: "Glow" and "Vai" in Inter Bold (one lockup everywhere: "GlowVai"). */
 export const Wordmark = {
-  glow: { fontFamily: FontFamily.displayItalic },
-  vai: { fontFamily: FontFamily.bold, letterSpacing: 1.2 },
+  glow: { fontFamily: FontFamily.bold },
+  vai: { fontFamily: FontFamily.bold },
 } as const;

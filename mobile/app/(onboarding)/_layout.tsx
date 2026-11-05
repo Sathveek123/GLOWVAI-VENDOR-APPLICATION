@@ -7,8 +7,9 @@ export default function OnboardingLayout() {
       <Stack.Screen name="step-b" />
       <Stack.Screen name="step-c" />
       <Stack.Screen name="step-d" />
-      <Stack.Screen name="pending" />
-      <Stack.Screen name="approved" />
+      {/* Status screens are a fresh start: no swipe back into the form steps. */}
+      <Stack.Screen name="pending" options={{ gestureEnabled: false }} />
+      <Stack.Screen name="approved" options={{ gestureEnabled: false }} />
     </Stack>
   );
 }

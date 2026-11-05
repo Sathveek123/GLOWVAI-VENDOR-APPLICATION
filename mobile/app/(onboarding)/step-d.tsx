@@ -26,7 +26,11 @@ import {
   type SaveState,
 } from '../../src/features/onboarding/kit';
 import { goBackOr, isNetworkError, useRequireSession } from '../../src/features/onboarding/guard';
+import { cacheStatus } from '../../src/features/onboarding/status';
+import { format24hForDisplay, to24h, from24h } from '../../src/features/onboarding/validation';
 import {
+  businessTypeLabel,
+  businessTypeNeedsGst,
   DRAFT_KEYS,
   loadDraft,
   saveDraft,
@@ -39,13 +43,13 @@ import {
 } from '../../src/features/onboarding/draft';
 import { FontFamily } from '../../src/theme/typography';
 
+// The GlowVai shop's categories. Keep in sync with the shop's category list.
 const CATEGORIES: { id: string; name: string; desc: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-  { id: 'skincare', name: 'Skincare', desc: 'Cleansers, serums, moisturisers, sunscreen', icon: 'water-outline' },
-  { id: 'makeup', name: 'Makeup', desc: 'Face, eyes, lips, nails', icon: 'color-palette-outline' },
-  { id: 'haircare', name: 'Hair care', desc: 'Shampoo, conditioner, oils, styling', icon: 'cut-outline' },
-  { id: 'fragrance', name: 'Fragrance', desc: 'Perfumes, deodorants, body mists', icon: 'flower-outline' },
-  { id: 'bath_body', name: 'Bath and body', desc: 'Body wash, lotions, scrubs, soaps', icon: 'sparkles-outline' },
-  { id: 'tools', name: 'Tools and accessories', desc: 'Brushes, sponges, hair tools', icon: 'brush-outline' },
+  { id: 'serums', name: 'Serums', desc: 'Vitamin C, niacinamide, hyaluronic acid and more', icon: 'water-outline' },
+  { id: 'moisturizers', name: 'Moisturizers', desc: 'Creams, gels and lotions for face', icon: 'flask-outline' },
+  { id: 'suncare', name: 'Suncare', desc: 'Sunscreens and after-sun care', icon: 'sunny-outline' },
+  { id: 'cleansers', name: 'Cleansers', desc: 'Face washes, cleansing oils and micellar water', icon: 'sparkles-outline' },
+  { id: 'treatments', name: 'Treatments', desc: 'Acne, pigmentation and targeted care', icon: 'medkit-outline' },
 ];
 
 type Drafts = { a: Partial<StoreDraft> | null; b: Partial<TaxDraft> | null; c: Partial<BankDraft> | null };
@@ -94,9 +98,24 @@ export default function StepD() {
   const a = drafts.a;
   const b = drafts.b;
   const c = drafts.c;
+  const gstRequired = businessTypeNeedsGst(a?.businessType);
+  const needsGstCert = gstRequired || !!b?.gstin;
   const incomplete: { step: string; label: string }[] = [];
-  if (!a?.storeName || !a?.ownerName || !a?.pincode) incomplete.push({ step: 'step-a', label: 'Store details' });
-  if (!b?.gstin || !b?.pan) incomplete.push({ step: 'step-b', label: 'Tax and documents' });
+  if (
+    !a?.storeName ||
+    !a?.ownerName ||
+    !a?.businessType ||
+    !a?.address ||
+    !a?.city ||
+    !a?.pincode ||
+    !from24h(a?.openTime)[0] ||
+    !from24h(a?.closeTime)[0]
+  ) {
+    incomplete.push({ step: 'step-a', label: 'Store details' });
+  }
+  if (!b?.pan || (gstRequired && !b?.gstin) || (needsGstCert && !b?.gstCert) || !b?.storePhoto || !b?.ownerId) {
+    incomplete.push({ step: 'step-b', label: 'Tax and documents' });
+  }
   if (!c?.ifsc || !c?.maskedAccountNumber || !c?.beneficiaryName) incomplete.push({ step: 'step-c', label: 'Bank account' });
 
   const missing = [
@@ -126,19 +145,25 @@ export default function StepD() {
     try {
       await saveDraft(DRAFT_KEYS.d, { selectedCats: cats, confirmed: false });
       const docs = [b.gstCert, b.storePhoto, b.ownerId].filter(Boolean);
+      // Older drafts kept "09:00 AM"; the shop stores 24-hour "HH:MM".
+      const hours = (t?: string) => {
+        const [hm, mer] = from24h(t);
+        return hm ? to24h(hm, mer) : '';
+      };
       const result: any = await onboardingApi.submit({
         ownerName: a.ownerName,
         shopName: a.storeName,
+        businessType: a.businessType,
         email: a.email,
         address: a.address,
         locality: a.locality,
         city: a.city,
         pincode: a.pincode,
-        openTime: a.openTime,
-        closeTime: a.closeTime,
+        openTime: hours(a.openTime),
+        closeTime: hours(a.closeTime),
         latitude: a.latitude,
         longitude: a.longitude,
-        gstin: b.gstin,
+        gstin: b.gstin || null,
         pan: b.pan,
         tradeLicense: b.tradeLicense,
         beneficiaryName: c.beneficiaryName,
@@ -159,11 +184,8 @@ export default function StepD() {
         });
         resetSocket();
       }
-      await AsyncStorage.multiSet([
-        ['vendor_registered', 'true'],
-        ['vendor_onboarding_status', 'pending'],
-        ['vendor_submitted_at', new Date().toISOString()],
-      ]);
+      await AsyncStorage.setItem('vendor_submitted_at', new Date().toISOString());
+      await cacheStatus('SUBMITTED');
       router.replace('/(onboarding)/pending');
     } catch (e: any) {
       if (e instanceof ApiError && e.status === 401) {
@@ -171,9 +193,11 @@ export default function StepD() {
       } else if (e instanceof ApiError && e.code === 'ALREADY_APPROVED') {
         router.replace('/(onboarding)/approved');
       } else if (isNetworkError(e)) {
-        setSubmitError({ message: 'Can’t reach glowvai. Check your internet connection and try again. Your details are still here.' });
+        setSubmitError({ message: 'Can’t reach GlowVai. Check your internet connection and try again. Your details are still here.' });
+      } else if (e instanceof ApiError && e.status === 400) {
+        setSubmitError({ message: 'Some details are missing or not accepted. Check each step, then submit again. Your details are still here.' });
       } else {
-        setSubmitError({ message: e?.message ? `We couldn’t submit: ${e.message}` : 'We couldn’t submit. Try again.' });
+        setSubmitError({ message: 'We couldn’t submit your application right now. Try again in a moment. Your details are still here.' });
       }
     } finally {
       setSubmitting(false);
@@ -205,7 +229,6 @@ export default function StepD() {
           savedAt={savedAt}
           primaryLabel="Submit for review"
           onPrimary={submit}
-          primaryDisabled={!valid}
           primaryLoading={submitting}
           primaryTestID="step-submit"
         />
@@ -248,14 +271,14 @@ export default function StepD() {
             );
           })}
         </View>
-        <Text style={st.note}>Right now the glowvai shop lists Skincare products only. You add products after your store is approved.</Text>
+        <Text style={st.note}>You add your products after your store is approved.</Text>
       </Section>
 
       {incomplete.length ? (
         <Banner tone="warning" title="Some steps are incomplete">
           {incomplete.map(i => (
             <View key={i.step} style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Text style={{ fontSize: 14, color: '#78350F' }}>{i.label}</Text>
+              <Text style={{ fontSize: 14, color: C.warningText }}>{i.label}</Text>
               <Button label="Complete" variant="ghost" compact onPress={() => edit(i.step)} accessibilityLabel={`Complete ${i.label}`} />
             </View>
           ))}
@@ -265,16 +288,20 @@ export default function StepD() {
       <Section title="Store details" right={editBtn('step-a', 'store details')}>
         <SummaryRow label="Store name" value={a?.storeName} />
         <SummaryRow label="Owner" value={a?.ownerName} />
+        <SummaryRow label="Business type" value={businessTypeLabel(a?.businessType)} />
         <SummaryRow label="Address" value={[a?.address, a?.locality, a?.city, a?.pincode].filter(Boolean).join(', ')} />
-        <SummaryRow label="Hours" value={a?.openTime && a?.closeTime ? `${a.openTime} to ${a.closeTime}` : ''} />
+        <SummaryRow
+          label="Hours"
+          value={a?.openTime && a?.closeTime ? `${format24hForDisplay(a.openTime)} to ${format24hForDisplay(a.closeTime)}` : ''}
+        />
         {a?.email ? <SummaryRow label="Email" value={a.email} /> : null}
       </Section>
 
       <Section title="Tax and documents" right={editBtn('step-b', 'tax and documents')}>
-        <SummaryRow label="GSTIN" value={b?.gstin} />
+        <SummaryRow label="GSTIN" value={b?.gstin || (gstRequired ? '' : 'Not GST-registered')} />
         <SummaryRow label="PAN" value={b?.pan} />
         {b?.tradeLicense ? <SummaryRow label="Shop licence" value={b.tradeLicense} /> : null}
-        <SummaryRow label="Documents" value={`${docsCount} of 3 attached`} />
+        <SummaryRow label="Documents" value={`${docsCount} of ${needsGstCert ? 3 : 2} chosen (upload not available yet)`} />
       </Section>
 
       <Section title="Bank account" right={editBtn('step-c', 'bank account')}>

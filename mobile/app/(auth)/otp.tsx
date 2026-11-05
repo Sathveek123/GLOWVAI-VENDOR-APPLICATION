@@ -23,13 +23,16 @@ import {
 import { goBackOr, isNetworkError } from '../../src/features/onboarding/guard';
 import { claimDrafts, getResumeStep } from '../../src/features/onboarding/draft';
 import { formatMobile } from '../../src/features/onboarding/validation';
+import { cacheStatus, normalizeStatus } from '../../src/features/onboarding/status';
+import {
+  CODE_LENGTH,
+  CODE_SENDING_AVAILABLE,
+  CODE_UNAVAILABLE_MESSAGE,
+  DEV_TEST_CODE,
+} from '../../src/features/onboarding/otp';
 import { FontFamily } from '../../src/theme/typography';
 
-const CODE_LENGTH = 4;
-const RESEND_SECONDS = 30;
 const MAX_ATTEMPTS = 3;
-// Dev builds only: the backend accepts this fixed code outside production, so the screen can skip typing it.
-const DEV_BYPASS_CODE = '4892';
 const LOCK_SECONDS = 60;
 
 const mmss = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -46,8 +49,6 @@ export default function OtpScreen() {
   const [loading, setLoading] = useState(false);
   const [verified, setVerified] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const [resendIn, setResendIn] = useState(RESEND_SECONDS);
   const [attempts, setAttempts] = useState(0);
   const [lockedFor, setLockedFor] = useState(0);
 
@@ -64,7 +65,6 @@ export default function OtpScreen() {
 
   useEffect(() => {
     const t = setInterval(() => {
-      setResendIn(s => Math.max(0, s - 1));
       setLockedFor(s => Math.max(0, s - 1));
     }, 1000);
     return () => clearInterval(t);
@@ -84,10 +84,8 @@ export default function OtpScreen() {
     if (value.length !== CODE_LENGTH || loading || locked || verified) return;
     setLoading(true);
     setError('');
-    setNotice('');
     try {
       const session = await authApi.login({ phone: `+91${phone}`, otp: value });
-      setVerified(true);
       await saveSession({
         token: session.token,
         vendorId: session.vendorId,
@@ -96,17 +94,15 @@ export default function OtpScreen() {
       });
       await claimDrafts(phone);
       await AsyncStorage.setItem('vendor_registered', session.registered ? 'true' : 'false');
-      if (session.kycStatus) {
-        await AsyncStorage.setItem(
-          'vendor_onboarding_status',
-          session.kycStatus === 'APPROVED' ? 'approved' : session.kycStatus === 'REJECTED' ? 'rejected' : 'pending',
-        );
-      }
+      const status = session.kycStatus ? normalizeStatus({ kycStatus: session.kycStatus }) : 'UNKNOWN';
+      if (session.registered) await cacheStatus(status);
       resetSocket();
+      // Only mark verified once the session is safely stored; a failure above leaves the form usable.
+      setVerified(true);
       if (!session.registered) {
         const resume = await getResumeStep();
         router.replace(`/(onboarding)/${resume || 'step-a'}` as any);
-      } else if (session.kycStatus === 'APPROVED') {
+      } else if (status === 'APPROVED') {
         router.replace('/(onboarding)/approved');
       } else {
         router.replace('/(onboarding)/pending');
@@ -124,25 +120,19 @@ export default function OtpScreen() {
           setError(`That code is incorrect. ${left} ${left === 1 ? 'try' : 'tries'} left.`);
         }
       } else if (e instanceof ApiError && e.code === 'OTP_PROVIDER_REQUIRED') {
-        setError('Sign-in by SMS isn’t available yet. Please try again later.');
+        setError(`${CODE_UNAVAILABLE_MESSAGE}. SMS verification is being connected; please try again later.`);
       } else if (e instanceof ApiError && e.code === 'INVALID_PHONE') {
         setError('This mobile number isn’t valid. Edit the number and try again.');
       } else if (isNetworkError(e)) {
-        setError('Can’t reach glowvai. Check your internet connection and try again.');
+        setError('Can’t reach GlowVai. Check your internet connection and try again.');
       } else {
-        setError(e?.message || 'Something went wrong. Try again.');
+        setError('We couldn’t verify the code. Try again in a moment.');
       }
       setTimeout(() => inputRef.current?.focus(), 50);
     } finally {
       setLoading(false);
     }
   };
-
-  // Dev builds only: verify straight away with the dev code. Release builds never run this.
-  useEffect(() => {
-    if (__DEV__ && phone) verify(DEV_BYPASS_CODE);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phone]);
 
   const onChange = (v: string) => {
     const digits = v.replace(/\D/g, '').slice(0, CODE_LENGTH);
@@ -151,13 +141,9 @@ export default function OtpScreen() {
     if (digits.length === CODE_LENGTH) verify(digits);
   };
 
-  const resend = () => {
-    if (resendIn > 0 || locked) return;
-    setResendIn(RESEND_SECONDS);
-    setCode('');
-    setError('');
-    setNotice(`New code requested for +91 ${formatMobile(phone)}.`);
-    inputRef.current?.focus();
+  // Development builds only: fill in the development backend's test code.
+  const useTestCode = () => {
+    if (DEV_TEST_CODE) onChange(DEV_TEST_CODE);
   };
 
   const editNumber = () => goBackOr(router, '/(auth)/login');
@@ -172,22 +158,40 @@ export default function OtpScreen() {
           </Text>
           <View style={st.sentRow}>
             <Text style={st.sent}>
-              Sent by SMS to <Text style={st.phone}>+91 {formatMobile(phone)}</Text>
+              {CODE_SENDING_AVAILABLE ? 'Sent by SMS to ' : 'For '}
+              <Text style={st.phone}>+91 {formatMobile(phone)}</Text>
             </Text>
-            <LinkButton label="Edit number" onPress={editNumber} accessibilityLabel="Edit mobile number" />
+            <LinkButton label="Edit number" onPress={editNumber} accessibilityLabel="Edit mobile number" testID="otp-edit-number" />
           </View>
 
+          {!CODE_SENDING_AVAILABLE && !verified ? (
+            DEV_TEST_CODE ? (
+              <Banner tone="info" title="Development build" message="No SMS is sent. The development server accepts the test code.">
+                <View style={{ flexDirection: 'row', marginTop: S.sm }}>
+                  <Button label="Use test code" variant="secondary" compact onPress={useTestCode} testID="otp-dev-code" />
+                </View>
+              </Banner>
+            ) : (
+              <Banner
+                tone="info"
+                title={CODE_UNAVAILABLE_MESSAGE}
+                message="We haven’t sent an SMS to this number. SMS verification is being connected; please check back soon."
+              />
+            )
+          ) : null}
           {error ? <Banner tone="error" message={error} /> : null}
-          {notice && !error ? <Banner tone="info" message={notice} /> : null}
           {verified ? <Banner tone="success" message="Number verified. Opening your account…" /> : null}
 
-          <Pressable
-            onPress={() => inputRef.current?.focus()}
-            style={st.boxes}
-            accessible={false}
-            importantForAccessibility="no-hide-descendants"
-          >
-            {Array.from({ length: CODE_LENGTH }).map((_, i) => {
+          <View style={st.boxes}>
+            {/* The digit boxes are decoration; screen readers reach the real input below. */}
+            <Pressable
+              onPress={() => inputRef.current?.focus()}
+              style={st.boxRow}
+              accessible={false}
+              importantForAccessibility="no-hide-descendants"
+              accessibilityElementsHidden
+            >
+              {Array.from({ length: CODE_LENGTH }).map((_, i) => {
               const active = focused && !locked && i === Math.min(code.length, CODE_LENGTH - 1);
               return (
                 <View
@@ -204,7 +208,8 @@ export default function OtpScreen() {
                   <Text style={st.digit}>{code[i] || ''}</Text>
                 </View>
               );
-            })}
+              })}
+            </Pressable>
             <TextInput
               ref={inputRef}
               testID="otp-input"
@@ -224,7 +229,7 @@ export default function OtpScreen() {
               accessibilityHint="You can paste the code"
               style={[st.hiddenInput, Platform.OS === 'web' && ({ outlineStyle: 'none', caretColor: 'transparent' } as any)]}
             />
-          </Pressable>
+          </View>
 
           <Button
             testID="otp-verify"
@@ -235,16 +240,8 @@ export default function OtpScreen() {
           />
 
           <View style={st.resendRow}>
-            {resendIn > 0 ? (
-              <Text style={st.resendWait} accessibilityLiveRegion="polite">
-                Didn{'’'}t get it? You can resend in {mmss(resendIn)}
-              </Text>
-            ) : (
-              <>
-                <Text style={st.resendWait}>Didn{'’'}t get it?</Text>
-                <LinkButton label="Resend code" onPress={resend} />
-              </>
-            )}
+            {/* No provider is connected, so there is nothing to resend; never claim a code was sent. */}
+            <Text style={st.resendWait}>Didn{'’'}t get a code? {CODE_UNAVAILABLE_MESSAGE}.</Text>
           </View>
         </Section>
       </View>
@@ -257,7 +254,8 @@ const st = StyleSheet.create({
   sentRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: S.sm, marginTop: S.xs, marginBottom: S.lg },
   sent: { fontSize: 15, lineHeight: 22, color: C.textSecondary },
   phone: { fontFamily: FontFamily.semibold, color: C.textPrimary },
-  boxes: { flexDirection: 'row', justifyContent: 'center', gap: S.md, marginBottom: S.xl, position: 'relative' },
+  boxes: { marginBottom: S.xl, position: 'relative' },
+  boxRow: { flexDirection: 'row', justifyContent: 'center', gap: S.md },
   box: {
     borderWidth: 1,
     borderColor: C.inputBorder,

@@ -2,7 +2,8 @@
  * Onboarding step 1 of 4: store details (name, owner, address, map pin, opening hours).
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Platform } from 'react-native';
+import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
 import { clearSession } from '../../src/services/session';
 import RealInteractiveMap from '../../src/components/RealInteractiveMap';
@@ -23,27 +24,36 @@ import {
   type SaveState,
 } from '../../src/features/onboarding/kit';
 import { useRequireSession } from '../../src/features/onboarding/guard';
-import { DRAFT_KEYS, loadDraft, saveDraft, setResumeStep, formatSavedTime, type StoreDraft } from '../../src/features/onboarding/draft';
+import {
+  BUSINESS_TYPES,
+  DRAFT_KEYS,
+  loadDraft,
+  saveDraft,
+  setResumeStep,
+  formatSavedTime,
+  type BusinessType,
+  type StoreDraft,
+} from '../../src/features/onboarding/draft';
 import {
   digitsOnly,
+  from24h,
   maskTime,
   parseTime,
+  to24h,
   validateEmailOptional,
   validatePincode,
   validateRequired,
+  type Meridiem,
 } from '../../src/features/onboarding/validation';
 import { FontFamily } from '../../src/theme/typography';
 
-type Meridiem = 'AM' | 'PM';
 const MERIDIEMS = ['AM', 'PM'] as const;
 
-function splitTime(t?: string): [string, Meridiem] {
-  const m = /^(\d{1,2}:\d{2})\s*(AM|PM)$/i.exec(t || '');
-  return m ? [m[1].padStart(5, '0'), m[2].toUpperCase() as Meridiem] : ['', 'AM'];
-}
-
-// The map picker is a web iframe; on the phone apps it shows a fallback, so the pin is optional there.
+// The map picker is a web iframe. The phone apps have no map or location access yet, so the pin
+// is optional there and the location button is only offered where the browser can provide it.
 const MAP_AVAILABLE = Platform.OS === 'web';
+const GEOLOCATION_AVAILABLE =
+  Platform.OS === 'web' && typeof navigator !== 'undefined' && !!(navigator as any).geolocation;
 
 export default function StepA() {
   const router = useRouter();
@@ -53,6 +63,7 @@ export default function StepA() {
 
   const [storeName, setStoreName] = useState('');
   const [ownerName, setOwnerName] = useState('');
+  const [businessType, setBusinessType] = useState<BusinessType | ''>('');
   const [email, setEmail] = useState('');
   const [address, setAddress] = useState('');
   const [locality, setLocality] = useState('');
@@ -80,17 +91,18 @@ export default function StepA() {
       if (!d) return;
       setStoreName(d.storeName || '');
       setOwnerName(d.ownerName || '');
+      if (BUSINESS_TYPES.some(t => t.id === d.businessType)) setBusinessType(d.businessType as BusinessType);
       setEmail(d.email || '');
       setAddress(d.address || '');
       setLocality(d.locality || '');
       setCity(d.city || '');
       setPincode(d.pincode || '');
       if (d.openTime) {
-        const [hm, mer] = splitTime(d.openTime);
+        const [hm, mer] = from24h(d.openTime);
         if (hm) { setOpenHm(hm); setOpenMer(mer); }
       }
       if (d.closeTime) {
-        const [hm, mer] = splitTime(d.closeTime);
+        const [hm, mer] = from24h(d.closeTime);
         if (hm) { setCloseHm(hm); setCloseMer(mer); }
       }
       if (typeof d.latitude === 'number' && typeof d.longitude === 'number') {
@@ -112,6 +124,7 @@ export default function StepA() {
   const errors: Record<string, string> = {
     storeName: validateRequired(storeName, 'your store name'),
     ownerName: validateRequired(ownerName, 'the owner’s full name', 3),
+    businessType: businessType ? '' : 'Choose your type of business',
     email: validateEmailOptional(email),
     address: validateRequired(address, 'the shop address', 5),
     locality: validateRequired(locality, 'the area or locality'),
@@ -125,6 +138,7 @@ export default function StepA() {
   const order: [string, string][] = [
     ['storeName', 'store name'],
     ['ownerName', 'owner name'],
+    ['businessType', 'business type'],
     ['email', 'a valid email'],
     ['address', 'shop address'],
     ['locality', 'area'],
@@ -144,13 +158,15 @@ export default function StepA() {
   const data = (): StoreDraft => ({
     storeName: storeName.trim(),
     ownerName: ownerName.trim(),
+    businessType,
     email: email.trim(),
     address: address.trim(),
     locality: locality.trim(),
     city: city.trim(),
     pincode,
-    openTime: `${openHm} ${openMer}`,
-    closeTime: `${closeHm} ${closeMer}`,
+    // Stored in 24-hour "HH:MM", the format the GlowVai shop uses.
+    openTime: to24h(openHm, openMer),
+    closeTime: to24h(closeHm, closeMer),
     latitude,
     longitude,
   });
@@ -243,7 +259,6 @@ export default function StepA() {
           savedAt={savedAt}
           primaryLabel="Continue"
           onPrimary={onContinue}
-          primaryDisabled={!valid}
           primaryLoading={busy}
           primaryTestID="step-continue"
         />
@@ -279,6 +294,7 @@ export default function StepA() {
           maxLength={80}
           testID="owner-name"
         />
+        <BusinessTypePicker value={businessType} onChange={v => { edit(setBusinessType)(v); touch('businessType')(); }} error={err('businessType')} />
         <TextField
           label="Email"
           optional
@@ -351,18 +367,22 @@ export default function StepA() {
 
         <Text style={st.label}>Store location on the map{MAP_AVAILABLE ? '' : ' (optional)'}</Text>
         <Text style={st.helper}>
-          {MAP_AVAILABLE ? 'Search inside the map, tap the map or drag the pin to your shop entrance.' : 'You can set the pin from the web portal.'}
+          {MAP_AVAILABLE
+            ? 'Search inside the map, tap the map or drag the pin to your shop entrance.'
+            : 'The map isn’t available in the phone app yet. You can continue without a pin; the address above is used.'}
         </Text>
-        <View style={{ flexDirection: 'row', marginBottom: S.md }}>
-          <Button
-            label={locating ? 'Finding you…' : 'Use my current location'}
-            icon="locate-outline"
-            variant="secondary"
-            compact
-            loading={locating}
-            onPress={useMyLocation}
-          />
-        </View>
+        {GEOLOCATION_AVAILABLE ? (
+          <View style={{ flexDirection: 'row', marginBottom: S.md }}>
+            <Button
+              label={locating ? 'Finding you…' : 'Use my current location'}
+              icon="locate-outline"
+              variant="secondary"
+              compact
+              loading={locating}
+              onPress={useMyLocation}
+            />
+          </View>
+        ) : null}
         {MAP_AVAILABLE ? (
           <View style={[st.map, !!err('location') && { borderColor: C.errorText }]}>
             <RealInteractiveMap
@@ -384,7 +404,7 @@ export default function StepA() {
         ) : null}
       </Section>
 
-      <Section title="Opening hours" description="Orders reach you only while your store is open.">
+      <Section title="Opening hours" description="Orders reach you only while your store is open. Choose AM or PM for each time.">
         <FieldRow>
           <TimeField
             label="Opens at"
@@ -447,15 +467,75 @@ function TimeField({
           last={last}
         />
       </View>
-      <View style={{ marginTop: 26 }}>
+      <View style={{ marginTop: 24 }}>
         <Segmented options={MERIDIEMS} value={mer} onChange={onMer} label={label} />
       </View>
     </View>
   );
 }
 
+function BusinessTypePicker({
+  value,
+  onChange,
+  error,
+}: {
+  value: BusinessType | '';
+  onChange: (v: BusinessType) => void;
+  error?: string;
+}) {
+  return (
+    <View style={{ marginBottom: S.lg + 2 }}>
+      <Text style={st.label}>Type of business</Text>
+      <Text style={st.helper}>This decides which tax documents we ask for in the next step.</Text>
+      <View accessibilityRole="radiogroup" accessibilityLabel="Type of business" style={{ gap: S.sm }}>
+        {BUSINESS_TYPES.map(t => {
+          const on = value === t.id;
+          return (
+            <Pressable
+              key={t.id}
+              testID={`business-${t.id}`}
+              onPress={() => onChange(t.id)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: on, selected: on }}
+              accessibilityLabel={`${t.label}. ${t.desc}`}
+              style={({ pressed }) => [st.option, on && st.optionOn, !!error && !on && { borderColor: C.errorText }, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name={on ? 'radio-button-on' : 'radio-button-off'} size={22} color={on ? C.primary : C.inputBorder} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={st.optionTitle}>{t.label}</Text>
+                <Text style={st.optionDesc}>{t.desc}</Text>
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+      {error ? (
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginTop: 6 }} accessibilityLiveRegion="polite">
+          <Ionicons name="alert-circle" size={15} color={C.errorText} style={{ marginRight: 5, marginTop: 2 }} />
+          <Text style={{ flex: 1, fontSize: 13, lineHeight: 19, color: C.errorText }}>{error}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 const st = StyleSheet.create({
+  option: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.md,
+    minHeight: 56,
+    paddingHorizontal: S.md,
+    paddingVertical: S.sm,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 12,
+    backgroundColor: C.card,
+  },
+  optionOn: { borderColor: C.primary, backgroundColor: C.primaryLight },
+  optionTitle: { fontFamily: FontFamily.semibold, fontSize: 15, lineHeight: 21, color: C.textPrimary },
+  optionDesc: { fontSize: 13, lineHeight: 18, color: C.textSecondary },
   label: { fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: C.textPrimary, marginBottom: 2 },
   helper: { fontSize: 13, lineHeight: 19, color: C.textSubtle, marginBottom: S.md },
-  map: { borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: 'transparent' },
+  map: { borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: 'transparent' },
 });

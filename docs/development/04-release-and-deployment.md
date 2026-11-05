@@ -38,9 +38,13 @@ The command centre is static HTML. It can be published with GitHub Pages when th
 
 Publishing makes the page public on the internet.
 
-## Standalone admin console
+## Admin
 
-`docs/index.html` is a standalone admin page. It writes directly to Firebase Realtime Database. Writes must be restricted by security rules before it is shared.
+The standalone admin console (`docs/index.html`, also served by the backend at `/admin`) was deleted. Vendor approval and order oversight live in the GlowVai admin panel.
+
+## Release signing
+
+`mobile/android/app/build.gradle` signs **release builds with the debug keystore**. Such a build must not be uploaded to the Play Store. Before the first store upload, create a real upload keystore (or let EAS manage credentials with an `eas.json` profile), keep it out of git, and point the release `signingConfig` at it.
 
 ## Known gaps
 

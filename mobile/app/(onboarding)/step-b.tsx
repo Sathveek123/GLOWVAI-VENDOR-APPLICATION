@@ -19,15 +19,18 @@ import {
 } from '../../src/features/onboarding/kit';
 import { goBackOr, useRequireSession } from '../../src/features/onboarding/guard';
 import {
+  businessTypeLabel,
+  businessTypeNeedsGst,
   DRAFT_KEYS,
   loadDraft,
   saveDraft,
   setResumeStep,
   formatSavedTime,
   type AttachedFile,
+  type StoreDraft,
   type TaxDraft,
 } from '../../src/features/onboarding/draft';
-import { upperAlnum, validateGstin, validatePan, GSTIN_RE } from '../../src/features/onboarding/validation';
+import { upperAlnum, validateGstin, validatePan, GSTIN_RE, GSTIN_EXAMPLE } from '../../src/features/onboarding/validation';
 
 export default function StepB() {
   const router = useRouter();
@@ -35,6 +38,7 @@ export default function StepB() {
   const { ready } = useRequireSession();
   useDocumentTitle('Tax and documents');
 
+  const [businessType, setBusinessType] = useState('');
   const [gstin, setGstin] = useState('');
   const [pan, setPan] = useState('');
   const [panFromGstin, setPanFromGstin] = useState(false);
@@ -52,6 +56,7 @@ export default function StepB() {
   const [formError, setFormError] = useState('');
 
   useEffect(() => {
+    loadDraft<StoreDraft>(DRAFT_KEYS.a).then(a => setBusinessType(a?.businessType || ''));
     loadDraft<TaxDraft>(DRAFT_KEYS.b).then(d => {
       if (!d) return;
       setGstin(d.gstin || '');
@@ -78,10 +83,13 @@ export default function StepB() {
     dirty();
   };
 
+  // GSTIN is required only for business types that need GST registration; otherwise PAN is enough.
+  const gstRequired = businessTypeNeedsGst(businessType);
+  const hasGstin = gstRequired || !!gstin;
   const errors: Record<string, string> = {
-    gstin: validateGstin(gstin),
+    gstin: validateGstin(gstin, gstRequired),
     pan: validatePan(pan, gstin),
-    gstCert: gstCert ? '' : 'Attach your GST registration certificate',
+    gstCert: !hasGstin || gstCert ? '' : 'Choose your GST registration certificate',
     storePhoto: storePhoto ? '' : 'Attach a photo of your shop front',
     ownerId: ownerId ? '' : 'Attach the owner’s ID proof',
   };
@@ -97,7 +105,7 @@ export default function StepB() {
   const err = (k: string) => (touched[k] || showAll ? errors[k] : '');
   const hint = valid ? '' : `To continue, add: ${missing.join(', ')}`;
 
-  const data = (): TaxDraft => ({ gstin, pan, tradeLicense: tradeLicense.trim(), gstCert, storePhoto, ownerId });
+  const data = (): TaxDraft => ({ gstin, pan, tradeLicense: tradeLicense.trim(), gstCert: hasGstin ? gstCert : null, storePhoto, ownerId });
 
   const onSaveDraft = async () => {
     setSaveState('saving');
@@ -132,23 +140,31 @@ export default function StepB() {
   if (!ready) return <CenteredLoader label="Loading your details" />;
 
   const tax = (
-    <Section title="Tax details" description="Enter them exactly as on your GST certificate.">
+    <Section
+      title="Tax details"
+      description={
+        gstRequired
+          ? `As a ${businessTypeLabel(businessType).toLowerCase()}, you need a GST registration. Enter the details exactly as on your GST certificate.`
+          : 'GSTIN is optional if your business isn’t GST-registered. PAN is always needed.'
+      }
+    >
       <TextField
         label="GSTIN"
-        placeholder="22AAAAA0000A1Z5"
+        optional={!gstRequired}
+        placeholder={GSTIN_EXAMPLE}
         value={gstin}
         onChangeText={onGstin}
         onBlur={touch('gstin')}
         error={err('gstin')}
-        success={!errors.gstin ? 'Format looks right' : undefined}
-        helper="15 characters, as on your GST certificate"
+        success={gstin && !errors.gstin ? 'Format looks right' : undefined}
+        helper={gstRequired ? '15 characters, as on your GST certificate' : 'Leave empty if you are not GST-registered'}
         autoCapitalize="characters"
         autoCorrect={false}
         maxLength={15}
         testID="gstin"
       />
       <TextField
-        label="Business PAN"
+        label={hasGstin ? 'Business PAN' : 'PAN (business or owner)'}
         placeholder="AAAAA0000A"
         value={pan}
         onChangeText={v => {
@@ -183,18 +199,25 @@ export default function StepB() {
   );
 
   const docs = (
-    <Section title="Documents" description="Each file: PDF, JPG or PNG, up to 5 MB. We use them only to verify your store, and you can ask us to delete them.">
-      <FileField
-        label="GST registration certificate"
-        value={gstCert}
-        onChange={f => {
-          setGstCert(f);
-          setTouched(t => ({ ...t, gstCert: true }));
-          dirty();
-        }}
-        error={err('gstCert')}
-        testID="doc-gst"
+    <Section title="Documents" description="Each file: PDF, JPG or PNG, up to 5 MB.">
+      <Banner
+        tone="info"
+        title="Document upload isn’t available yet"
+        message="Choose your files so they are ready. For now only the file names are sent with your application; nothing is uploaded."
       />
+      {hasGstin ? (
+        <FileField
+          label="GST registration certificate"
+          value={gstCert}
+          onChange={f => {
+            setGstCert(f);
+            setTouched(t => ({ ...t, gstCert: true }));
+            dirty();
+          }}
+          error={err('gstCert')}
+          testID="doc-gst"
+        />
+      ) : null}
       <FileField
         label="Shop front photo"
         helper="Show the shop name board clearly. JPG or PNG."
@@ -239,7 +262,6 @@ export default function StepB() {
           savedAt={savedAt}
           primaryLabel="Continue"
           onPrimary={onContinue}
-          primaryDisabled={!valid}
           primaryLoading={busy}
           primaryTestID="step-continue"
         />

@@ -1,3 +1,5 @@
+> **Superseded.** This document is kept for history only and does not describe the current app. The Socket.IO fan-out, Redis lock and `ORDER_CLAIMED_BY_OTHER` race it describes were never wired up; the PRD's 45-second server-owned offer and atomic accept are still to be built as server functions. For what the vendor app must do, read the GlowVai Vendor PRD (v1.0); for what is built and connected today, read the [project README](../README.md) and [CONNECTIONS.md](CONNECTIONS.md).
+
 # 📡 Real-Time Socket.IO & Geospatial Dispatch Engine
 
 ## 🛰️ Architecture Overview

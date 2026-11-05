@@ -1,7 +1,7 @@
 {
   "name": "glowvai-vendor-web",
   "version": "1.0.0",
-  "description": "GlowVAI Vendor Web Application — Real-time Desktop Command Center for Dark Store Operators",
+  "description": "GlowVai vendor desktop command centre: a static design preview with sample data only. It is not connected to any store or backend.",
   "main": "index.html",
   "scripts": {
     "start": "npx serve . -p 8082",

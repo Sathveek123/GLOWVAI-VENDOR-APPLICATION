@@ -1,3 +1,5 @@
+> **Superseded.** This document is kept for history only and does not describe the current app. Its `/api/test/*` simulation steps only exercise the legacy backend's mock mode and say nothing about the real order flow. For what the vendor app must do, read the GlowVai Vendor PRD (v1.0); for what is built and connected today, read the [project README](../README.md) and [CONNECTIONS.md](CONNECTIONS.md).
+
 # 🧪 Testing, Simulation & Troubleshooting Guide
 
 ## 🚀 1. Local Setup & Quick Execution

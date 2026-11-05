@@ -13,6 +13,9 @@ export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const GST_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+/** A format example that passes the checksum below (shown as a placeholder and in errors). */
+export const GSTIN_EXAMPLE = '27AAPFU0939F1ZV';
+
 /** The 15th GSTIN character is a check digit over the first 14 (mod-36 scheme used by GSTN). */
 export function gstinChecksumOk(gstin: string): boolean {
   if (!GSTIN_RE.test(gstin)) return false;
@@ -65,10 +68,10 @@ export function validatePincode(v: string): string {
   return '';
 }
 
-export function validateGstin(v: string): string {
-  if (!v) return 'Enter your GSTIN';
+export function validateGstin(v: string, required = true): string {
+  if (!v) return required ? 'Enter your GSTIN' : '';
   if (v.length < 15) return `GSTIN has 15 characters (${v.length} entered)`;
-  if (!GSTIN_RE.test(v)) return 'This doesn’t match the GSTIN format, e.g. 22AAAAA0000A1Z5';
+  if (!GSTIN_RE.test(v)) return `This doesn’t match the GSTIN format, e.g. ${GSTIN_EXAMPLE}`;
   if (!gstinChecksumOk(v)) return 'This GSTIN has a typo. Check it against your GST certificate';
   return '';
 }
@@ -101,8 +104,10 @@ export function validateUpiOptional(v: string): string {
   return UPI_RE.test(v.trim()) ? '' : 'Enter a UPI ID like yourstore@okhdfcbank';
 }
 
+export type Meridiem = 'AM' | 'PM';
+
 /** "08:00" + "AM" style time. Returns minutes after midnight, or null when invalid. */
-export function parseTime(hhmm: string, meridiem: 'AM' | 'PM'): number | null {
+export function parseTime(hhmm: string, meridiem: Meridiem): number | null {
   const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm);
   if (!m) return null;
   const h = Number(m[1]);
@@ -116,4 +121,35 @@ export function maskTime(v: string): string {
   const d = v.replace(/\D/g, '').slice(0, 4);
   if (d.length <= 2) return d;
   return `${d.slice(0, 2)}:${d.slice(2)}`;
+}
+
+/** "09:30" + "PM" -> "21:30" (24-hour "HH:MM", the format the shop stores). '' when invalid. */
+export function to24h(hhmm: string, meridiem: Meridiem): string {
+  const min = parseTime(hhmm, meridiem);
+  if (min === null) return '';
+  return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+}
+
+/**
+ * Reads a stored time for the 12-hour editor. Accepts 24-hour "21:30" and older
+ * "09:30 PM" drafts. Returns ['', 'AM'] when it can't be read.
+ */
+export function from24h(value?: string | null): [string, Meridiem] {
+  const v = (value || '').trim();
+  const twelve = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(v);
+  if (twelve) return [`${twelve[1].padStart(2, '0')}:${twelve[2]}`, twelve[3].toUpperCase() as Meridiem];
+  const m = /^(\d{1,2}):(\d{2})$/.exec(v);
+  if (!m) return ['', 'AM'];
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return ['', 'AM'];
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return [`${String(h12).padStart(2, '0')}:${m[2]}`, h < 12 ? 'AM' : 'PM'];
+}
+
+/** "21:30" -> "9:30 PM" for summaries. Returns the input when it isn't a 24-hour time. */
+export function format24hForDisplay(value?: string | null): string {
+  const [hm, mer] = from24h(value);
+  if (!hm) return value || '';
+  return `${hm.replace(/^0/, '')} ${mer}`;
 }

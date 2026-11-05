@@ -1,3 +1,5 @@
+> **Pre-redesign reference.** These screen specs describe the design before the GlowVai redesign (old fonts, colours, sample data and screen numbering). The GlowVai Vendor PRD (v1.0) is the source of truth for what each screen must do; the [project README](../README.md) says what is built today.
+
 # 📱 GLOW VAI Vendor App — Complete Screen Documentation Portal (`/screen_docs`)
 
 Welcome to the dedicated screen documentation suite for the **GlowVAI Vendor Application & Admin Supervisor Platforms**.

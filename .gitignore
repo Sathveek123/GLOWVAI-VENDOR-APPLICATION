@@ -16,16 +16,30 @@ web-build/
 local.properties
 service-account*.json
 *-adminsdk-*.json
+google-services.json
+GoogleService-Info.plist
+credentials.json
+*.p8
+*.p12
+*.pem
+*.mobileprovision
+
+# iOS build output (if ios/ is ever generated)
+mobile/ios/build/
+mobile/ios/Pods/
+ios/build/
 
 # Gradle and Android caches
 .gradle/
 .gradle_cache/
 mobile/android/.gradle/
 mobile/android/app/build/
+android/app/build/
 mobile/android/build/
 *.iml
 .idea/
 .vscode/
+coverage/
 
 # OS and editor files
 .DS_Store

@@ -1,3 +1,5 @@
+> **Legacy, not deployed.** This blueprint deploys the legacy Express backend, which uses the old Firebase project glowvai-v2. Products it publishes do not reach the GlowVai shop, which reads glowvai-38bde. Do not deploy it as it is; see the [project README](../../README.md) and [CONNECTIONS.md](../CONNECTIONS.md).
+
 # Deploy the vendor backend to Render
 
 The vendor backend (`backend/`, Express + firebase-admin) runs as a Render web service. It reads and

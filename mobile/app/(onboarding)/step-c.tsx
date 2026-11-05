@@ -188,7 +188,6 @@ export default function StepC() {
           savedAt={savedAt}
           primaryLabel="Continue"
           onPrimary={onContinue}
-          primaryDisabled={!valid}
           primaryLoading={busy}
           primaryTestID="step-continue"
         />
@@ -260,6 +259,8 @@ export default function StepC() {
           success={confirm && !errors.confirm && !errors.account ? 'Account numbers match' : undefined}
           keyboardType="number-pad"
           inputMode="numeric"
+          secureTextEntry={!showAccount}
+          contextMenuHidden
           autoComplete="off"
           autoCorrect={false}
           maxLength={18}

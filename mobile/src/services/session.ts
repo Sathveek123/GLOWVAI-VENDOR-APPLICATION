@@ -16,6 +16,7 @@ export const SESSION_KEYS = [
   'vendor_registered',
   'vendor_onboarding_status',
   'vendor_phone',
+  'vendor_submitted_at',
 ] as const;
 
 export interface VendorSession {
@@ -74,14 +75,14 @@ export async function saveSession(s: {
 }
 
 /**
- * The signed-in vendor's ids, read from storage. Falls back to the EXPO_PUBLIC_* values
- * (development only) until the session has loaded.
+ * The signed-in vendor's ids, read from storage. Ids are null until the session has
+ * loaded and stay null when nobody is signed in; there is no fallback vendor id.
  */
 export function useVendorSession(): VendorSession & { loaded: boolean } {
   const [state, setState] = useState<VendorSession & { loaded: boolean }>({
     token: null,
-    vendorId: process.env.EXPO_PUBLIC_VENDOR_ID || null,
-    storeId: process.env.EXPO_PUBLIC_STORE_ID || null,
+    vendorId: null,
+    storeId: null,
     kycStatus: null,
     loaded: false,
   });
@@ -89,13 +90,13 @@ export function useVendorSession(): VendorSession & { loaded: boolean } {
     let active = true;
     getSession().then(s => {
       if (!active) return;
-      setState(prev => ({
+      setState({
         token: s.token,
-        vendorId: s.vendorId || prev.vendorId,
-        storeId: s.storeId || prev.storeId,
+        vendorId: s.vendorId,
+        storeId: s.storeId,
         kycStatus: s.kycStatus,
         loaded: true,
-      }));
+      });
     });
     return () => { active = false; };
   }, []);

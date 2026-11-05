@@ -1,147 +1,62 @@
 /**
- * GlowVAI Vendor App — Customer Storefront Redirect Button (short-lion-13 style)
- * ═══════════════════════════════════════════════════════════════════════════
- * Compact, interactive floating button for vendor navigation bars:
- *   • Direct link to GlowVAI Customer App & Web Storefront
- *   • Brand Royal Blue border glow (#1D4ED8) with live pulse beacon
- *   • Compact footprint designed for mobile viewports
- * ═══════════════════════════════════════════════════════════════════════════
+ * "View shop" link: opens the GlowVai customer storefront so the seller can see their
+ * products as customers do. Hidden until EXPO_PUBLIC_CUSTOMER_APP_URL is configured, so it
+ * never points at a developer's machine.
  */
-
 import React from 'react';
-import {
-  TouchableOpacity,
-  Text,
-  View,
-  StyleSheet,
-  Linking,
-  Platform,
-  Alert,
-} from 'react-native';
+import { Pressable, Text, StyleSheet, Linking, Platform } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import Feather from '@expo/vector-icons/Feather';
+import { ENV } from '../config/env';
+import { Colors, BorderRadii, Spacing } from '../theme/tokens';
+import { FontFamily } from '../theme/typography';
 
 interface CustomerAppRedirectButtonProps {
   customUrl?: string;
+  /** Used only for the accessibility label. */
   storeName?: string;
 }
 
-export const CustomerAppRedirectButton: React.FC<CustomerAppRedirectButtonProps> = ({
-  customUrl = process.env.EXPO_PUBLIC_CUSTOMER_APP_URL || '',
-  storeName = 'GlowVAI Store',
-}) => {
-  // Hidden until a storefront URL is configured. It never points at a developer's localhost.
+export const CustomerAppRedirectButton: React.FC<CustomerAppRedirectButtonProps> = ({ customUrl = ENV.customerAppUrl, storeName }) => {
+  const [failed, setFailed] = React.useState(false);
   if (!customUrl) return null;
 
-  const handleOpenStorefront = async () => {
+  const open = async () => {
+    setFailed(false);
     try {
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        window.open(customUrl, '_blank');
-      } else {
-        const canOpen = await Linking.canOpenURL(customUrl);
-        if (canOpen) {
-          await Linking.openURL(customUrl);
-        } else {
-          Alert.alert('GlowVAI Customer App', `Could not open the storefront for ${storeName}.`);
-        }
-      }
+      if (Platform.OS === 'web' && typeof window !== 'undefined') window.open(customUrl, '_blank', 'noopener');
+      else await Linking.openURL(customUrl);
     } catch (_) {
-      Alert.alert('GlowVAI App', 'The storefront could not be opened. Please try again.');
+      setFailed(true);
     }
   };
 
   return (
-    <TouchableOpacity
-      style={styles.container}
-      activeOpacity={0.82}
-      onPress={handleOpenStorefront}
+    <Pressable
+      onPress={open}
+      accessibilityRole="link"
+      accessibilityLabel={storeName ? `View ${storeName} on the GlowVai shop` : 'View the GlowVai shop'}
+      accessibilityHint={failed ? 'The shop could not be opened. Try again.' : 'Opens in a new window'}
+      style={({ pressed }) => [s.button, pressed && { backgroundColor: Colors.primaryLight }]}
     >
-      <View style={styles.glowAura} />
-
-      <View style={styles.contentRow}>
-        <View style={styles.iconCircle}>
-          <Ionicons name="bag-handle" size={11} color="#ffffff" />
-          <View style={styles.livePulseDot} />
-        </View>
-
-        <View style={styles.textCol}>
-          <Text style={styles.badgeText}>glowvai</Text>
-          <Text style={styles.mainText}>customer app</Text>
-        </View>
-
-        <Feather name="arrow-up-right" size={12} color="#1D4ED8" style={styles.arrowIcon} />
-      </View>
-    </TouchableOpacity>
+      <Ionicons name={failed ? 'alert-circle-outline' : 'open-outline'} size={16} color={failed ? Colors.dangerText : Colors.primary} />
+      <Text style={[s.label, failed && { color: Colors.dangerText }]}>{failed ? 'Try again' : 'View shop'}</Text>
+    </Pressable>
   );
 };
 
-const styles = StyleSheet.create({
-  container: {
-    position: 'relative',
-    backgroundColor: '#ffffff',
-    borderRadius: 16,
-    borderWidth: 1.5,
-    borderColor: '#1D4ED8',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    shadowColor: '#1D4ED8',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.18,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  glowAura: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 16,
-    backgroundColor: '#e6eeff',
-    opacity: 0.6,
-  },
-  contentRow: {
+const s = StyleSheet.create({
+  button: {
+    minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-  },
-  iconCircle: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#1D4ED8',
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  livePulseDot: {
-    position: 'absolute',
-    top: -1,
-    right: -1,
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-    backgroundColor: '#10b981',
+    gap: 6,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadii.pill,
     borderWidth: 1,
-    borderColor: '#ffffff',
+    borderColor: Colors.primaryBorder,
+    backgroundColor: Colors.card,
   },
-  textCol: {
-    flexDirection: 'column',
-  },
-  badgeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#1D4ED8',
-    letterSpacing: -0.2,
-  },
-  mainText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#64748b',
-    marginTop: -1,
-    textTransform: 'lowercase',
-  },
-  arrowIcon: {
-    marginLeft: 1,
-  },
+  label: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.primary },
 });
 
 export default CustomerAppRedirectButton;

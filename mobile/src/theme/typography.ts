@@ -1,9 +1,8 @@
 /**
- * GlowVAI Vendor App — Typography system
+ * GlowVai Vendor App — Typography system
  *
- * Three families, each with a clear job:
- *   • Fraunces            — brand wordmark and page titles (soft, editorial serif)
- *   • Plus Jakarta Sans   — all interface text (clean, highly legible at small sizes)
+ * Same type as the GlowVai shop and admin panel:
+ *   • Inter               — all interface text and titles
  *   • JetBrains Mono      — codes: order IDs, UTR numbers, bin locations, PINs
  *
  * Weights are limited to 400 / 500 / 600 / 700. Heavier weights were removed on
@@ -13,16 +12,16 @@
  */
 
 export const FontFamily = {
-  // Brand display (Fraunces)
-  display: 'Fraunces_600SemiBold',
-  displayBold: 'Fraunces_700Bold',
-  displayItalic: 'Fraunces_600SemiBold_Italic',
+  // Titles (Inter)
+  display: 'Inter_700Bold',
+  displayBold: 'Inter_700Bold',
+  displayItalic: 'Inter_600SemiBold',
 
-  // Interface (Plus Jakarta Sans)
-  regular: 'PlusJakartaSans_400Regular',
-  medium: 'PlusJakartaSans_500Medium',
-  semibold: 'PlusJakartaSans_600SemiBold',
-  bold: 'PlusJakartaSans_700Bold',
+  // Interface (Inter)
+  regular: 'Inter_400Regular',
+  medium: 'Inter_500Medium',
+  semibold: 'Inter_600SemiBold',
+  bold: 'Inter_700Bold',
 
   // Codes and numbers (JetBrains Mono)
   mono: 'JetBrainsMono_500Medium',
@@ -59,8 +58,8 @@ export const TypeScale = {
   code: { fontSize: 13, lineHeight: 18, fontFamily: FontFamily.mono },
 } as const;
 
-/** Brand wordmark: "Glow" in Fraunces italic, "VAI" in tracked Plus Jakarta Sans. */
+/** Brand wordmark: "Glow" and "Vai" in Inter Bold (one lockup everywhere: "GlowVai"). */
 export const Wordmark = {
-  glow: { fontFamily: FontFamily.displayItalic },
-  vai: { fontFamily: FontFamily.bold, letterSpacing: 1.2 },
+  glow: { fontFamily: FontFamily.bold },
+  vai: { fontFamily: FontFamily.bold },
 } as const;

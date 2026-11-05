@@ -1,9 +1,18 @@
+/**
+ * The one screen header for the vendor app.
+ *
+ * - Title and subtitle are always left-aligned. Without a back button the title sits on the
+ *   16px page gutter; with one, the arrow sits on the gutter and the title follows it.
+ * - The five tab screens (Home, Orders, Inventory, Earnings, Profile) are roots, so a back
+ *   arrow is never shown on them even if a screen passes `showBack`.
+ * - Every control is at least 44x44.
+ */
 import React from 'react';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   View,
   Text,
-  TouchableOpacity,
+  Pressable,
   TextInput,
   StyleSheet,
   Platform,
@@ -11,8 +20,10 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { Colors, Spacing, BorderRadii } from '../theme/tokens';
+import { useRouter, usePathname } from 'expo-router';
+import { Colors, Spacing, BorderRadii, Breakpoints } from '../theme/tokens';
+import { FontFamily } from '../theme/typography';
+import { isTabRootPath } from './MobileBottomNav';
 
 export interface AppHeaderProps {
   title?: string;
@@ -32,12 +43,18 @@ export interface AppHeaderProps {
   onCancelSearch?: () => void;
 }
 
-export function useHeaderHeight(): number {
+const BAR_HEIGHT = 56;
+const BAR_HEIGHT_DESKTOP = 64;
+
+function useTopInset() {
   const insets = useSafeAreaInsets();
+  return Platform.OS === 'android' ? insets.top || StatusBar.currentHeight || 0 : insets.top;
+}
+
+export function useHeaderHeight(): number {
+  const top = useTopInset();
   const { width } = useWindowDimensions();
-  const topInset = Platform.OS === 'android' ? (insets.top || StatusBar.currentHeight || 0) : insets.top;
-  const baseHeight = width >= 1024 ? 64 : 56;
-  return topInset + baseHeight;
+  return top + (width >= Breakpoints.desktop ? BAR_HEIGHT_DESKTOP : BAR_HEIGHT);
 }
 
 export default function AppHeader({
@@ -57,286 +74,253 @@ export default function AppHeader({
   onSearchChange,
   onCancelSearch,
 }: AppHeaderProps) {
-  const insets = useSafeAreaInsets();
   const router = useRouter();
+  const pathname = usePathname();
+  const topPadding = useTopInset();
   const { width } = useWindowDimensions();
-  const isTabletOrDesktop = width >= 1024;
+  const isDesktop = width >= Breakpoints.desktop;
 
-  const topPadding = Platform.OS === 'android' ? (insets.top || StatusBar.currentHeight || 0) : insets.top;
+  // Tab screens are roots: no back arrow there unless the screen handles back itself.
+  const backVisible = showBack && (!!onBack || !isTabRootPath(pathname));
+  const hasLeft = !!leftSlot || backVisible;
 
   const handleBack = () => {
-    if (onBack) {
-      onBack();
-    } else if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.replace('/(vendor)/home');
-    }
+    if (onBack) onBack();
+    else if (router.canGoBack()) router.back();
+    else router.navigate('/(vendor)/home');
   };
 
   const handleBell = () => {
-    if (onBellPress) {
-      onBellPress();
-    } else {
-      router.push('/(vendor)/notifications' as any);
-    }
+    if (onBellPress) onBellPress();
+    else router.push('/(vendor)/notifications');
   };
 
-  return (
-    <View
-      testID={testID}
-      style={[
-        s.outerContainer,
-        { paddingTop: topPadding },
-        elevated && s.elevatedBorder,
-      ]}
-    >
-      <View style={[s.innerRow, isTabletOrDesktop && s.innerRowDesktop]}>
-        {/* Left Section: Back Button or Custom Left Slot */}
-        <View style={s.leftSection}>
-          {leftSlot ? (
-            leftSlot
-          ) : showBack ? (
-            <TouchableOpacity
-              style={s.touchTarget48}
-              onPress={handleBack}
-              activeOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-              testID="header-back-button"
-            >
-              <Text style={s.backIcon}>←</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
+  const bellLabel = unreadBellCount > 0 ? `Notifications, ${unreadBellCount} unread` : 'Notifications';
 
-        {/* Center Section: Title & Subtitle or Search Field */}
-        <View style={s.centerSection}>
+  return (
+    <View testID={testID} style={[s.outer, { paddingTop: topPadding }, elevated && s.elevated]}>
+      <View style={[s.row, { height: isDesktop ? BAR_HEIGHT_DESKTOP : BAR_HEIGHT }, hasLeft ? s.rowWithLeft : s.rowNoLeft]}>
+        {hasLeft ? (
+          <View style={s.left}>
+            {leftSlot ??
+              (backVisible ? (
+                <Pressable
+                  style={({ pressed }) => [s.iconButton, pressed && s.pressed]}
+                  onPress={handleBack}
+                  accessibilityRole="button"
+                  accessibilityLabel="Go back"
+                  testID="header-back-button"
+                  hitSlop={4}
+                >
+                  <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
+                </Pressable>
+              ) : null)}
+          </View>
+        ) : null}
+
+        <View style={s.center}>
           {variant === 'search' ? (
-            <View style={s.searchFieldWrap}>
-              <Ionicons name="search-outline" size={18} color="#475569" style={s.searchFieldIcon} />
+            <View style={s.searchField}>
+              <Ionicons name="search-outline" size={18} color={Colors.textSecondary} style={s.searchIcon} />
               <TextInput
-                style={s.searchFieldInput}
-                placeholder={title || "Search products, orders..."}
-                placeholderTextColor={Colors.textMuted || '#94A3B8'}
+                style={[s.searchInput, Platform.OS === 'web' && ({ outlineStyle: 'none' } as any)]}
+                placeholder={title || 'Search'}
+                placeholderTextColor={Colors.textSubtle}
                 value={searchValue}
                 onChangeText={onSearchChange}
                 autoFocus
-                accessibilityLabel="Search input"
+                returnKeyType="search"
+                accessibilityLabel={title || 'Search'}
               />
-              {searchValue.length > 0 && (
-                <TouchableOpacity
-                  style={s.searchClearBtn}
+              {searchValue.length > 0 ? (
+                <Pressable
+                  style={s.searchClear}
                   onPress={() => onSearchChange?.('')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear search"
                 >
-                  <Ionicons name="close" size={18} style={{ color: '#475569' }} />
-                </TouchableOpacity>
-              )}
+                  <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
+                </Pressable>
+              ) : null}
             </View>
-          ) : (
-            <View style={s.titleWrap}>
+          ) : variant === 'large' ? null : (
+            <>
               {title ? (
-                <Text style={s.titleText} numberOfLines={1}>
+                <Text style={s.title} numberOfLines={1} accessibilityRole="header">
                   {title}
                 </Text>
               ) : null}
               {subtitle ? (
-                <Text style={s.subtitleText} numberOfLines={1}>
+                <Text style={s.subtitle} numberOfLines={1}>
                   {subtitle}
                 </Text>
               ) : null}
-            </View>
+            </>
           )}
         </View>
 
-        {/* Right Section: Actions & Notification Bell */}
-        <View style={s.rightSection}>
+        <View style={s.right}>
           {variant === 'search' && onCancelSearch ? (
-            <TouchableOpacity
-              style={s.cancelSearchBtn}
-              onPress={onCancelSearch}
-              activeOpacity={0.7}
-            >
-              <Text style={s.cancelSearchText}>Cancel</Text>
-            </TouchableOpacity>
+            <Pressable style={s.textButton} onPress={onCancelSearch} accessibilityRole="button" accessibilityLabel="Cancel search">
+              <Text style={s.textButtonLabel}>Cancel</Text>
+            </Pressable>
           ) : (
             <>
               {rightActions}
-              {showBell && (
-                <TouchableOpacity
-                  style={s.touchTarget48}
+              {showBell ? (
+                <Pressable
+                  style={({ pressed }) => [s.iconButton, pressed && s.pressed]}
                   onPress={handleBell}
-                  activeOpacity={0.7}
                   accessibilityRole="button"
-                  accessibilityLabel="Notifications"
+                  accessibilityLabel={bellLabel}
                   testID="header-bell-button"
                 >
-                  <Ionicons name="notifications-outline" size={22} color="#0F172A" />
-                  {unreadBellCount > 0 && (
-                    <View style={s.bellBadge}>
-                      <Text style={s.bellBadgeText}>
-                        {unreadBellCount > 9 ? '9+' : unreadBellCount}
-                      </Text>
+                  <Ionicons name="notifications-outline" size={22} color={Colors.textPrimary} />
+                  {unreadBellCount > 0 ? (
+                    <View style={s.badge}>
+                      <Text style={s.badgeText}>{unreadBellCount > 9 ? '9+' : unreadBellCount}</Text>
                     </View>
-                  )}
-                </TouchableOpacity>
-              )}
+                  ) : null}
+                </Pressable>
+              ) : null}
             </>
           )}
         </View>
       </View>
 
-      {/* Large Variant Secondary Title Row */}
-      {variant === 'large' && title && (
-        <View style={s.largeTitleRow}>
-          <Text style={s.largeTitleText} numberOfLines={1}>
+      {variant === 'large' && title ? (
+        <View style={s.largeRow}>
+          <Text style={s.largeTitle} numberOfLines={2} accessibilityRole="header">
             {title}
           </Text>
+          {subtitle ? <Text style={s.subtitle}>{subtitle}</Text> : null}
         </View>
-      )}
+      ) : null}
     </View>
   );
 }
 
 const s = StyleSheet.create({
-  outerContainer: {
-    backgroundColor: '#FFFFFF',
+  outer: {
+    backgroundColor: Colors.card,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-    zIndex: 1000,
+    borderBottomColor: Colors.border,
+    zIndex: 10,
   },
-  elevatedBorder: {
-    borderBottomColor: '#CBD5E1',
+  elevated: {
+    borderBottomColor: Colors.borderStrong,
   },
-  innerRow: {
-    height: 56,
-    minHeight: 56,
+  row: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
   },
-  innerRowDesktop: {
-    height: 64,
-    minHeight: 64,
-  },
-  leftSection: {
+  // The 44px back button keeps its arrow on the 16px gutter: 4 + (44 - 22) / 2 = 15.
+  rowWithLeft: { paddingLeft: Spacing.xs, paddingRight: Spacing.sm },
+  rowNoLeft: { paddingLeft: Spacing.lg, paddingRight: Spacing.sm },
+  left: {
     flexDirection: 'row',
     alignItems: 'center',
-    minWidth: 48,
+    marginRight: Spacing.xs,
   },
-  touchTarget48: {
-    width: 48,
-    height: 48,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: BorderRadii.input || 12,
-  },
-  backIcon: {
-    fontSize: 22,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary || '#0F172A',
-  },
-  centerSection: {
+  center: {
     flex: 1,
-    paddingHorizontal: Spacing.xs || 8,
+    minWidth: 0,
     justifyContent: 'center',
   },
-  titleWrap: {
-    justifyContent: 'center',
-  },
-  titleText: {
-    fontSize: 18,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary || '#0F172A',
-    letterSpacing: -0.3,
-  },
-  subtitleText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_500Medium',
-    fontWeight: '500',
-    color: Colors.textSecondary || '#64748B',
-    marginTop: 1,
-  },
-  rightSection: {
+  right: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    minWidth: 48,
-    gap: 4,
+    gap: Spacing.xs,
+    marginLeft: Spacing.sm,
   },
-  bellIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 20,
+  iconButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: BorderRadii.pill,
   },
-  bellBadge: {
+  pressed: { backgroundColor: Colors.surface },
+  title: {
+    fontFamily: FontFamily.semibold,
+    fontSize: 18,
+    lineHeight: 24,
+    color: Colors.textPrimary,
+    letterSpacing: -0.2,
+  },
+  subtitle: {
+    fontFamily: FontFamily.regular,
+    fontSize: 12,
+    lineHeight: 16,
+    color: Colors.textMuted,
+    marginTop: 1,
+  },
+  badge: {
     position: 'absolute',
-    top: 8,
-    right: 8,
-    backgroundColor: Colors.primary || '#1D4ED8',
-    minWidth: 16,
-    height: 16,
-    borderRadius: 8,
+    top: 6,
+    right: 6,
+    backgroundColor: Colors.primary,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 4,
+    borderWidth: 2,
+    borderColor: Colors.card,
   },
-  bellBadgeText: {
-    color: '#FFFFFF',
+  badgeText: {
+    color: Colors.textOnPrimary,
     fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
+    lineHeight: 14,
+    fontFamily: FontFamily.semibold,
   },
-  searchFieldWrap: {
+  searchField: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    height: 38,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadii.button,
+    paddingLeft: Spacing.md,
+    height: 44,
   },
-  searchFieldIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 14,
-    marginRight: 6,
-  },
-  searchFieldInput: {
+  searchIcon: { marginRight: Spacing.sm },
+  searchInput: {
     flex: 1,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 14,
-    color: Colors.textPrimary || '#0F172A',
+    minWidth: 0,
+    height: 44,
+    fontFamily: FontFamily.regular,
+    fontSize: 16,
+    color: Colors.textPrimary,
     padding: 0,
   },
-  searchClearBtn: {
-    padding: 4,
+  searchClear: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  searchClearIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted || '#94A3B8',
+  textButton: {
+    minHeight: 44,
+    minWidth: 44,
+    paddingHorizontal: Spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  cancelSearchBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+  textButtonLabel: {
+    fontFamily: FontFamily.semibold,
+    fontSize: 15,
+    color: Colors.primary,
   },
-  cancelSearchText: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary || '#1D4ED8',
+  largeRow: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.md,
   },
-  largeTitleRow: {
-    paddingHorizontal: 16,
-    paddingBottom: 12,
-    paddingTop: 4,
-  },
-  largeTitleText: {
+  largeTitle: {
+    fontFamily: FontFamily.bold,
     fontSize: 28,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary || '#0F172A',
-    letterSpacing: -0.6,
+    lineHeight: 34,
+    color: Colors.textPrimary,
+    letterSpacing: -0.5,
   },
 });

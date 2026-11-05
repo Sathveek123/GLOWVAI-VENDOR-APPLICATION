@@ -1,14 +1,15 @@
-# GlowVAI Vendor App: documentation index
+# GlowVai Vendor App: documentation index
 
 Start here. This index covers the features, every screen in the mobile app and the PC command centre, the development guides, and the design rules. The architecture specs from earlier phases are listed at the end.
 
-> **Status: front-end preview.** Most screens show sample data or a Coming-soon placeholder in production. Each screen doc says which parts are live.
+> **Source of truth.** The GlowVai Vendor PRD (v1.0) defines what the app must do. The [project README](../README.md) says what is built and connected today, and [CONNECTIONS.md](CONNECTIONS.md) is the Firestore data contract (shared project glowvai-38bde). The feature and screen docs below predate the GlowVai redesign in places; where they disagree with the PRD, the PRD wins.
 
 ## Quick links
 
 - New to the project: [Development 01: local setup](development/01-local-setup.md)
 - Checking a screen: [Mobile screens](#mobile-screens) and [Web pages](#web-pages)
 - What a feature does: [Features](#features)
+- How the app will read and write data: [Connections (Firestore contract)](CONNECTIONS.md)
 - Before a release: [Development 04: release and deployment](development/04-release-and-deployment.md)
 
 ## Features
@@ -85,29 +86,28 @@ The PC command centre is one HTML page with a section per screen (`web/index.htm
 
 ## Architecture and specifications
 
-These documents come from the earlier design phases. Some describe the planned system rather than the current build. Check the status notes in the feature docs first.
+These documents come from the earlier design phases. Those marked superseded describe a system that was never built (Redis dispatch, Realtime Database sync, the glowvai-v2 project) and are kept for history only.
 
 | Document | Covers |
 |---|---|
-| [00 Master overview and architecture](00_MASTER_OVERVIEW_AND_ARCHITECTURE.md) | System design |
-| [01 Backend server and API](01_BACKEND_SERVER_AND_API_SPECIFICATION.md) | REST endpoints |
-| [02 Realtime socket and geospatial dispatch](02_REALTIME_SOCKET_AND_GEOSPATIAL_DISPATCH.md) | Socket events, dispatch |
+| [00 Master overview and architecture](00_MASTER_OVERVIEW_AND_ARCHITECTURE.md) | System design (superseded) |
+| [01 Backend server and API](01_BACKEND_SERVER_AND_API_SPECIFICATION.md) | REST endpoints (superseded) |
+| [02 Realtime socket and geospatial dispatch](02_REALTIME_SOCKET_AND_GEOSPATIAL_DISPATCH.md) | Socket events, dispatch (superseded) |
 | [03 Atomic inventory and stock engine](03_ATOMIC_INVENTORY_AND_STOCK_ENGINE.md) | Stock model |
-| [04 Firebase realtime sync and schema](04_FIREBASE_REALTIME_SYNC_AND_DATABASE_SCHEMA.md) | Database |
+| [04 Firebase realtime sync and schema](04_FIREBASE_REALTIME_SYNC_AND_DATABASE_SCHEMA.md) | Database (superseded) |
 | [05 Mobile architecture and Expo Router](05_MOBILE_APP_ARCHITECTURE_AND_EXPO_ROUTER.md) | Mobile structure |
 | [06 Zustand state and API integration](06_ZUSTAND_STATE_MANAGEMENT_AND_API_INTEGRATION.md) | State |
-| [07 Admin console and Firebase portal](07_ENTERPRISE_ADMIN_CONSOLE_AND_FIREBASE_PORTAL.md) | Admin |
+| [07 Admin console and Firebase portal](07_ENTERPRISE_ADMIN_CONSOLE_AND_FIREBASE_PORTAL.md) | Admin (superseded) |
 | [08 Financial ledger and payouts](08_FINANCIAL_LEDGER_AND_PAYOUT_CALCULATION.md) | Money rules |
-| [09 Testing, simulation and troubleshooting](09_TESTING_SIMULATION_AND_TROUBLESHOOTING_GUIDE.md) | Older test guide |
+| [09 Testing, simulation and troubleshooting](09_TESTING_SIMULATION_AND_TROUBLESHOOTING_GUIDE.md) | Older test guide (superseded) |
 | [10 Product UX and architecture audit](10_PRODUCT_UX_AND_ARCHITECTURE_AUDIT.md) | Audit |
 | [11 UI front-end full audit](11_UI_FRONTEND_FULL_AUDIT.md) | Audit and fixes |
 
-## Superseded folders
+## Pre-redesign folders
 
-These were written for earlier screen numbering. They are kept for reference. Use the docs above for current information.
+These describe the design before the GlowVai redesign and use an earlier screen numbering. They are kept for reference only; the PRD is the source of truth.
 
-- `screen_docs/` (root): mobile screen specs, numbered for an earlier plan
+- `screen_docs/` (root): mobile screen specs
 - `web_screen_docs/` (root): web screen spec index
-- `docs/pc_docs/`: web page specs, with duplicate numbers
-- `docs/phone_docs/` and `docs/phone_docs.zip`: older mobile specs
-- `docs/index.html`: standalone admin console (see [release and deployment](development/04-release-and-deployment.md))
+
+`docs/pc_docs/`, `docs/phone_docs/`, `docs/phone_docs.zip` and the standalone admin console `docs/index.html` were deleted.

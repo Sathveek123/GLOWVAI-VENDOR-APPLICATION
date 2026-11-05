@@ -1,1377 +1,541 @@
 /**
- * SCREEN 04: Store Information & GPS Pinning
- * Onboarding Step 1 of 4 — Store identity, business hours & interactive map location
- * File: mobile/app/(onboarding)/step-a.tsx
+ * Onboarding step 1 of 4: store details (name, owner, address, map pin, opening hours).
  */
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  ScrollView,
-  StyleSheet,
-  SafeAreaView,
-  TouchableOpacity,
-  Platform,
-  ActivityIndicator,
-  useWindowDimensions,
-} from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
+import { clearSession } from '../../src/services/session';
 import RealInteractiveMap from '../../src/components/RealInteractiveMap';
-import AppHeader from '../../src/components/AppHeader';
+import {
+  SellerFrame,
+  Section,
+  FieldRow,
+  TextField,
+  Button,
+  Banner,
+  Segmented,
+  StepFooter,
+  CenteredLoader,
+  useLayout,
+  useDocumentTitle,
+  SellerColors as C,
+  S,
+  type SaveState,
+} from '../../src/features/onboarding/kit';
+import { useRequireSession } from '../../src/features/onboarding/guard';
+import {
+  BUSINESS_TYPES,
+  DRAFT_KEYS,
+  loadDraft,
+  saveDraft,
+  setResumeStep,
+  formatSavedTime,
+  type BusinessType,
+  type StoreDraft,
+} from '../../src/features/onboarding/draft';
+import {
+  digitsOnly,
+  from24h,
+  maskTime,
+  parseTime,
+  to24h,
+  validateEmailOptional,
+  validatePincode,
+  validateRequired,
+  type Meridiem,
+} from '../../src/features/onboarding/validation';
+import { FontFamily } from '../../src/theme/typography';
 
-const STEP_LABELS = [
-  { num: 1, label: 'Store' },
-  { num: 2, label: 'Documents' },
-  { num: 3, label: 'Bank' },
-  { num: 4, label: 'Catalog' },
-];
+const MERIDIEMS = ['AM', 'PM'] as const;
 
-const POPULAR_AREAS = [
-  { name: 'Benz Circle', lat: 16.4975, lng: 80.6552, locality: 'Benz Circle', pin: '520010' },
-  { name: 'MG Road', lat: 16.5062, lng: 80.6480, locality: 'MG Road / Labbipet', pin: '520010' },
-  { name: 'Governorpet', lat: 16.5186, lng: 80.6276, locality: 'Governorpet', pin: '520002' },
-  { name: 'Auto Nagar', lat: 16.4880, lng: 80.6720, locality: 'Auto Nagar', pin: '520007' },
-];
+// The map picker is a web iframe. The phone apps have no map or location access yet, so the pin
+// is optional there and the location button is only offered where the browser can provide it.
+const MAP_AVAILABLE = Platform.OS === 'web';
+const GEOLOCATION_AVAILABLE =
+  Platform.OS === 'web' && typeof navigator !== 'undefined' && !!(navigator as any).geolocation;
 
-export default function OnboardingStepA() {
+export default function StepA() {
   const router = useRouter();
-  const { width } = useWindowDimensions();
-  const isExpanded = width >= 1024;
+  const { isPhone } = useLayout();
+  const { ready } = useRequireSession();
+  useDocumentTitle('Store details');
 
-  // Form State
   const [storeName, setStoreName] = useState('');
   const [ownerName, setOwnerName] = useState('');
+  const [businessType, setBusinessType] = useState<BusinessType | ''>('');
+  const [email, setEmail] = useState('');
+  const [address, setAddress] = useState('');
   const [locality, setLocality] = useState('');
   const [city, setCity] = useState('');
   const [pincode, setPincode] = useState('');
-  const [searchAddress, setSearchAddress] = useState('');
-
-  // Business Hours State
-  const [openTime, setOpenTime] = useState('08:00 AM');
-  const [closeTime, setCloseTime] = useState('11:00 PM');
-
-  // GPS Map State
+  const [openHm, setOpenHm] = useState('09:00');
+  const [openMer, setOpenMer] = useState<Meridiem>('AM');
+  const [closeHm, setCloseHm] = useState('09:00');
+  const [closeMer, setCloseMer] = useState<Meridiem>('PM');
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
   const [locating, setLocating] = useState(false);
-  const [gpsStatus, setGpsStatus] = useState<'idle' | 'success' | 'denied'>('idle');
-  const [gpsErrorMsg, setGpsErrorMsg] = useState('');
+  const [locError, setLocError] = useState('');
 
-  // Draft & Saving Status States
-  const [draftState, setDraftState] = useState<'saved' | 'unsaved' | 'saving' | 'error'>('saved');
-  const [lastSavedTime, setLastSavedTime] = useState('Saved at 10:12 PM');
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [loading, setLoading] = useState(false);
-  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [showAll, setShowAll] = useState(false);
+  const [restored, setRestored] = useState(false);
+  const [saveState, setSaveState] = useState<SaveState>('idle');
+  const [savedAt, setSavedAt] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState('');
 
-  // Restore saved data on mount
   useEffect(() => {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = "Store Details (Step 1/4) | GlowVAI Vendor Onboarding";
-    }
-
-    AsyncStorage.getItem('onb_step_a').then(raw => {
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw);
-          if (parsed.storeName) setStoreName(parsed.storeName);
-          if (parsed.ownerName) setOwnerName(parsed.ownerName);
-          if (parsed.locality)  setLocality(parsed.locality);
-          if (parsed.city)      setCity(parsed.city);
-          if (parsed.pincode)   setPincode(parsed.pincode);
-          if (parsed.openTime)  setOpenTime(parsed.openTime);
-          if (parsed.closeTime) setCloseTime(parsed.closeTime);
-          if (parsed.latitude)  setLatitude(parsed.latitude);
-          if (parsed.longitude) setLongitude(parsed.longitude);
-          if (parsed.latitude)  setGpsStatus('success');
-        } catch (e) {
-          // Ignore parse errors
-        }
+    loadDraft<StoreDraft>(DRAFT_KEYS.a).then(d => {
+      if (!d) return;
+      setStoreName(d.storeName || '');
+      setOwnerName(d.ownerName || '');
+      if (BUSINESS_TYPES.some(t => t.id === d.businessType)) setBusinessType(d.businessType as BusinessType);
+      setEmail(d.email || '');
+      setAddress(d.address || '');
+      setLocality(d.locality || '');
+      setCity(d.city || '');
+      setPincode(d.pincode || '');
+      if (d.openTime) {
+        const [hm, mer] = from24h(d.openTime);
+        if (hm) { setOpenHm(hm); setOpenMer(mer); }
       }
+      if (d.closeTime) {
+        const [hm, mer] = from24h(d.closeTime);
+        if (hm) { setCloseHm(hm); setCloseMer(mer); }
+      }
+      if (typeof d.latitude === 'number' && typeof d.longitude === 'number') {
+        setLatitude(d.latitude);
+        setLongitude(d.longitude);
+      }
+      setRestored(true);
     });
   }, []);
 
-  // Track field changes for draft indicator
-  const handleFieldChange = (setter: React.Dispatch<React.SetStateAction<any>>, fieldKey: string, val: any) => {
-    setter(val);
-    setDraftState('unsaved');
-    setErrors(prev => ({ ...prev, [fieldKey]: '' }));
+  const edit = <T,>(setter: (v: T) => void) => (v: T) => {
+    setter(v);
+    if (saveState !== 'idle') setSaveState('idle');
   };
+  const touch = (k: string) => () => setTouched(t => ({ ...t, [k]: true }));
 
-  // Map location selection handler
-  const handleMapLocationSelect = useCallback((data: {
-    latitude: number;
-    longitude: number;
-    locality?: string;
-    city?: string;
-    pinCode?: string;
-  }) => {
-    setLatitude(data.latitude);
-    setLongitude(data.longitude);
-    if (data.locality) setLocality(data.locality);
-    if (data.city)     setCity(data.city);
-    if (data.pinCode)  setPincode(data.pinCode);
-    setGpsStatus('success');
-    setGpsErrorMsg('');
-    setDraftState('unsaved');
-  }, []);
-
-  // GPS Detector
-  const handleDetectGPS = () => {
-    setLocating(true);
-    setGpsErrorMsg('');
-    setGpsStatus('idle');
-
-    if (typeof navigator !== 'undefined' && navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const lat = parseFloat(pos.coords.latitude.toFixed(6));
-          const lng = parseFloat(pos.coords.longitude.toFixed(6));
-          setLatitude(lat);
-          setLongitude(lng);
-          setGpsStatus('success');
-          setLocating(false);
-          setDraftState('unsaved');
-        },
-        (err) => {
-          setLocating(false);
-          setGpsStatus('denied');
-          setGpsErrorMsg('Location permission denied. Enter your address manually or search landmark below.');
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    } else {
-      setTimeout(() => {
-        setLocating(false);
-        setGpsStatus('denied');
-        setGpsErrorMsg('GPS location is unavailable on this device browser.');
-      }, 500);
-    }
+  const openMin = parseTime(openHm, openMer);
+  const closeMin = parseTime(closeHm, closeMer);
+  const errors: Record<string, string> = {
+    storeName: validateRequired(storeName, 'your store name'),
+    ownerName: validateRequired(ownerName, 'the owner’s full name', 3),
+    businessType: businessType ? '' : 'Choose your type of business',
+    email: validateEmailOptional(email),
+    address: validateRequired(address, 'the shop address', 5),
+    locality: validateRequired(locality, 'the area or locality'),
+    city: validateRequired(city, 'the city'),
+    pincode: validatePincode(pincode),
+    openTime: openMin === null ? 'Enter a time like 09:00' : '',
+    closeTime:
+      closeMin === null ? 'Enter a time like 09:00' : openMin !== null && closeMin === openMin ? 'Closing time must differ from opening time' : '',
+    location: MAP_AVAILABLE && (latitude == null || longitude == null) ? 'Pin your store on the map' : '',
   };
+  const order: [string, string][] = [
+    ['storeName', 'store name'],
+    ['ownerName', 'owner name'],
+    ['businessType', 'business type'],
+    ['email', 'a valid email'],
+    ['address', 'shop address'],
+    ['locality', 'area'],
+    ['city', 'city'],
+    ['pincode', 'pincode'],
+    ['openTime', 'opening time'],
+    ['closeTime', 'closing time'],
+    ['location', 'map pin'],
+  ];
+  const missing = order.filter(([k]) => errors[k]).map(([, label]) => label);
+  const valid = missing.length === 0;
+  const err = (k: string) => (touched[k] || showAll ? errors[k] : '');
+  const hint = valid
+    ? ''
+    : `To continue, add: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` and ${missing.length - 3} more` : ''}`;
 
-  const handleSelectPreset = (item: typeof POPULAR_AREAS[0]) => {
-    setLatitude(item.lat);
-    setLongitude(item.lng);
-    setLocality(item.locality);
-    setPincode(item.pin);
-    setCity('Vijayawada');
-    setGpsStatus('success');
-    setGpsErrorMsg('');
-    setDraftState('unsaved');
-  };
+  const data = (): StoreDraft => ({
+    storeName: storeName.trim(),
+    ownerName: ownerName.trim(),
+    businessType,
+    email: email.trim(),
+    address: address.trim(),
+    locality: locality.trim(),
+    city: city.trim(),
+    pincode,
+    // Stored in 24-hour "HH:MM", the format the GlowVai shop uses.
+    openTime: to24h(openHm, openMer),
+    closeTime: to24h(closeHm, closeMer),
+    latitude,
+    longitude,
+  });
 
-  // Explicit Save Draft Handler
-  const handleSaveDraft = async () => {
-    setDraftState('saving');
+  const onSaveDraft = async () => {
+    setSaveState('saving');
     try {
-      const stepAData = {
-        storeName: storeName.trim(),
-        ownerName: ownerName.trim(),
-        locality: locality.trim(),
-        city: city.trim(),
-        pincode: pincode.trim(),
-        openTime,
-        closeTime,
-        latitude,
-        longitude,
-        updatedAt: new Date().toISOString(),
-      };
-      await new Promise(r => setTimeout(r, 400));
-      await AsyncStorage.setItem('onb_step_a', JSON.stringify(stepAData));
-      const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      setLastSavedTime(`Saved at ${nowTime}`);
-      setDraftState('saved');
-      setToastMsg('✓ Draft saved successfully');
-      setTimeout(() => setToastMsg(null), 3000);
-    } catch (e) {
-      setDraftState('error');
-      setToastMsg('⚠️ Unable to save draft. Please try again.');
-      setTimeout(() => setToastMsg(null), 3000);
+      await saveDraft(DRAFT_KEYS.a, data());
+      await setResumeStep('step-a');
+      setSavedAt(formatSavedTime());
+      setSaveState('saved');
+    } catch (_) {
+      setSaveState('error');
     }
   };
 
-  // Validation Checks
-  const validateForm = () => {
-    const newErrors: Record<string, string> = {};
-    if (!storeName.trim()) newErrors.storeName = 'Store name is required';
-    if (!ownerName.trim()) newErrors.ownerName = 'Owner / Manager name is required';
-    if (!locality.trim())  newErrors.locality  = 'Locality / Area is required';
-    if (!city.trim())      newErrors.city      = 'City is required';
-    
-    if (!pincode.trim() || !/^\d{6}$/.test(pincode.trim())) {
-      newErrors.pincode = 'Enter a valid 6-digit Pincode (e.g. 520010)';
-    }
-
-    if (latitude == null || longitude == null) {
-      newErrors.gps = 'Set the store location with GPS or the map pin';
-    }
-
-    if (!openTime.trim() || !closeTime.trim()) {
-      newErrors.hours = 'Specify operating opening and closing times';
-    } else if (openTime.trim() === closeTime.trim()) {
-      newErrors.hours = 'Closing time must be after opening time';
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  // Submit and Navigate to Step 2 (Documents)
-  const handleContinue = async () => {
-    if (!validateForm()) return;
-
-    const finalStoreName = storeName.trim();
-    const finalOwnerName = ownerName.trim();
-    const finalLocality = locality.trim();
-    const finalCity = city.trim();
-    const finalPincode = pincode.trim();
-
-    setLoading(true);
+  const onContinue = async () => {
+    setShowAll(true);
+    if (!valid) return;
+    setBusy(true);
+    setFormError('');
     try {
-      const stepAData = {
-        storeName: finalStoreName,
-        ownerName: finalOwnerName,
-        locality: finalLocality,
-        city: finalCity,
-        pincode: finalPincode,
-        openTime,
-        closeTime,
-        latitude,
-        longitude,
-        updatedAt: new Date().toISOString(),
-      };
-
-      await AsyncStorage.setItem('onb_step_a', JSON.stringify(stepAData));
+      await saveDraft(DRAFT_KEYS.a, data());
+      await setResumeStep('step-b');
       router.push('/(onboarding)/step-b');
-    } catch (e: any) {
-      setErrors({ form: e.message || 'Failed to save store details' });
+    } catch (_) {
+      setFormError('We couldn’t save your details on this device. Check storage permissions and try again.');
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   };
 
-  const handleSimulateState = (type: 'denied' | 'saveError' | 'unsaved' | 'hoursError') => {
-    if (type === 'denied') {
-      setGpsStatus('denied');
-      setGpsErrorMsg('Location permission denied by browser. Enter address manually.');
-    } else if (type === 'saveError') {
-      setDraftState('error');
-      setToastMsg('⚠️ Unable to save draft. Check network connection.');
-      setTimeout(() => setToastMsg(null), 3000);
-    } else if (type === 'unsaved') {
-      setDraftState('unsaved');
-    } else if (type === 'hoursError') {
-      setErrors(prev => ({ ...prev, hours: 'Closing time must be after opening time' }));
+  const onMapSelect = useCallback(
+    (loc: { latitude: number; longitude: number; locality?: string; city?: string; pinCode?: string }) => {
+      setLatitude(loc.latitude);
+      setLongitude(loc.longitude);
+      setLocError('');
+      // Only fill fields the seller hasn't typed yet.
+      if (loc.locality) setLocality(v => v || loc.locality!);
+      if (loc.city) setCity(v => v || loc.city!);
+      if (loc.pinCode && /^\d{6}$/.test(loc.pinCode)) setPincode(v => v || loc.pinCode!);
+      setSaveState('idle');
+    },
+    [],
+  );
+
+  const useMyLocation = () => {
+    setLocError('');
+    const geo = typeof navigator !== 'undefined' ? (navigator as any).geolocation : undefined;
+    if (!geo) {
+      setLocError('Location isn’t available here. Drag the pin or search on the map instead.');
+      return;
     }
+    setLocating(true);
+    geo.getCurrentPosition(
+      (pos: any) => {
+        setLatitude(Number(pos.coords.latitude.toFixed(6)));
+        setLongitude(Number(pos.coords.longitude.toFixed(6)));
+        setLocating(false);
+        setSaveState('idle');
+      },
+      () => {
+        setLocating(false);
+        setLocError('We couldn’t get your location. Allow location access, or drag the pin on the map.');
+      },
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
   };
+
+  const signOut = async () => {
+    await clearSession();
+    router.replace('/(auth)/login');
+  };
+
+  if (!ready) return <CenteredLoader label="Loading your details" />;
+
+  const pinned = latitude != null && longitude != null;
 
   return (
-    <SafeAreaView style={s.root}>
-      {/* Top Professional Onboarding Header */}
-      <AppHeader
-        title="Store details"
-        subtitle="Step 1 of 4 • Secure Merchant Onboarding"
-        showBack={true}
-      />
+    <SellerFrame
+      step={1}
+      title="Store details"
+      description="Tell us about your shop. Customers see the store name; delivery partners use the address and pin."
+      headerRight={<Button label="Sign out" variant="ghost" compact onPress={signOut} />}
+      footer={
+        <StepFooter
+          hint={hint}
+          onSaveDraft={onSaveDraft}
+          saveState={saveState}
+          savedAt={savedAt}
+          primaryLabel="Continue"
+          onPrimary={onContinue}
+          primaryLoading={busy}
+          primaryTestID="step-continue"
+        />
+      }
+      testID="step-a"
+    >
+      {restored ? <Banner tone="info" message="We restored the draft saved on this device." /> : null}
+      {formError ? <Banner tone="error" message={formError} /> : null}
 
-        {/* 4-Step Horizontal Segmented Tracker */}
-        <View style={s.progressTrackerRow}>
-          {STEP_LABELS.map(step => {
-            const isActive = step.num === 1;
-            const isCompleted = step.num < 1;
+      <Section title="Store">
+        <TextField
+          label="Store name"
+          placeholder="e.g. City Beauty Store"
+          value={storeName}
+          onChangeText={edit(setStoreName)}
+          onBlur={touch('storeName')}
+          error={err('storeName')}
+          helper="As shown on your shop name board"
+          autoCapitalize="words"
+          maxLength={80}
+          testID="store-name"
+        />
+        <TextField
+          label="Owner's full name"
+          placeholder="As on the owner's PAN card"
+          value={ownerName}
+          onChangeText={edit(setOwnerName)}
+          onBlur={touch('ownerName')}
+          error={err('ownerName')}
+          autoCapitalize="words"
+          autoComplete="name"
+          textContentType="name"
+          maxLength={80}
+          testID="owner-name"
+        />
+        <BusinessTypePicker value={businessType} onChange={v => { edit(setBusinessType)(v); touch('businessType')(); }} error={err('businessType')} />
+        <TextField
+          label="Email"
+          optional
+          placeholder="name@example.com"
+          value={email}
+          onChangeText={edit(setEmail)}
+          onBlur={touch('email')}
+          error={err('email')}
+          helper="For order and payout updates"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoComplete="email"
+          textContentType="emailAddress"
+          maxLength={120}
+          last
+        />
+      </Section>
 
-            return (
-              <View key={step.num} style={s.stepSegment}>
-                <View style={[
-                  s.stepBar,
-                  isActive && s.stepBarActive,
-                  isCompleted && s.stepBarCompleted,
-                ]} />
-                <Text style={[
-                  s.stepLabel,
-                  isActive && s.stepLabelActive,
-                  isCompleted && s.stepLabelCompleted,
-                ]}>
-                  {step.num}. {step.label}
-                </Text>
-              </View>
-            );
-          })}
-        </View>
+      <Section title="Address" description="Where delivery partners pick up orders.">
+        <TextField
+          label="Shop address"
+          placeholder="Shop no., building, street"
+          value={address}
+          onChangeText={edit(setAddress)}
+          onBlur={touch('address')}
+          error={err('address')}
+          autoComplete="street-address"
+          textContentType="streetAddressLine1"
+          maxLength={200}
+          testID="address"
+        />
+        <TextField
+          label="Area or locality"
+          placeholder="e.g. Benz Circle"
+          value={locality}
+          onChangeText={edit(setLocality)}
+          onBlur={touch('locality')}
+          error={err('locality')}
+          maxLength={100}
+          testID="locality"
+        />
+        <FieldRow keepOnPhone>
+          <TextField
+            label="City"
+            placeholder="e.g. Vijayawada"
+            value={city}
+            onChangeText={edit(setCity)}
+            onBlur={touch('city')}
+            error={err('city')}
+            autoComplete="postal-address-locality"
+            textContentType="addressCity"
+            maxLength={60}
+            testID="city"
+          />
+          <TextField
+            label="Pincode"
+            placeholder="520010"
+            value={pincode}
+            onChangeText={edit((v: string) => setPincode(digitsOnly(v, 6)))}
+            onBlur={touch('pincode')}
+            error={err('pincode')}
+            keyboardType="number-pad"
+            inputMode="numeric"
+            autoComplete="postal-code"
+            textContentType="postalCode"
+            maxLength={6}
+            testID="pincode"
+          />
+        </FieldRow>
 
-      {/* Main Body Content (1200px Widescreen Container) */}
-      <ScrollView
-        style={s.scrollBody}
-        contentContainerStyle={s.scrollContent}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={[s.container, isExpanded && s.containerExpanded]}>
-          
-          {/* Welcome Banner */}
-          <View style={s.welcomeCard}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.welcomeTitle}>Tell us about your store</Text>
-              <Text style={s.welcomeSub}>
-                Register your physical cosmetics or retail store for 10-minute quick-commerce delivery dispatch.
-              </Text>
-            </View>
-            <View style={s.stepPillBadge}>
-              <Text style={s.stepPillBadgeText}>STEP 1 OF 4</Text>
-            </View>
+        <Text style={st.label}>Store location on the map{MAP_AVAILABLE ? '' : ' (optional)'}</Text>
+        <Text style={st.helper}>
+          {MAP_AVAILABLE
+            ? 'Search inside the map, tap the map or drag the pin to your shop entrance.'
+            : 'The map isn’t available in the phone app yet. You can continue without a pin; the address above is used.'}
+        </Text>
+        {GEOLOCATION_AVAILABLE ? (
+          <View style={{ flexDirection: 'row', marginBottom: S.md }}>
+            <Button
+              label={locating ? 'Finding you…' : 'Use my current location'}
+              icon="locate-outline"
+              variant="secondary"
+              compact
+              loading={locating}
+              onPress={useMyLocation}
+            />
           </View>
-
-          {/* Toast Alert Banner */}
-          {toastMsg && (
-            <View style={s.toastBanner}>
-              <Text style={s.toastBannerText}>{toastMsg}</Text>
-            </View>
-          )}
-
-          {/* Form Error Banner */}
-          {errors.form ? (
-            <View style={s.errorCard}>
-              <Text style={s.errorCardText}>⚠️ {errors.form}</Text>
-            </View>
-          ) : null}
-
-          {/* Two-Column Desktop Grid */}
-          <View style={[s.gridWrapper, isExpanded && s.gridWrapperDesktop]}>
-            
-            {/* LEFT COLUMN: Store Identity & Operating Hours Cards */}
-            <View style={[s.columnLeft, isExpanded && s.columnLeftDesktop]}>
-              
-              {/* Card 1: Store Identity */}
-              <View style={s.sectionCard}>
-                <View style={s.sectionHeader}>
-                  <Text style={s.sectionTitle}>Store identity</Text>
-                  <Text style={s.sectionSub}>Business details for customer invoices and delivery receipts</Text>
-                </View>
-
-                {/* Row 1: Store Name & Owner Name */}
-                <View style={s.row2}>
-                  <View style={[s.fieldWrap, { flex: 1 }]}>
-                    <Text style={s.fieldLabel}>Store name *</Text>
-                    <TextInput
-                      style={[s.input, errors.storeName ? s.inputError : null]}
-                      placeholder="e.g. Sri Lakshmi Beauty Store"
-                      placeholderTextColor={Colors.textMuted}
-                      value={storeName}
-                      onChangeText={v => handleFieldChange(setStoreName, 'storeName', v)}
-                      accessibilityLabel="Store name"
-                    />
-                    {errors.storeName ? (
-                      <Text style={s.fieldErrorText}>⚠️ {errors.storeName}</Text>
-                    ) : null}
-                  </View>
-
-                  <View style={[s.fieldWrap, { flex: 1 }]}>
-                    <Text style={s.fieldLabel}>Owner / Manager name *</Text>
-                    <TextInput
-                      style={[s.input, errors.ownerName ? s.inputError : null]}
-                      placeholder="e.g. Sathvik Ramanujan"
-                      placeholderTextColor={Colors.textMuted}
-                      value={ownerName}
-                      onChangeText={v => handleFieldChange(setOwnerName, 'ownerName', v)}
-                      accessibilityLabel="Owner name"
-                    />
-                    {errors.ownerName ? (
-                      <Text style={s.fieldErrorText}>⚠️ {errors.ownerName}</Text>
-                    ) : null}
-                  </View>
-                </View>
-
-                {/* Row 2: Locality, City & Pincode (3 Columns Grid) */}
-                <View style={s.row3}>
-                  <View style={[s.fieldWrap, { flex: 1.2 }]}>
-                    <Text style={s.fieldLabel}>Locality / Area *</Text>
-                    <TextInput
-                      style={[s.input, errors.locality ? s.inputError : null]}
-                      placeholder="e.g. Benz Circle"
-                      placeholderTextColor={Colors.textMuted}
-                      value={locality}
-                      onChangeText={v => handleFieldChange(setLocality, 'locality', v)}
-                      accessibilityLabel="Locality"
-                    />
-                    {errors.locality ? <Text style={s.fieldErrorText}>⚠️ {errors.locality}</Text> : null}
-                  </View>
-
-                  <View style={[s.fieldWrap, { flex: 1 }]}>
-                    <Text style={s.fieldLabel}>City *</Text>
-                    <TextInput
-                      style={[s.input, errors.city ? s.inputError : null]}
-                      placeholder="e.g. Vijayawada"
-                      placeholderTextColor={Colors.textMuted}
-                      value={city}
-                      onChangeText={v => handleFieldChange(setCity, 'city', v)}
-                      accessibilityLabel="City"
-                    />
-                    {errors.city ? <Text style={s.fieldErrorText}>⚠️ {errors.city}</Text> : null}
-                  </View>
-
-                  <View style={[s.fieldWrap, { flex: 1 }]}>
-                    <Text style={s.fieldLabel}>Pincode *</Text>
-                    <TextInput
-                      style={[s.input, errors.pincode ? s.inputError : null]}
-                      placeholder="520010"
-                      placeholderTextColor={Colors.textMuted}
-                      keyboardType="number-pad"
-                      maxLength={6}
-                      value={pincode}
-                      onChangeText={v => handleFieldChange(setPincode, 'pincode', v.replace(/\D/g, ''))}
-                      accessibilityLabel="6-digit Pincode"
-                    />
-                    {errors.pincode ? <Text style={s.fieldErrorText}>⚠️ {errors.pincode}</Text> : null}
-                  </View>
-                </View>
-              </View>
-
-              {/* Card 2: Business Hours */}
-              <View style={s.sectionCard}>
-                <View style={s.sectionHeader}>
-                  <Text style={s.sectionTitle}>Business hours</Text>
-                  <Text style={s.sectionSub}>Store operating window for receiving express delivery orders</Text>
-                </View>
-
-                <View style={s.row2}>
-                  <View style={[s.fieldWrap, { flex: 1 }]}>
-                    <Text style={s.fieldLabel}>Opening time *</Text>
-                    <TextInput
-                      style={[s.input, errors.hours ? s.inputError : null]}
-                      value={openTime}
-                      onChangeText={v => handleFieldChange(setOpenTime, 'hours', v)}
-                      placeholder="08:00 AM"
-                      placeholderTextColor={Colors.textMuted}
-                      accessibilityLabel="Opening time"
-                    />
-                  </View>
-
-                  <View style={[s.fieldWrap, { flex: 1 }]}>
-                    <Text style={s.fieldLabel}>Closing time *</Text>
-                    <TextInput
-                      style={[s.input, errors.hours ? s.inputError : null]}
-                      value={closeTime}
-                      onChangeText={v => handleFieldChange(setCloseTime, 'hours', v)}
-                      placeholder="11:00 PM"
-                      placeholderTextColor={Colors.textMuted}
-                      accessibilityLabel="Closing time"
-                    />
-                  </View>
-                </View>
-
-                {errors.hours ? (
-                  <Text style={s.fieldErrorText}>⚠️ {errors.hours}</Text>
-                ) : null}
-
-                {/* Schedule Preview & Availability Note */}
-                <View style={s.schedulePreviewBox}>
-                  <View style={s.scheduleBadgeRow}>
-                    <Text style={s.scheduleBadgeText}>📅 Open Everyday: Mon – Sun ({openTime} – {closeTime})</Text>
-                  </View>
-                  <Text style={s.scheduleNoteText}>
-                    ℹ️ Customer orders are dispatched automatically only during active store operating hours.
-                  </Text>
-                </View>
-              </View>
-
-            </View>
-
-            {/* RIGHT COLUMN: Large Store Location GPS Map Card */}
-            <View style={[s.columnRight, isExpanded && s.columnRightDesktop]}>
-              
-              <View style={s.sectionCard}>
-                <View style={s.mapHeaderRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.sectionTitle}>Store GPS location pin</Text>
-                    <Text style={s.sectionSub}>Riders will navigate directly to this pin for pick-ups</Text>
-                  </View>
-
-                  <TouchableOpacity
-                    style={s.gpsBtn}
-                    onPress={handleDetectGPS}
-                    disabled={locating}
-                    activeOpacity={0.8}
-                    accessibilityRole="button"
-                    accessibilityLabel="Use my current location"
-                  >
-                    {locating ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={s.gpsBtnText}>📍 Use current location</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
-
-                {/* Search Address Bar */}
-                <View style={s.searchBarWrap}>
-                  <TextInput
-                    style={s.searchInput}
-                    placeholder="Search street, landmark or building..."
-                    placeholderTextColor={Colors.textMuted}
-                    value={searchAddress}
-                    onChangeText={setSearchAddress}
-                    accessibilityLabel="Search address"
-                  />
-                  <TouchableOpacity
-                    style={s.searchBtn}
-                    onPress={() => {
-                      if (searchAddress.trim()) {
-                        handleSelectPreset(POPULAR_AREAS[0]);
-                        setSearchAddress('');
-                      }
-                    }}
-                  >
-                    <Text style={s.searchBtnText}>Search</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Location Accuracy Status Banners */}
-                {locating && (
-                  <View style={s.statusBannerInfo}>
-                    <Text style={s.statusBannerInfoText}>📡 Syncing high-accuracy GPS coordinates...</Text>
-                  </View>
-                )}
-
-                {gpsStatus === 'success' && !locating && (
-                  <View style={s.statusBannerSuccess}>
-                    <Text style={s.statusBannerSuccessText}>✓ High-accuracy GPS location synced (± 5m)</Text>
-                  </View>
-                )}
-
-                {gpsStatus === 'denied' && (
-                  <View style={s.statusBannerWarning}>
-                    <Text style={s.statusBannerWarningText}>⚠️ {gpsErrorMsg}</Text>
-                  </View>
-                )}
-
-                {/* Quick Area Landmark Presets */}
-                <View style={s.areaPresetRow}>
-                  <Text style={s.presetLabel}>Quick Presets:</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.presetList}>
-                    {POPULAR_AREAS.map(item => (
-                      <TouchableOpacity
-                        key={item.name}
-                        style={s.presetChip}
-                        onPress={() => handleSelectPreset(item)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={s.presetChipText}>{item.name}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </View>
-
-                {/* Real Interactive Leaflet Map with Draggable Pin */}
-                <View style={s.mapCardBox}>
-                  <RealInteractiveMap
-                    // Map view starts on the city; it does not save a location until the merchant picks one.
-                    latitude={latitude ?? 16.5062}
-                    longitude={longitude ?? 80.6480}
-                    shopName={storeName || 'Your store'}
-                    onLocationSelect={handleMapLocationSelect}
-                  />
-                </View>
-
-                {/* Primary Address Summary */}
-                <View style={s.addressSummaryBox}>
-                  <Text style={s.addressSummaryTitle}>📍 Pinned Address Summary</Text>
-                  <Text style={s.addressSummaryText}>
-                    {locality || 'Benz Circle'}, {city || 'Vijayawada'}, Andhra Pradesh - {pincode || '520010'}
-                  </Text>
-                </View>
-
-                {/* Secondary Technical Detail Area (Lat / Lng) */}
-                <View style={s.technicalArea}>
-                  <Text style={s.technicalText}>
-                    TECHNICAL COORDINATES: {latitude != null ? latitude.toFixed(6) : '—'}° N, {longitude != null ? longitude.toFixed(6) : '—'}° E
-                  </Text>
-                </View>
-
-                {/* Why We Need This Explanation */}
-                <View style={s.whyNeedBox}>
-                  <Text style={s.whyNeedText}>
-                    💡 <Text style={s.whyNeedBold}>Why we need this:</Text> Delivery riders and local customers rely on this exact pin location for 10-minute dispatch routing and nearby store discovery.
-                  </Text>
-                </View>
-              </View>
-
-            </View>
-
+        ) : null}
+        {MAP_AVAILABLE ? (
+          <View style={[st.map, !!err('location') && { borderColor: C.errorText }]}>
+            <RealInteractiveMap
+              height={isPhone ? 340 : 380}
+              latitude={latitude ?? 16.5062}
+              longitude={longitude ?? 80.648}
+              shopName={storeName || 'Your store'}
+              onLocationSelect={onMapSelect}
+            />
           </View>
+        ) : null}
+        {locError ? <Banner tone="warning" message={locError} style={{ marginTop: S.md, marginBottom: 0 }} /> : null}
+        {pinned ? (
+          <Text style={[st.helper, { color: C.successText, marginTop: S.sm }]}>
+            Pin set at {latitude!.toFixed(5)}, {longitude!.toFixed(5)}
+          </Text>
+        ) : err('location') ? (
+          <Text style={[st.helper, { color: C.errorText, marginTop: S.sm }]}>{err('location')}</Text>
+        ) : null}
+      </Section>
 
-          {/* Demo Edge State Simulator Bar */}
-          <View style={s.demoBar}>
-            <Text style={s.demoBarLabel}>DEMO STATES:</Text>
-            <TouchableOpacity style={s.demoChip} onPress={() => handleSimulateState('unsaved')}>
-              <Text style={s.demoChipText}>Unsaved</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.demoChip} onPress={() => handleSimulateState('saveError')}>
-              <Text style={s.demoChipText}>Save Error</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.demoChip} onPress={() => handleSimulateState('hoursError')}>
-              <Text style={s.demoChipText}>Hours Conflict</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={s.demoChip} onPress={() => handleSimulateState('denied')}>
-              <Text style={s.demoChipText}>GPS Denied</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={{ height: 40 }} />
-        </View>
-      </ScrollView>
-
-      {/* Sticky Bottom Action Bar */}
-      <View style={s.stickyFooter}>
-        <View style={s.footerInner}>
-          {/* Secondary Actions Left */}
-          <View style={s.footerLeftRow}>
-            <TouchableOpacity
-              style={s.secondaryBackBtn}
-              onPress={() => router.back()}
-              activeOpacity={0.7}
-              accessibilityLabel="Back"
-            >
-              <Text style={s.secondaryBackBtnText}>← Back</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={s.saveDraftBtn}
-              onPress={handleSaveDraft}
-              activeOpacity={0.7}
-              accessibilityLabel="Save draft"
-            >
-              <Text style={s.saveDraftBtnText}>💾 Save draft</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Primary CTA Right */}
-          <View style={s.footerRightRow}>
-            <TouchableOpacity
-              style={[s.primaryCtaBtn, loading && s.primaryCtaBtnDisabled]}
-              onPress={handleContinue}
-              disabled={loading}
-              activeOpacity={0.8}
-              accessibilityRole="button"
-              accessibilityLabel="Continue to documents"
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <View style={s.ctaTextWrap}>
-                  <Text style={s.primaryCtaText}>Continue to documents →</Text>
-                  <Text style={s.primaryCtaSub}>Step 1 of 4</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          </View>
-        </View>
-      </View>
-    </SafeAreaView>
+      <Section title="Opening hours" description="Orders reach you only while your store is open. Choose AM or PM for each time.">
+        <FieldRow>
+          <TimeField
+            label="Opens at"
+            hm={openHm}
+            mer={openMer}
+            onHm={edit(setOpenHm)}
+            onMer={edit(setOpenMer)}
+            onBlur={touch('openTime')}
+            error={err('openTime')}
+            last={!isPhone}
+          />
+          <TimeField
+            label="Closes at"
+            hm={closeHm}
+            mer={closeMer}
+            onHm={edit(setCloseHm)}
+            onMer={edit(setCloseMer)}
+            onBlur={touch('closeTime')}
+            error={err('closeTime')}
+            last
+          />
+        </FieldRow>
+      </Section>
+    </SellerFrame>
   );
 }
 
-const s = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: Colors.surface, // Warm off-white #F8FAFC
-  },
-  
-  /* Shell Header */
-  shellHeader: {
-    backgroundColor: Colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 6,
-    elevation: 3,
-    zIndex: 20,
-  },
-  shellHeaderInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    maxWidth: 1200,
-    width: '100%',
-    alignSelf: 'center',
-    marginBottom: Spacing.md,
-  },
-  brandLockup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  logoBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  logoLetter: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  brandTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    letterSpacing: -0.3,
-  },
-  brandSub: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  shellRightRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  draftTagInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: BorderRadii.pill,
-  },
-  draftTagSuccess: {
-    backgroundColor: Colors.successLight,
-    borderWidth: 1,
-    borderColor: Colors.successBorder,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: BorderRadii.pill,
-  },
-  draftTagUnsaved: {
-    backgroundColor: Colors.warningLight,
-    borderWidth: 1,
-    borderColor: Colors.warningBorder,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: BorderRadii.pill,
-  },
-  draftTagText: {
-    fontSize: 12,
-    color: Colors.success,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  draftTagUnsavedText: {
-    fontSize: 12,
-    color: Colors.warning,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  draftTagError: {
-    backgroundColor: Colors.dangerLight,
-    borderWidth: 1,
-    borderColor: Colors.dangerBorder,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: BorderRadii.pill,
-  },
-  draftTagErrorText: {
-    fontSize: 12,
-    color: Colors.danger,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  supportLink: {
-    paddingVertical: 4,
-  },
-  supportLinkText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12.5,
-    color: Colors.textSecondary,
-  },
-  supportBold: {
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.primary,
-  },
+function TimeField({
+  label,
+  hm,
+  mer,
+  onHm,
+  onMer,
+  onBlur,
+  error,
+  last,
+}: {
+  last?: boolean;
+  label: string;
+  hm: string;
+  mer: Meridiem;
+  onHm: (v: string) => void;
+  onMer: (v: Meridiem) => void;
+  onBlur: () => void;
+  error?: string;
+}) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: S.sm }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <TextField
+          label={label}
+          placeholder="09:00"
+          value={hm}
+          onChangeText={v => onHm(maskTime(v))}
+          onBlur={onBlur}
+          error={error}
+          keyboardType="number-pad"
+          inputMode="numeric"
+          maxLength={5}
+          last={last}
+        />
+      </View>
+      <View style={{ marginTop: 24 }}>
+        <Segmented options={MERIDIEMS} value={mer} onChange={onMer} label={label} />
+      </View>
+    </View>
+  );
+}
 
-  /* 4-Step Horizontal Segmented Tracker */
-  progressTrackerRow: {
-    flexDirection: 'row',
-    maxWidth: 1200,
-    width: '100%',
-    alignSelf: 'center',
-    gap: Spacing.sm,
-  },
-  stepSegment: {
-    flex: 1,
-  },
-  stepBar: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.border,
-    marginBottom: 4,
-  },
-  stepBarActive: {
-    backgroundColor: Colors.primary, // Royal Blue
-  },
-  stepBarCompleted: {
-    backgroundColor: Colors.primary,
-  },
-  stepLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    textAlign: 'center',
-  },
-  stepLabelActive: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  stepLabelCompleted: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
+function BusinessTypePicker({
+  value,
+  onChange,
+  error,
+}: {
+  value: BusinessType | '';
+  onChange: (v: BusinessType) => void;
+  error?: string;
+}) {
+  return (
+    <View style={{ marginBottom: S.lg + 2 }}>
+      <Text style={st.label}>Type of business</Text>
+      <Text style={st.helper}>This decides which tax documents we ask for in the next step.</Text>
+      <View accessibilityRole="radiogroup" accessibilityLabel="Type of business" style={{ gap: S.sm }}>
+        {BUSINESS_TYPES.map(t => {
+          const on = value === t.id;
+          return (
+            <Pressable
+              key={t.id}
+              testID={`business-${t.id}`}
+              onPress={() => onChange(t.id)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: on, selected: on }}
+              accessibilityLabel={`${t.label}. ${t.desc}`}
+              style={({ pressed }) => [st.option, on && st.optionOn, !!error && !on && { borderColor: C.errorText }, pressed && { opacity: 0.85 }]}
+            >
+              <Ionicons name={on ? 'radio-button-on' : 'radio-button-off'} size={22} color={on ? C.primary : C.inputBorder} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={st.optionTitle}>{t.label}</Text>
+                <Text style={st.optionDesc}>{t.desc}</Text>
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+      {error ? (
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginTop: 6 }} accessibilityLiveRegion="polite">
+          <Ionicons name="alert-circle" size={15} color={C.errorText} style={{ marginRight: 5, marginTop: 2 }} />
+          <Text style={{ flex: 1, fontSize: 13, lineHeight: 19, color: C.errorText }}>{error}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
 
-  /* Body Scroll */
-  scrollBody: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: Spacing.xl,
-  },
-  container: {
-    width: '100%',
-    maxWidth: 580,
-    alignSelf: 'center',
-  },
-  containerExpanded: {
-    maxWidth: 1200,
-  },
-
-  /* Welcome Card */
-  welcomeCard: {
+const st = StyleSheet.create({
+  option: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: Colors.primaryLight,
+    gap: S.md,
+    minHeight: 56,
+    paddingHorizontal: S.md,
+    paddingVertical: S.sm,
     borderWidth: 1,
-    borderColor: Colors.primaryBorder,
-    borderRadius: BorderRadii.card,
-    padding: Spacing.lg,
-    marginBottom: Spacing.xl,
-  },
-  welcomeTitle: {
-    fontSize: 18,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.primary,
-    marginBottom: 4,
-  },
-  welcomeSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13.5,
-    color: Colors.textSecondary,
-    lineHeight: 20,
-  },
-  stepPillBadge: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.pill,
-  },
-  stepPillBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-
-  /* Toast & Banners */
-  toastBanner: {
-    backgroundColor: Colors.successLight,
-    borderWidth: 1,
-    borderColor: Colors.successBorder,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  toastBannerText: {
-    fontSize: 13,
-    color: Colors.success,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  errorCard: {
-    backgroundColor: Colors.dangerLight,
-    borderWidth: 1,
-    borderColor: Colors.dangerBorder,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  errorCardText: {
-    fontSize: 13,
-    color: Colors.danger,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-
-  /* 2-Column Grid Layout */
-  gridWrapper: {
-    flexDirection: 'column',
-    gap: Spacing.xl,
-  },
-  gridWrapperDesktop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.xl,
-  },
-  columnLeft: {
-    width: '100%',
-  },
-  columnLeftDesktop: {
-    flex: 1.1,
-  },
-  columnRight: {
-    width: '100%',
-  },
-  columnRightDesktop: {
-    flex: 1,
-  },
-
-  /* Section Cards */
-  sectionCard: {
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.xl,
-    marginBottom: Spacing.xl,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.03,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  sectionHeader: {
-    marginBottom: Spacing.lg,
-  },
-  sectionTitle: {
-    fontSize: 17,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  sectionSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12.5,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-
-  /* Inputs & Rows */
-  fieldWrap: {
-    marginBottom: Spacing.lg,
-  },
-  fieldLabel: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    marginBottom: 6,
-  },
-  input: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    paddingHorizontal: Spacing.md,
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    backgroundColor: '#FFFFFF',
-  },
-  inputError: {
-    borderColor: Colors.danger,
-    backgroundColor: Colors.dangerLight,
-  },
-  fieldErrorText: {
-    fontSize: 12,
-    color: Colors.danger,
-    marginTop: 4,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  row2: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-  },
-  row3: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-  },
-
-  /* Schedule Preview Box */
-  schedulePreviewBox: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    marginTop: Spacing.sm,
-  },
-  scheduleBadgeRow: {
-    marginBottom: 4,
-  },
-  scheduleBadgeText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  scheduleNoteText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-  },
-
-  /* Map Card Header & Actions */
-  mapHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: Spacing.md,
-    gap: Spacing.sm,
-  },
-  gpsBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 9,
-    borderRadius: BorderRadii.pill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  gpsBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  searchBarWrap: {
-    flexDirection: 'row',
-    gap: Spacing.xs,
-    marginBottom: Spacing.md,
-  },
-  searchInput: {
-    flex: 1,
-    height: 44,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    paddingHorizontal: Spacing.md,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13.5,
-    backgroundColor: '#FFFFFF',
-  },
-  searchBtn: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: Spacing.md,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  searchBtnText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-
-  /* Banners */
-  statusBannerInfo: {
-    backgroundColor: Colors.primaryLight,
-    padding: Spacing.sm,
-    borderRadius: BorderRadii.input,
-    marginBottom: Spacing.md,
-  },
-  statusBannerInfoText: {
-    fontSize: 12,
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  statusBannerSuccess: {
-    backgroundColor: Colors.successLight,
-    borderWidth: 1,
-    borderColor: Colors.successBorder,
-    padding: Spacing.sm,
-    borderRadius: BorderRadii.input,
-    marginBottom: Spacing.md,
-  },
-  statusBannerSuccessText: {
-    fontSize: 12,
-    color: Colors.success,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  statusBannerWarning: {
-    backgroundColor: Colors.warningLight,
-    borderWidth: 1,
-    borderColor: Colors.warningBorder,
-    padding: Spacing.sm,
-    borderRadius: BorderRadii.input,
-    marginBottom: Spacing.md,
-  },
-  statusBannerWarningText: {
-    fontSize: 12,
-    color: Colors.warning,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    lineHeight: 16,
-  },
-
-  /* Area Presets */
-  areaPresetRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    marginBottom: Spacing.md,
-  },
-  presetLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-  },
-  presetList: {
-    gap: Spacing.xs,
-  },
-  presetChip: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-  },
-  presetChipText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-
-  /* Map Container & Address Summaries */
-  mapCardBox: {
-    height: 240,
-    borderRadius: BorderRadii.card,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: Spacing.md,
-  },
-  addressSummaryBox: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    marginBottom: Spacing.sm,
-  },
-  addressSummaryTitle: {
-    fontSize: 12.5,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-    marginBottom: 2,
-  },
-  addressSummaryText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  technicalArea: {
-    paddingHorizontal: 4,
-    marginBottom: Spacing.md,
-  },
-  technicalText: {
-    fontFamily: 'JetBrainsMono_500Medium',
-    fontSize: 12,
-    color: Colors.textMuted,
-    
-  },
-  whyNeedBox: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-  },
-  whyNeedText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-  },
-  whyNeedBold: {
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-
-  /* Demo Bar */
-  demoBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginTop: Spacing.lg,
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  demoBarLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    marginRight: 4,
-  },
-  demoChip: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-  },
-  demoChipText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-
-  /* Sticky Footer CTA */
-  stickyFooter: {
-    backgroundColor: Colors.card,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: -2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  footerInner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    maxWidth: 1200,
-    width: '100%',
-    alignSelf: 'center',
-  },
-  footerLeftRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  secondaryBackBtn: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: 12,
-    borderRadius: BorderRadii.input,
-  },
-  secondaryBackBtnText: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  saveDraftBtn: {
-    backgroundColor: Colors.primaryLight,
-    borderWidth: 1,
-    borderColor: Colors.primaryBorder,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: 12,
-    borderRadius: BorderRadii.input,
-  },
-  saveDraftBtnText: {
-    fontSize: 13.5,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.primary,
-  },
-  footerRightRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  primaryCtaBtn: {
-    backgroundColor: Colors.primary, // Royal Blue
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: 10,
-    borderRadius: BorderRadii.input,
-    minWidth: 220,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  primaryCtaBtnDisabled: {
-    backgroundColor: '#94A3B8',
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  ctaTextWrap: {
-    alignItems: 'center',
-  },
-  primaryCtaText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  primaryCtaSub: {
-    color: '#BFDBFE',
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
+    borderColor: C.border,
+    borderRadius: 12,
+    backgroundColor: C.card,
+  },
+  optionOn: { borderColor: C.primary, backgroundColor: C.primaryLight },
+  optionTitle: { fontFamily: FontFamily.semibold, fontSize: 15, lineHeight: 21, color: C.textPrimary },
+  optionDesc: { fontSize: 13, lineHeight: 18, color: C.textSecondary },
+  label: { fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: C.textPrimary, marginBottom: 2 },
+  helper: { fontSize: 13, lineHeight: 19, color: C.textSubtle, marginBottom: S.md },
+  map: { borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: 'transparent' },
 });

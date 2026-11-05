@@ -1,3 +1,10 @@
+/**
+ * Standard screen frame for the vendor app: AppHeader, a scrolling body on the
+ * #F4F6FA canvas, an optional sticky footer, and an error boundary around the body.
+ *
+ * Navigation (bottom tabs on phones, the left sidebar on desktop) is drawn by
+ * app/(vendor)/_layout.tsx. Screens must not draw their own tab bar or sidebar rail.
+ */
 import React from 'react';
 import {
   View,
@@ -6,9 +13,15 @@ import {
   StyleSheet,
   Platform,
   useWindowDimensions,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AppHeader, { AppHeaderProps, useHeaderHeight } from './AppHeader';
+import ErrorBoundary from './ErrorBoundary';
+import { Colors, Spacing, Breakpoints } from '../theme/tokens';
+
+export { default as ErrorBoundary, withErrorBoundary, ErrorFallback } from './ErrorBoundary';
 
 export interface ScreenShellProps {
   header?: AppHeaderProps;
@@ -17,9 +30,14 @@ export interface ScreenShellProps {
   keyboardAvoiding?: boolean;
   stickyFooter?: React.ReactNode;
   refreshControl?: React.ReactElement;
+  /** Page background. Defaults to the canvas (#F4F6FA); cards on it are white. */
   backgroundColor?: string;
   testID?: string;
-  contentContainerStyle?: any;
+  contentContainerStyle?: StyleProp<ViewStyle>;
+  /** Wraps the body in an ErrorBoundary (default true). The header stays usable after a crash. */
+  errorBoundary?: boolean;
+  /** Maximum content width on wide screens (default 1200). */
+  maxContentWidth?: number;
 }
 
 export default function ScreenShell({
@@ -29,102 +47,70 @@ export default function ScreenShell({
   keyboardAvoiding = false,
   stickyFooter,
   refreshControl,
-  backgroundColor = '#FFFFFF',
+  backgroundColor = Colors.canvas,
   testID = 'screen-shell',
   contentContainerStyle,
+  errorBoundary = true,
+  maxContentWidth = 1200,
 }: ScreenShellProps) {
   const insets = useSafeAreaInsets();
   const headerHeight = useHeaderHeight();
   const { width } = useWindowDimensions();
-  const isExpanded = width >= 1024;
+  const isExpanded = width >= Breakpoints.desktop;
+  const centered = isExpanded ? { maxWidth: maxContentWidth, alignSelf: 'center' as const } : null;
 
-  const bodyContent = (
-    <View style={[s.contentWrapper, isExpanded && s.contentWrapperCentered]}>
-      {children}
-    </View>
-  );
+  const body = <View style={[s.content, centered]}>{children}</View>;
 
-  const mainView = scroll ? (
+  const main = scroll ? (
     <ScrollView
-      style={s.scrollView}
-      contentContainerStyle={[
-        s.scrollContent,
-        contentContainerStyle,
-        stickyFooter && { paddingBottom: 16 },
-      ]}
+      style={s.flex}
+      contentContainerStyle={[s.scrollContent, contentContainerStyle]}
       refreshControl={refreshControl}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
     >
-      {bodyContent}
+      {body}
     </ScrollView>
   ) : (
-    <View style={[s.flex1, contentContainerStyle]}>{bodyContent}</View>
+    <View style={[s.flex, contentContainerStyle]}>{body}</View>
   );
 
-  const wrappedView = keyboardAvoiding ? (
+  const guarded = errorBoundary ? <ErrorBoundary screen={header?.title}>{main}</ErrorBoundary> : main;
+
+  const wrapped = keyboardAvoiding ? (
     <KeyboardAvoidingView
-      style={s.flex1}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={headerHeight}
+      style={s.flex}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
     >
-      {mainView}
+      {guarded}
     </KeyboardAvoidingView>
   ) : (
-    mainView
+    guarded
   );
 
   return (
-    <SafeAreaView
-      edges={['left', 'right']}
-      style={[s.root, { backgroundColor }]}
-      testID={testID}
-    >
-      {header && <AppHeader {...header} />}
-      <View style={s.flex1}>{wrappedView}</View>
-      {stickyFooter && (
-        <View
-          style={[
-            s.stickyFooterContainer,
-            { paddingBottom: Math.max(insets.bottom, 12) },
-          ]}
-        >
-          <View style={[s.contentWrapper, isExpanded && s.contentWrapperCentered]}>
-            {stickyFooter}
-          </View>
+    <SafeAreaView edges={['left', 'right']} style={[s.flex, { backgroundColor }]} testID={testID}>
+      {header ? <AppHeader {...header} /> : null}
+      <View style={s.flex}>{wrapped}</View>
+      {stickyFooter ? (
+        <View style={[s.footer, { paddingBottom: Math.max(insets.bottom, Spacing.md) }]}>
+          <View style={[s.content, centered]}>{stickyFooter}</View>
         </View>
-      )}
+      ) : null}
     </SafeAreaView>
   );
 }
 
 const s = StyleSheet.create({
-  root: {
-    flex: 1,
-  },
-  flex1: {
-    flex: 1,
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-  },
-  contentWrapper: {
-    flex: 1,
-    width: '100%',
-  },
-  contentWrapperCentered: {
-    maxWidth: 1200,
-    alignSelf: 'center',
-  },
-  stickyFooterContainer: {
-    backgroundColor: '#FFFFFF',
+  flex: { flex: 1 },
+  scrollContent: { flexGrow: 1 },
+  content: { flex: 1, width: '100%' },
+  footer: {
+    backgroundColor: Colors.card,
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
-    paddingTop: 12,
-    paddingHorizontal: 16,
-    zIndex: 99,
+    borderTopColor: Colors.border,
+    paddingTop: Spacing.md,
+    paddingHorizontal: Spacing.lg,
   },
 });

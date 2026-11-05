@@ -1,1831 +1,602 @@
 /**
- * SCREEN 09: Store Command Center
- * Desktop 1440x1024 Reference Layout with Left Navigation Rail & 1200px Content Console
+ * Store Command Center (PRD screen 09): is the store taking orders, and what needs doing now.
+ * Availability is confirmed by the server before the screen says "Online". Counts come from
+ * the order list; low stock and today's summary only appear when there is real data.
  * File: mobile/app/(vendor)/home.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import Wordmark from '../../src/components/Wordmark';
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
-  SafeAreaView,
-  ScrollView,
-  TouchableOpacity,
+  Pressable,
   Modal,
-  TextInput,
   Platform,
-  Alert,
-  ActivityIndicator,
+  RefreshControl,
+  StyleSheet,
   useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Colors, Spacing, BorderRadii } from '../../src/theme/tokens';
+import { FontFamily } from '../../src/theme/typography';
 import useVendorStore from '../../src/store/useVendorStore';
-import { useVendorSession, getSession } from '../../src/services/session';
-import { vendorApi, ordersApi, earningsApi, inventoryApi } from '../../src/services/api';
-import { getSocket, registerVendor, setVendorStatus, acceptOrderOffer, declineOrderOffer } from '../../src/services/socket';
-import { soundService } from '../../src/services/sound';
-import CustomerAppRedirectButton from '../../src/components/CustomerAppRedirectButton';
-import MobileBottomNav from '../../src/components/MobileBottomNav';
-import AppHeader from '../../src/components/AppHeader';
+import type { Order } from '../../src/store/useVendorStore';
+import { useVendorSession } from '../../src/services/session';
+import { vendorApi, earningsApi, inventoryApi } from '../../src/services/api';
+import { setVendorStatus } from '../../src/services/socket';
+import ScreenShell from '../../src/components/ScreenShell';
+import {
+  OrderCard,
+  bucketOf,
+  formatAgo,
+  formatINR,
+  friendlyError,
+  isToday,
+  useOrdersFeed,
+  withTimeout,
+} from '../../src/features/orders';
+import { Banner, Card, PrimaryButton, SecondaryButton, StateView, ui } from '../../src/features/orders/ui';
 
+const PAUSE_REASONS = ['Store busy', 'Restocking shelves', 'Staff break', 'Closing for the day'];
+const LOW_STOCK_LEVEL = 5;
 
-const PAUSE_REASONS = [
-  'Store busy / Heavy order rush',
-  'Restocking shelf inventory',
-  'Staff shift change / Break',
-  'Closing for the day / Maintenance',
-];
+type Availability =
+  | 'checking'
+  | 'unknown'
+  | 'going_online'
+  | 'online'
+  | 'going_offline'
+  | 'offline'
+  | 'failed_online';
 
-export default function GlowVAIVendorHomeScreen() {
-  // The signed-in vendor (the backend also takes it from the session token).
-  const vendorSession = useVendorSession();
-  const VENDOR_ID = vendorSession.vendorId || '';
-  const STORE_ID = vendorSession.storeId || '';
+export default function StoreCommandCenter() {
   const router = useRouter();
+  const session = useVendorSession();
   const { width } = useWindowDimensions();
   const isExpanded = width >= 1024;
 
-  const {
-    vendor, setVendor, setOnlineStatus,
-    orders, setOrders, updateOrder,
-    earnings, setEarnings,
-    inventory, setInventory, updateInventoryItem,
-    setConnected,
-  } = useVendorStore();
+  const isConnected = useVendorStore(s => s.isConnected);
+  const setOnlineStatus = useVendorStore(s => s.setOnlineStatus);
+  const inventory = useVendorStore(s => s.inventory);
+  const setInventory = useVendorStore(s => s.setInventory);
+  const earnings = useVendorStore(s => s.earnings);
+  const setEarnings = useVendorStore(s => s.setEarnings);
 
-  const [isLoadingDashboard, setIsLoadingDashboard] = useState(false);
-  const [isOnline, setIsOnline] = useState<boolean>(vendor?.isOnline ?? true);
-  const [isPauseModalOpen, setIsPauseModalOpen] = useState(false);
-  const [selectedPauseReason, setSelectedPauseReason] = useState(PAUSE_REASONS[0]);
+  const feed = useOrdersFeed();
+  const [now, setNow] = useState(() => Date.now());
 
-  // Demo Edge State Switcher State
-  const [demoState, setDemoState] = useState<'normal' | 'first_day' | 'paused' | 'no_orders' | 'reconnecting' | 'offline' | 'stale_metrics' | 'api_error' | 'permission_denied'>('normal');
-
-  // Store Details State
-  const [storeDetails, setStoreDetails] = useState({
-    shopName: 'Your store',
-    locality: 'Benz Circle',
-    city: 'Vijayawada',
-    operatingHours: '09:00 AM – 10:00 PM',
-  });
-
-  // Modals State
-  const [isAdjustStockOpen, setIsAdjustStockOpen] = useState(false);
-  const [incomingOrderModal, setIncomingOrderModal] = useState<any | null>(null);
-  const [countdownSeconds, setCountdownSeconds] = useState(45);
-  const [isClaimingOrder, setIsClaimingOrder] = useState(false);
-  const [isDeclineConfirmOpen, setIsDeclineConfirmOpen] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Connection & Offline State
-  const [isConnectedState, setIsConnectedState] = useState(true);
+  const [availability, setAvailability] = useState<Availability>('checking');
+  const [availabilityError, setAvailabilityError] = useState('');
+  const [storeName, setStoreName] = useState('');
+  const [storeArea, setStoreArea] = useState('');
+  const [inventoryLoaded, setInventoryLoaded] = useState(false);
+  const [pauseOpen, setPauseOpen] = useState(false);
+  const [pauseReason, setPauseReason] = useState<string>(PAUSE_REASONS[0]);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = "Store Command Center | GlowVAI Vendor Workspace";
+      document.title = 'Store Command Center | GlowVai Vendor';
     }
-
-    loadStoreDetails();
-    loadDashboardData();
-    const teardownSockets = setupSockets();
-
-    return () => {
-      teardownSockets();
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
   }, []);
 
-  const loadStoreDetails = async () => {
+  // Store name and area: onboarding draft first, then the server profile.
+  useEffect(() => {
+    AsyncStorage.getItem('onb_step_a')
+      .then(raw => {
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed?.storeName) setStoreName(String(parsed.storeName).trim());
+        const area = [parsed?.locality, parsed?.city].map((x: any) => (typeof x === 'string' ? x.trim() : '')).filter(Boolean).join(', ');
+        if (area) setStoreArea(area);
+      })
+      .catch(() => {});
+  }, []);
+
+  const loadProfile = useCallback(async () => {
     try {
-      const stepA = await AsyncStorage.getItem('onb_step_a');
-      if (stepA) {
-        const parsed = JSON.parse(stepA);
-        setStoreDetails({
-          shopName: parsed.storeName?.trim() || 'Your store',
-          locality: parsed.locality?.trim() || 'Benz Circle',
-          city: parsed.city?.trim() || 'Vijayawada',
-          operatingHours: '09:00 AM – 10:00 PM',
-        });
+      const res: any = await vendorApi.me();
+      const v = res?.vendor;
+      if (!v) {
+        setAvailability('unknown');
+        return;
       }
-    } catch (_) {}
+      if (v.shopName) setStoreName(prev => prev || String(v.shopName));
+      const area = [v.locality, v.city].filter(Boolean).join(', ');
+      if (area) setStoreArea(prev => prev || area);
+      setOnlineStatus(!!v.isOnline);
+      setAvailability(v.isOnline ? 'online' : 'offline');
+    } catch (err) {
+      setAvailability('unknown');
+      setAvailabilityError(friendlyError(err));
+    }
+  }, [setOnlineStatus]);
+
+  const loadExtras = useCallback(async () => {
+    inventoryApi
+      .getAll()
+      .then((res: any) => {
+        if (Array.isArray(res?.items)) setInventory(res.items);
+        setInventoryLoaded(true);
+      })
+      .catch(() => {});
+    if (session.vendorId) {
+      earningsApi
+        .getSummary(session.vendorId)
+        .then((res: any) => res?.earnings && setEarnings(res.earnings))
+        .catch(() => {});
+    }
+  }, [session.vendorId, setInventory, setEarnings]);
+
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
+
+  useEffect(() => {
+    if (session.loaded) loadExtras();
+  }, [session.loaded, loadExtras]);
+
+  const handleRefresh = async () => {
+    await Promise.all([feed.refresh(), loadProfile(), loadExtras()]);
   };
 
-  const loadDashboardData = async () => {
-    setIsLoadingDashboard(true);
+  // ── Availability ───────────────────────────────────────────────────────────
+  const goOnline = async () => {
+    setAvailability('going_online');
+    setAvailabilityError('');
     try {
-      const [vRes, oRes, eRes, iRes] = await Promise.all([
-        vendorApi.me().catch(() => null),
-        ordersApi.getAll().catch(() => null),
-        getSession().then(sess => (sess.vendorId ? earningsApi.getSummary(sess.vendorId) : null)).catch(() => null),
-        inventoryApi.getAll().catch(() => null),
-      ]);
-
-      if (vRes?.vendor) setVendor(vRes.vendor);
-      if (oRes?.orders && Array.isArray(oRes.orders)) setOrders(oRes.orders);
-      if (eRes?.earnings) setEarnings(eRes.earnings);
-      if (iRes?.items && Array.isArray(iRes.items)) setInventory(iRes.items);
-    } catch (e) {
-      setIsConnectedState(false);
-    } finally {
-      setIsLoadingDashboard(false);
+      if (!session.vendorId) throw Object.assign(new Error('no session'), { status: 401 });
+      const res: any = await withTimeout(vendorApi.setStatus(session.vendorId, true), 15_000);
+      const on = res?.isOnline !== false;
+      setOnlineStatus(on);
+      if (on) {
+        setVendorStatus(session.vendorId, true);
+        setAvailability('online');
+      } else {
+        setAvailability('failed_online');
+      }
+    } catch (err) {
+      setAvailabilityError(friendlyError(err));
+      setAvailability('failed_online');
     }
   };
 
-  // Returns a teardown that removes these listeners. The socket is a shared singleton,
-  // so without this each visit to the screen would add another order-offer handler.
-  const setupSockets = () => {
+  const goOffline = async () => {
+    setPauseOpen(false);
+    setAvailability('going_offline');
+    setAvailabilityError('');
     try {
-      const socket = getSocket();
-      // Deferred to the next tick: updating state synchronously inside the socket callback
-      // crashed the web renderer during connect.
-      const onConnect = () => {
-        // Deferred to the next tick: updating state synchronously inside the socket callback
-        // stalled the web renderer during connect.
-        setTimeout(() => {
-          setIsConnectedState(true);
-          setConnected(true);
-          registerVendor(VENDOR_ID, STORE_ID);
-        }, 0);
-      };
-      const onDisconnect = () => setIsConnectedState(false);
-      const onIncoming = (payload: { order: any }) => {
-        if (payload?.order) triggerIncomingOrderAlert(payload.order);
-      };
-      socket.on('connect', onConnect);
-      socket.on('disconnect', onDisconnect);
-      socket.on('order:incoming', onIncoming);
-      return () => {
-        socket.off('connect', onConnect);
-        socket.off('disconnect', onDisconnect);
-        socket.off('order:incoming', onIncoming);
-      };
-    } catch (_) {
-      return () => {};
+      if (!session.vendorId) throw Object.assign(new Error('no session'), { status: 401 });
+      await withTimeout(vendorApi.setStatus(session.vendorId, false, pauseReason), 15_000);
+      setVendorStatus(session.vendorId, false);
+      setOnlineStatus(false);
+      setAvailability('offline');
+    } catch (err) {
+      setAvailabilityError(`Could not go offline. ${friendlyError(err)}`);
+      setAvailability('online');
     }
   };
 
-  const triggerIncomingOrderAlert = (order: any) => {
-    soundService.startRinging();
-    setIncomingOrderModal(order);
-    setCountdownSeconds(45);
-    setIsClaimingOrder(false);
-
-    if (timerRef.current) clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => {
-      setCountdownSeconds(prev => {
-        if (prev <= 1) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          soundService.stopRinging();
-          setIncomingOrderModal(null);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+  const isOn = availability === 'online' || availability === 'going_offline';
+  const busy = availability === 'going_online' || availability === 'going_offline' || availability === 'checking';
+  const onToggle = () => {
+    if (busy) return;
+    if (isOn) setPauseOpen(true);
+    else goOnline();
   };
 
-  const handleToggleDuty = () => {
-    if (isOnline) {
-      setIsPauseModalOpen(true);
-    } else {
-      setIsOnline(true);
-      setOnlineStatus(true);
-      setVendorStatus(VENDOR_ID, true);
+  const status = (() => {
+    switch (availability) {
+      case 'checking':
+        return { title: 'Checking store status', sub: 'One moment.', tone: 'neutral' as const };
+      case 'going_online':
+        return { title: 'Going online...', sub: 'Checking with GlowVai that your store can take orders.', tone: 'neutral' as const };
+      case 'going_offline':
+        return { title: 'Going offline...', sub: 'Stopping new order offers.', tone: 'neutral' as const };
+      case 'online':
+        return isConnected
+          ? { title: 'Online and accepting orders.', sub: 'New orders will ring on this device.', tone: 'online' as const }
+          : { title: 'Temporarily unavailable.', sub: 'Reconnecting to GlowVai. New offers may be delayed until the connection is back.', tone: 'warning' as const };
+      case 'offline':
+        return { title: 'Offline.', sub: 'You will not get new orders. You can still finish the ones you have.', tone: 'neutral' as const };
+      case 'failed_online':
+        return { title: 'Unable to go online.', sub: availabilityError || 'GlowVai could not put your store online. Try again.', tone: 'danger' as const };
+      default:
+        return { title: 'Store status unknown', sub: availabilityError || 'We could not load your store status.', tone: 'danger' as const };
     }
-  };
+  })();
 
-  const confirmPauseDuty = () => {
-    setIsOnline(false);
-    setOnlineStatus(false);
-    setVendorStatus(VENDOR_ID, false);
-    vendorApi.setStatus(VENDOR_ID, false, selectedPauseReason).catch(() => {});
-    setIsPauseModalOpen(false);
-  };
+  // ── Orders ─────────────────────────────────────────────────────────────────
+  const groups = useMemo(() => {
+    const g = { incoming: [] as Order[], preparing: [] as Order[], ready: [] as Order[], today: 0 };
+    for (const o of feed.orders) {
+      const b = bucketOf(o.status);
+      if (b === 'incoming') g.incoming.push(o);
+      else if (b === 'preparing') g.preparing.push(o);
+      else if (b === 'ready') g.ready.push(o);
+      if (isToday(o.createdAt, now) && b !== 'other') g.today += 1;
+    }
+    const oldestFirst = (a: Order, b: Order) => (a.createdAt || 0) - (b.createdAt || 0);
+    g.incoming.sort(oldestFirst);
+    g.preparing.sort(oldestFirst);
+    g.ready.sort(oldestFirst);
+    return g;
+  }, [feed.orders, now]);
 
-  const handleAcceptIncomingOrder = async () => {
-    if (!incomingOrderModal?.orderId || isClaimingOrder) return;
-    setIsClaimingOrder(true);
+  const nextUp = useMemo(
+    () => [
+      ...groups.incoming.map(o => ({ order: o, action: 'Review' })),
+      ...groups.preparing.map(o => ({ order: o, action: 'Pick' })),
+    ].slice(0, 3),
+    [groups],
+  );
 
-    setTimeout(() => {
-      if (timerRef.current) clearInterval(timerRef.current);
-      soundService.stopRinging();
+  const lowStock = useMemo(
+    () =>
+      (Array.isArray(inventory) ? inventory : [])
+        .filter(it => it.status !== 'deleted' && it.active !== false)
+        .map(it => ({ ...it, left: it.availableStock ?? it.stockOnHand ?? it.stock ?? 0 }))
+        .filter(it => it.left <= LOW_STOCK_LEVEL)
+        .sort((a, b) => a.left - b.left)
+        .slice(0, 4),
+    [inventory],
+  );
 
-      const orderId: string = incomingOrderModal.orderId;
-      acceptOrderOffer(orderId, VENDOR_ID);
-      updateOrder(orderId, { status: 'ACCEPTED', vendorId: VENDOR_ID });
-      setIsClaimingOrder(false);
-      setIncomingOrderModal(null);
-      Alert.alert('Order Accepted 🎉', `Order #${orderId} server lock acquired. Please start packing!`);
-    }, 1200);
-  };
+  const earningsToday = typeof earnings?.today?.earnings === 'number' ? earnings.today.earnings : undefined;
+  const showToday = feed.hasLoaded && (groups.today > 0 || earningsToday !== undefined);
 
-  const handleDeclineIncomingOrder = () => {
-    setIsDeclineConfirmOpen(true);
-  };
+  const openTab = (tab: string) => router.push({ pathname: '/(vendor)/orders', params: { tab } } as any);
+  const openOrder = (o: Order) => router.push({ pathname: '/(vendor)/order-detail', params: { orderId: o.orderId } } as any);
 
-  const confirmDeclineIncomingOrder = () => {
-    if (!incomingOrderModal) return;
-    if (timerRef.current) clearInterval(timerRef.current);
-    soundService.stopRinging();
-    declineOrderOffer(incomingOrderModal.orderId ?? '', VENDOR_ID);
-    setIsDeclineConfirmOpen(false);
-    setIncomingOrderModal(null);
-  };
-
-  const activeOrdersList = useMemo(() => {
-    if (demoState === 'no_orders' || demoState === 'first_day') return [];
-    const list = Array.isArray(orders) ? orders : [];
-    return list.filter(o => ['ACCEPTED', 'PREPARING', 'PACKED', 'READY_FOR_PICKUP'].includes(o.status));
-  }, [orders, demoState]);
-
-  const orderCounts = useMemo(() => {
-    const list = Array.isArray(orders) ? orders : [];
-    return {
-      newOrders: list.filter(o => o.status === 'PENDING').length,
-      active: list.filter(o => ['ACCEPTED', 'PREPARING', 'PACKED', 'READY_FOR_PICKUP'].includes(o.status)).length,
-      delivered: list.filter(o => o.status === 'DELIVERED').length,
-    };
-  }, [orders]);
-
-  const lowStockItemsList = useMemo(() => {
-    if (demoState === 'first_day') return [];
-    const list = Array.isArray(inventory) ? inventory : [];
-    const filtered = list.filter((it: any) => {
-      const s = it?.stockOnHand ?? it?.stock ?? it?.availableStock ?? 0;
-      return s > 0 && s <= 5;
-    });
-
-    return filtered;
-  }, [inventory, demoState]);
+  const firstLoadFailed = !feed.hasLoaded && feed.state === 'error';
 
   return (
-    <SafeAreaView style={s.root}>
-      <View style={s.desktopLayout}>
-        
-        {/* ── Desktop Left Navigation Rail ───────────────────────────────────────── */}
-        {isExpanded && (
-          <View style={s.navRail}>
-            <View style={s.railBrandGroup}>
-              <View style={s.railBrandLogo}>
-                <Ionicons name="sparkles" size={18} color="#FFFFFF" style={s.railBrandLogoIcon} />
+    <View style={s.screen}>
+      <ScreenShell
+        header={{
+          title: storeName || 'Your store',
+          subtitle: storeArea || 'Store Command Center',
+          showBell: true,
+        }}
+        backgroundColor={Colors.surface}
+        refreshControl={
+          <RefreshControl refreshing={feed.refreshing} onRefresh={handleRefresh} tintColor={Colors.primary} colors={[Colors.primary]} />
+        }
+        contentContainerStyle={s.scroll}
+      >
+        <View style={s.stack}>
+          {/* Availability */}
+          <Card style={[s.availability, status.tone === 'online' && s.availabilityOn]}>
+            <View style={s.availabilityRow}>
+              <View style={[s.dot, dotStyle(status.tone)]} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={s.availabilityTitle} accessibilityLiveRegion="polite">{status.title}</Text>
+                <Text style={s.availabilitySub}>{status.sub}</Text>
               </View>
-              <View>
-                <Wordmark size={17} />
-                <Text style={s.railBrandSub}>Vendor Console</Text>
-              </View>
+              <BigToggle on={isOn} busy={busy} onPress={onToggle} disabled={availability === 'unknown'} />
             </View>
-
-            {/* Navigation Group */}
-            <View style={s.railNavGroup}>
-              <TouchableOpacity style={[s.railNavItem, s.railNavItemActive]} activeOpacity={0.8}>
-                <Ionicons name="home-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={[s.railNavLabel, s.railNavLabelActive]}>Home</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/orders')} activeOpacity={0.8}>
-                <Ionicons name="clipboard-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Orders</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/catalog')} activeOpacity={0.8}>
-                <Ionicons name="cube-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Catalog</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/earnings')} activeOpacity={0.8}>
-                <Ionicons name="wallet-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Earnings</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railNavItem} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <Ionicons name="settings-outline" size={18} color="#475569" style={s.railNavIcon} />
-                <Text style={s.railNavLabel}>Settings</Text>
-              </TouchableOpacity>
-            </View>
-
-            {/* Bottom Rail Section */}
-            <View style={s.railFooter}>
-              <TouchableOpacity style={s.storeSelectorPill} activeOpacity={0.8}>
-                <Text style={s.storeSelectorText} numberOfLines={1}>📍 Benz Circle Store ▼</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railHelpBtn} activeOpacity={0.8}>
-                <Text style={s.railHelpText}>Help & Support 💬</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.railProfileCard} onPress={() => router.push('/(vendor)/profile')} activeOpacity={0.8}>
-                <View style={s.railAvatar}>
-                  <Text style={s.railAvatarText}>G</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.railProfileName} numberOfLines={1}>Store account</Text>
-                  <Text style={s.railProfileRole}>Store Admin</Text>
-                </View>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
-
-        {/* ── Main Content Area ─────────────────────────────────────────────────── */}
-        <View style={s.mainConsole}>
-          
-          {/* Main Console Header */}
-          <AppHeader
-            title={storeDetails.shopName}
-            subtitle={`📍 ${storeDetails.locality}, ${storeDetails.city} • Store Command Center`}
-            showBell={true}
-            rightActions={<CustomerAppRedirectButton storeName={storeDetails.shopName} />}
-          />
-
-          {/* Console Scrollable Body */}
-          <ScrollView
-            style={s.scrollBody}
-            contentContainerStyle={s.scrollContent}
-            showsVerticalScrollIndicator={false}
-          >
-            {/* Interactive Demo State Switcher */}
-            {__DEV__ && (
-            <View style={s.demoStateBar}>
-              <Text style={s.demoStateLabel}>🧪 Test Command Center States:</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.demoChipRow}>
-                <TouchableOpacity
-                  style={[s.demoChip, demoState === 'normal' && s.demoChipActive]}
-                  onPress={() => setDemoState('normal')}
-                >
-                  <Text style={[s.demoChipText, demoState === 'normal' && s.demoChipTextActive]}>Normal Operational Console</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[s.demoChip, demoState === 'first_day' && s.demoChipActive]}
-                  onPress={() => setDemoState('first_day')}
-                >
-                  <Text style={[s.demoChipText, demoState === 'first_day' && s.demoChipTextActive]}>First-Day Empty Dashboard</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[s.demoChip, demoState === 'paused' && s.demoChipActive]}
-                  onPress={() => { setDemoState('paused'); setIsOnline(false); }}
-                >
-                  <Text style={[s.demoChipText, demoState === 'paused' && s.demoChipTextActive]}>Store Paused</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[s.demoChip, demoState === 'offline' && s.demoChipActive]}
-                  onPress={() => setDemoState('offline')}
-                >
-                  <Text style={[s.demoChipText, demoState === 'offline' && s.demoChipTextActive]}>Offline Mode</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[s.demoChip, demoState === 'api_error' && s.demoChipActive]}
-                  onPress={() => setDemoState('api_error')}
-                >
-                  <Text style={[s.demoChipText, demoState === 'api_error' && s.demoChipTextActive]}>API Error</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={s.demoChip}
-                  onPress={() => triggerIncomingOrderAlert({ orderId: 'ORD-9930', items: [{ name: 'Cetaphil Cleanser' }], pricing: { grandTotal: 799 } })}
-                >
-                  <Text style={s.demoChipText}>⚡ Test 45s Order Offer Modal</Text>
-                </TouchableOpacity>
-              </ScrollView>
-            </View>
-
-            )}
-            {/* Offline / Connection Warning Banner */}
-            {demoState === 'offline' && (
-              <View style={s.errorCard}>
-                <Text style={s.errorCardText}>📡 Network connection offline. Orders and live inventory updates are paused until reconnected.</Text>
+            {(availability === 'failed_online' || availability === 'unknown') && (
+              <View style={s.availabilityActions}>
+                <PrimaryButton
+                  label={availability === 'unknown' ? 'Retry' : 'Try again'}
+                  onPress={availability === 'unknown' ? () => { setAvailability('checking'); loadProfile(); } : goOnline}
+                />
               </View>
             )}
-
-            {/* API Error Warning Banner */}
-            {demoState === 'api_error' && (
-              <View style={s.errorCard}>
-                <Text style={s.errorCardText}>⚠️ Failed to fetch latest store metrics. Click "Refresh" or check API gateway credentials.</Text>
+            {availability === 'online' && !!availabilityError && (
+              <View style={{ marginTop: Spacing.md }}>
+                <Banner tone="danger" message={availabilityError} />
               </View>
             )}
+          </Card>
 
-            {/* ── 1. DOMINANT OPERATIONAL CARD: Store Availability Control ─────────────── */}
-            <View style={[
-              s.dutyCard,
-              (isOnline && demoState !== 'paused') ? s.dutyCardOnline : s.dutyCardOffline
-            ]}>
-              <View style={s.dutyCardHeader}>
-                <View style={s.dutyStatusPillWrap}>
-                  <View style={[s.dutyDot, { backgroundColor: (isOnline && demoState !== 'paused') ? Colors.success : Colors.danger }]} />
-                  <Text style={[s.dutyStatusText, { color: (isOnline && demoState !== 'paused') ? Colors.success : Colors.danger }]}>
-                    {(isOnline && demoState !== 'paused') ? '🟢 STORE OPEN & ACCEPTING ORDERS' : '🔴 STORE PAUSED'}
-                  </Text>
-                </View>
+          {firstLoadFailed ? (
+            <Card>
+              <StateView
+                kind="error"
+                title="We could not load your orders"
+                message={feed.error}
+                actionLabel="Retry"
+                onAction={feed.refresh}
+              />
+            </Card>
+          ) : (
+            <>
+              {feed.state === 'error' && feed.hasLoaded && (
+                <Banner tone="warning" title="Showing the last loaded orders" message={feed.error} actionLabel="Retry" onAction={feed.refresh} />
+              )}
 
-                {/* Thumb-friendly Switch */}
-                <TouchableOpacity
-                  style={[s.switchTrack, (isOnline && demoState !== 'paused') ? s.switchTrackOnline : s.switchTrackOffline]}
-                  onPress={handleToggleDuty}
-                  activeOpacity={0.85}
-                  accessibilityRole="switch"
-                  accessibilityState={{ checked: isOnline }}
-                >
-                  <View style={[s.switchThumb, (isOnline && demoState !== 'paused') ? s.switchThumbOnline : s.switchThumbOffline]} />
-                </TouchableOpacity>
+              {/* What needs doing */}
+              <View style={s.tiles}>
+                <Tile
+                  label="Incoming"
+                  icon="notifications-outline"
+                  count={groups.incoming.length}
+                  hint={groups.incoming.length ? 'Waiting for you to accept' : 'No new offers'}
+                  loading={!feed.hasLoaded}
+                  highlight={groups.incoming.length > 0}
+                  onPress={() => openTab('incoming')}
+                />
+                <Tile
+                  label="To pack"
+                  icon="basket-outline"
+                  count={groups.preparing.length}
+                  hint={groups.preparing.length ? `Oldest ${formatAgo(groups.preparing[0].acceptedAt || groups.preparing[0].createdAt, now).toLowerCase()}` : 'Nothing to pack'}
+                  loading={!feed.hasLoaded}
+                  onPress={() => openTab('preparing')}
+                />
+                <Tile
+                  label="Pickup"
+                  icon="bicycle-outline"
+                  count={groups.ready.length}
+                  hint={groups.ready.length ? 'Packed, awaiting rider' : 'None awaiting rider'}
+                  loading={!feed.hasLoaded}
+                  onPress={() => openTab('ready')}
+                />
               </View>
 
-              <Text style={s.dutyHelperLine}>
-                {(isOnline && demoState !== 'paused')
-                  ? 'Accepting 10-minute quick-commerce orders within your 3.5km store radius (Hours: 09:00 AM – 10:00 PM)'
-                  : 'Store is paused. Incoming customer orders are temporarily disabled.'}
-              </Text>
-            </View>
-
-            {/* ── 2. PERFORMANCE HERO ROW (4 Standard Metric Cards: New, Active, Delivered, Earnings) ── */}
-            <View style={s.heroGridRow}>
-              <View style={s.heroCard}>
-                <Text style={s.heroCardLabel}>New Orders</Text>
-                <Text style={s.heroCardVal}>{orderCounts.newOrders}</Text>
-                <Text style={s.heroCardTrend}>Awaiting acceptance</Text>
-              </View>
-
-              <View style={s.heroCard}>
-                <Text style={s.heroCardLabel}>Active Orders</Text>
-                <Text style={s.heroCardVal}>{orderCounts.active}</Text>
-                <Text style={s.heroCardTrend}>In picking & packing</Text>
-              </View>
-
-              <View style={s.heroCard}>
-                <Text style={s.heroCardLabel}>Delivered</Text>
-                <Text style={s.heroCardVal}>{orderCounts.delivered}</Text>
-                <Text style={s.heroCardTrend}>Completed</Text>
-              </View>
-
-              <View style={s.heroCard}>
-                <Text style={s.heroCardLabel}>Earnings</Text>
-                <Text style={s.heroCardValHighlight}>
-                  {earnings?.today ? `₹${Math.round(earnings.today.earnings).toLocaleString('en-IN')}` : '—'}
-                </Text>
-                <Text style={s.heroCardSub}>Weekly settlement IMPS</Text>
-              </View>
-            </View>
-
-            {/* ── 3. QUALITY & FULFILLMENT PERFORMANCE CARDS ───────────────────────── */}
-            <View style={s.heroGridRow}>
-              <View style={s.qualityCard}>
-                <View style={s.qualityHeaderRow}>
-                  <Text style={s.qualityCardTitle}>Store Quality Score</Text>
-                  <Text style={s.qualityRatingText}>—</Text>
-                </View>
-                <View style={s.miniProgressBarBg}>
-                  <View style={[s.miniProgressBarFill, { width: '0%', backgroundColor: Colors.success }]} />
-                </View>
-                <Text style={s.qualityCardSub}>Not connected yet</Text>
-              </View>
-
-              <View style={s.qualityCard}>
-                <View style={s.qualityHeaderRow}>
-                  <Text style={s.qualityCardTitle}>Fulfillment SLA Performance</Text>
-                  <Text style={s.qualityRatingText}>—</Text>
-                </View>
-                <View style={s.miniProgressBarBg}>
-                  <View style={[s.miniProgressBarFill, { width: '0%', backgroundColor: Colors.primary }]} />
-                </View>
-                <Text style={s.qualityCardSub}>Not connected yet</Text>
-              </View>
-            </View>
-
-            {/* ── 4. LOWER OPERATIONAL 2-COLUMN GRID ───────────────────────────────── */}
-            <View style={[s.gridRow, isExpanded && s.gridRowExpanded]}>
-              
-              {/* Left Column (7/12): Active Orders Queue */}
-              <View style={s.colLeft}>
-                <View style={s.sectionCard}>
-                  <View style={s.sectionHeaderRow}>
-                    <Text style={s.sectionTitle}>Active Orders Queue ({activeOrdersList.length})</Text>
-                    <TouchableOpacity onPress={() => router.push('/(vendor)/orders')}>
-                      <Text style={s.sectionHeaderLink}>View All Orders →</Text>
-                    </TouchableOpacity>
+              <View style={[s.columns, isExpanded && s.columnsWide]}>
+                <View style={[s.column, isExpanded && { flex: 7 }]}>
+                  <View style={s.sectionHead}>
+                    <Text style={ui.sectionTitle}>Next up</Text>
+                    <Pressable onPress={() => router.push('/(vendor)/orders')} accessibilityRole="link" style={s.link}>
+                      <Text style={s.linkText}>All orders</Text>
+                    </Pressable>
                   </View>
-
-                  {activeOrdersList.length === 0 ? (
-                    <View style={s.emptyQueueCard}>
-                      <Ionicons name="bag-handle-outline" size={36} color="#94A3B8" />
-                      <Text style={s.emptyQueueTitle}>No active orders right now</Text>
-                      <Text style={s.emptyQueueSub}>
-                        {isOnline ? 'Keep store open to receive incoming 10-minute quick-commerce orders.' : 'Store is paused.'}
-                      </Text>
+                  {!feed.hasLoaded ? (
+                    <Card><StateView kind="loading" title="Loading orders" /></Card>
+                  ) : nextUp.length === 0 ? (
+                    <Card>
+                      <View style={s.empty}>
+                        <Ionicons name="checkmark-done-outline" size={28} color={Colors.textMuted} />
+                        <Text style={s.emptyTitle}>Nothing to do right now</Text>
+                        <Text style={s.emptySub}>
+                          {isOn
+                            ? 'New orders ring on this device and show here.'
+                            : 'Your store is offline. Go online to receive new orders.'}
+                        </Text>
+                      </View>
+                    </Card>
+                  ) : (
+                    <View style={s.list}>
+                      {nextUp.map(({ order, action }) => (
+                        <OrderCard key={order.orderId} order={order} now={now} actionLabel={action} onPress={() => openOrder(order)} />
+                      ))}
                     </View>
-                  ) : (
-                    activeOrdersList.map(ord => (
-                      <View key={ord.orderId} style={s.orderQueueRow}>
-                        <View style={s.orderQueueIconBox}>
-                          <Ionicons name="bag-handle-outline" size={18} style={{ color: '#475569' }} />
-                        </View>
-
-                        <View style={{ flex: 1 }}>
-                          <Text style={s.orderQueueId}>#{ord.orderId} • {ord.items?.length || 2} items</Text>
-                          <Text style={s.orderQueueSla}>⏱️ SLA Timer: Pack in 02:45 • Payout: ₹{(ord as any).total || (ord as any).pricing?.grandTotal || 918}</Text>
-                        </View>
-
-                        <TouchableOpacity
-                          style={s.orderActionBtn}
-                          onPress={() => updateOrder(ord.orderId, { status: 'PACKED' })}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={s.orderActionBtnText}>Pack Order →</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))
-                  )}
-                </View>
-              </View>
-
-              {/* Right Column (5/12): Stock Attention & Activity Feed */}
-              <View style={s.colRight}>
-                
-                {/* Stock Attention Card */}
-                <View style={s.sectionCard}>
-                  <View style={s.sectionHeaderRow}>
-                    <Text style={s.sectionTitle}>Stock Attention</Text>
-                    <TouchableOpacity onPress={() => setIsAdjustStockOpen(true)}>
-                      <Text style={s.sectionHeaderLink}>Adjust Stock ⚡</Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  {lowStockItemsList.length === 0 ? (
-                    <Text style={s.stockHealthyText}>✓ All catalog SKUs have healthy stock inventory levels.</Text>
-                  ) : (
-                    lowStockItemsList.map((it: any) => (
-                      <View key={it.productId} style={s.stockWarningRow}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={s.stockItemName}>{it.name}</Text>
-                          <Text style={s.stockItemSub}>{it.bin || 'Shelf A-01'} • <Text style={s.warningText}>{it.stockOnHand || 3} left</Text></Text>
-                        </View>
-
-                        <TouchableOpacity
-                          style={s.quickRestockBtn}
-                          onPress={() => updateInventoryItem(it.productId, { stock: (it.stockOnHand || 3) + 10 })}
-                          activeOpacity={0.8}
-                        >
-                          <Text style={s.quickRestockBtnText}>+10 Restock</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ))
                   )}
                 </View>
 
-                {/* Today's Updates Feed */}
-                <View style={s.sectionCard}>
-                  <Text style={s.sectionTitle}>Today’s Updates Feed</Text>
-                  <View style={s.feedList}>
-                    <Text style={s.feedText}>No store activity to show yet.</Text>
+                {(showToday || lowStock.length > 0) && (
+                  <View style={[s.column, isExpanded && { flex: 5 }]}>
+                    {showToday && (
+                      <>
+                        <Text style={[ui.sectionTitle, s.sectionHeadPlain]}>Today</Text>
+                        <Card style={s.todayCard}>
+                          <View style={s.todayCell}>
+                            <Text style={s.todayLabel}>Orders</Text>
+                            <Text style={s.todayValue}>{groups.today}</Text>
+                          </View>
+                          {earningsToday !== undefined && (
+                            <Pressable
+                              onPress={() => router.push('/(vendor)/earnings')}
+                              accessibilityRole="button"
+                              accessibilityLabel={`Earnings today ${formatINR(earningsToday)}. Open earnings`}
+                              style={[s.todayCell, s.todayCellBorder]}
+                            >
+                              <Text style={s.todayLabel}>Earnings</Text>
+                              <Text style={s.todayValue}>{formatINR(earningsToday)}</Text>
+                            </Pressable>
+                          )}
+                        </Card>
+                      </>
+                    )}
+
+                    {inventoryLoaded && lowStock.length > 0 && (
+                      <>
+                        <View style={s.sectionHead}>
+                          <Text style={ui.sectionTitle}>Low stock</Text>
+                          <Pressable onPress={() => router.push('/(vendor)/catalog')} accessibilityRole="link" style={s.link}>
+                            <Text style={s.linkText}>Catalog</Text>
+                          </Pressable>
+                        </View>
+                        <Card style={{ paddingVertical: Spacing.xs }}>
+                          {lowStock.map((it, idx) => (
+                            <View key={it.productId} style={[s.stockRow, idx > 0 && ui.divider]}>
+                              <View style={{ flex: 1, minWidth: 0 }}>
+                                <Text style={s.stockName} numberOfLines={1}>{it.name}</Text>
+                                {!!it.bin && <Text style={ui.muted}>Bin {it.bin}</Text>}
+                              </View>
+                              <Text style={[s.stockLeft, { color: it.left === 0 ? Colors.danger : Colors.warning }]}>
+                                {it.left === 0 ? 'Out of stock' : `${it.left} left`}
+                              </Text>
+                            </View>
+                          ))}
+                        </Card>
+                      </>
+                    )}
                   </View>
-                </View>
-              </View>
-            </View>
-
-            <View style={{ height: 40 }} />
-          </ScrollView>
-        </View>
-      </View>
-
-      {/* Pause Confirmation Modal */}
-      <Modal visible={isPauseModalOpen} transparent animationType="fade">
-        <View style={s.modalOverlay}>
-          <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Pause Store Deliveries?</Text>
-            <Text style={s.modalSub}>Select a reason for pausing incoming 10-minute delivery orders:</Text>
-
-            {PAUSE_REASONS.map(reason => (
-              <TouchableOpacity
-                key={reason}
-                style={[s.reasonOption, selectedPauseReason === reason && s.reasonOptionSelected]}
-                onPress={() => setSelectedPauseReason(reason)}
-              >
-                <Text style={[s.reasonText, selectedPauseReason === reason && s.reasonTextSelected]}>
-                  {reason}
-                </Text>
-              </TouchableOpacity>
-            ))}
-
-            <View style={s.modalBtnRow}>
-              <TouchableOpacity style={s.modalCancelBtn} onPress={() => setIsPauseModalOpen(false)}>
-                <Text style={s.modalCancelBtnText}>Keep Store Open</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity style={s.modalConfirmPauseBtn} onPress={confirmPauseDuty}>
-                <Text style={s.modalConfirmPauseBtnText}>Confirm Pause</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* 45s Incoming Order Broadcast Offer Modal */}
-      {/* ── 10. PC SCREEN 10: 620px Incoming Order Offer Modal ───────────────────── */}
-      <Modal visible={!!incomingOrderModal} transparent animationType="fade">
-        <View style={s.modalOverlayNavy}>
-          <View style={s.incomingOrderSheet}>
-            
-            {/* Modal Top Header */}
-            <View style={s.incomingSheetHeader}>
-              <View style={s.incomingTitleRow}>
-                <View style={s.newOfferBadge}>
-                  <Text style={s.newOfferBadgeText}>⚡ New Order Offer</Text>
-                </View>
-                <Text style={s.orderIdText}>#{incomingOrderModal?.orderId ?? ''}</Text>
-                <View style={s.liveConnTag}>
-                  <View style={s.liveDotGreen} />
-                  <Text style={s.liveConnText}>Live</Text>
-                </View>
-              </View>
-
-              {/* Countdown Timer Display */}
-              <View style={s.countdownBlock}>
-                <Text style={[
-                  s.countdownTimerText,
-                  countdownSeconds <= 10 && s.countdownTimerRed
-                ]}>
-                  00:{countdownSeconds < 10 ? `0${countdownSeconds}` : countdownSeconds}
-                </Text>
-              </View>
-            </View>
-
-            {/* Horizontal Countdown Progress Bar */}
-            <View style={s.progressBarTrack}>
-              <View style={[
-                s.progressBarFill,
-                { width: `${(countdownSeconds / 45) * 100}%` },
-                countdownSeconds <= 10 && s.progressBarFillRed
-              ]} />
-            </View>
-
-            <Text style={s.broadcastNoteText}>
-              Accept within 00:{countdownSeconds < 10 ? `0${countdownSeconds}` : countdownSeconds} • This offer is being sent to nearby stores in your delivery radius.
-            </Text>
-
-            {/* Primary Order Info Banner */}
-            <View style={s.orderInfoHeroCard}>
-              <View style={s.customerMetaRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={s.customerMetaLabel}>CUSTOMER & LOCALITY</Text>
-                  <Text style={s.customerNameText}>
-                    {incomingOrderModal?.customerName ?? 'Customer'} • 📍 {incomingOrderModal?.shippingAddress?.fullAddress ?? ''}
-                  </Text>
-                  <Text style={s.customerSlaText}>⏱️ Target Prep SLA: 3 mins packing</Text>
-                </View>
-
-                <View style={s.payoutHighlightCard}>
-                  <Text style={s.payoutHighlightLabel}>ORDER VALUE</Text>
-                  <Text style={s.payoutHighlightVal}>
-                    ₹{Number(incomingOrderModal?.pricing?.grandTotal ?? 0).toLocaleString('en-IN')}
-                  </Text>
-                  <Text style={s.payoutHighlightSub}>Payout confirmed by the server</Text>
-                </View>
-              </View>
-
-              {/* Item Preview Table */}
-              <Text style={s.itemTableTitle}>ORDER ITEMS ({incomingOrderModal?.items?.length ?? 0} ITEMS)</Text>
-              <View style={s.itemPreviewTable}>
-                {(incomingOrderModal?.items ?? []).map((it: any, idx: number) => (
-                  <View key={`${it.sku ?? it.productName}-${idx}`} style={s.itemRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={s.itemName}>{it.productName}</Text>
-                      <Text style={s.itemSub}>Qty: {it.quantity}</Text>
-                    </View>
-                    <Text style={s.itemPrice}>₹{Number(it.price ?? 0).toLocaleString('en-IN')}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-
-            {/* Audio Notification Toast */}
-            <View style={s.audioToastBox}>
-              <Text style={s.audioToastText}>🔊 Audio alert ringing • Desktop notification active</Text>
-            </View>
-
-            {/* Action Footer */}
-            <View style={s.incomingActionRow}>
-              <TouchableOpacity
-                style={s.declineGhostBtn}
-                onPress={handleDeclineIncomingOrder}
-                activeOpacity={0.7}
-              >
-                <Text style={s.declineGhostBtnText}>Decline</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[s.acceptPrimaryBtn, isClaimingOrder && s.acceptPrimaryBtnDisabled]}
-                onPress={handleAcceptIncomingOrder}
-                disabled={isClaimingOrder}
-                activeOpacity={0.85}
-              >
-                {isClaimingOrder ? (
-                  <View style={s.claimingRow}>
-                    <ActivityIndicator color="#FFFFFF" size="small" />
-                    <Text style={s.acceptPrimaryBtnText}>Claiming order server lock...</Text>
-                  </View>
-                ) : (
-                  <Text style={s.acceptPrimaryBtnText}>⚡ Accept order</Text>
                 )}
-              </TouchableOpacity>
+              </View>
+            </>
+          )}
+        </View>
+      </ScreenShell>
+
+
+      {/* Going offline: a reason helps GlowVai support, and keeps the switch from being flipped by accident. */}
+      <Modal visible={pauseOpen} transparent animationType="fade" onRequestClose={() => setPauseOpen(false)}>
+        <View style={s.overlay}>
+          <View style={s.dialog} accessibilityViewIsModal>
+            <Text style={s.dialogTitle}>Go offline?</Text>
+            <Text style={s.dialogSub}>You will stop getting new orders. Orders you already accepted stay open.</Text>
+            <View accessibilityRole="radiogroup" style={{ gap: Spacing.sm }}>
+              {PAUSE_REASONS.map(r => {
+                const selected = pauseReason === r;
+                return (
+                  <Pressable
+                    key={r}
+                    onPress={() => setPauseReason(r)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected }}
+                    style={[s.reason, selected && s.reasonOn]}
+                  >
+                    <Ionicons name={selected ? 'radio-button-on' : 'radio-button-off'} size={20} color={selected ? Colors.primary : Colors.textMuted} />
+                    <Text style={[s.reasonText, selected && s.reasonTextOn]}>{r}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            <View style={s.dialogActions}>
+              <SecondaryButton label="Stay online" onPress={() => setPauseOpen(false)} style={{ flex: 1 }} />
+              <PrimaryButton label="Go offline" onPress={goOffline} style={{ flex: 1 }} />
             </View>
           </View>
         </View>
       </Modal>
+    </View>
+  );
+}
 
-      {/* Decline Confirmation Modal */}
-      <Modal visible={isDeclineConfirmOpen} transparent animationType="fade">
-        <View style={s.modalOverlay}>
-          <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Decline Incoming Order Offer?</Text>
-            <Text style={s.modalSub}>
-              Are you sure you want to decline Order #{incomingOrderModal?.orderId ?? ''}? Declining quick-commerce orders impacts your store's Acceptance SLA rating.
-            </Text>
+function dotStyle(tone: 'online' | 'warning' | 'danger' | 'neutral') {
+  if (tone === 'online') return { backgroundColor: Colors.success };
+  if (tone === 'warning') return { backgroundColor: Colors.warning };
+  if (tone === 'danger') return { backgroundColor: Colors.danger };
+  return { backgroundColor: Colors.textMuted };
+}
 
-            <View style={s.modalBtnRow}>
-              <TouchableOpacity style={s.modalCancelBtn} onPress={() => setIsDeclineConfirmOpen(false)}>
-                <Text style={s.modalCancelBtnText}>Cancel</Text>
-              </TouchableOpacity>
+function BigToggle({ on, busy, disabled, onPress }: { on: boolean; busy: boolean; disabled?: boolean; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={busy || disabled}
+      accessibilityRole="switch"
+      accessibilityLabel="Store online"
+      accessibilityState={{ checked: on, busy, disabled: busy || !!disabled }}
+      hitSlop={8}
+      style={[s.toggle, on ? s.toggleOn : s.toggleOff, (busy || disabled) && { opacity: 0.6 }]}
+    >
+      <Text style={[s.toggleText, on ? s.toggleTextOn : s.toggleTextOff]}>{on ? 'ONLINE' : 'OFFLINE'}</Text>
+      <View style={[s.knob, on ? s.knobOn : s.knobOff]} />
+    </Pressable>
+  );
+}
 
-              <TouchableOpacity style={s.modalConfirmPauseBtn} onPress={confirmDeclineIncomingOrder}>
-                <Text style={s.modalConfirmPauseBtnText}>Confirm Decline</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Mobile Bottom Navigation Bar */}
-      <MobileBottomNav currentTab="home" />
-    </SafeAreaView>
+function Tile({
+  label, icon, count, hint, onPress, loading, highlight,
+}: {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  count: number;
+  hint: string;
+  onPress: () => void;
+  loading?: boolean;
+  highlight?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}: ${loading ? 'loading' : count}. ${hint}`}
+      style={({ pressed }) => [ui.card, s.tile, highlight && s.tileHighlight, pressed && { backgroundColor: Colors.surface }]}
+    >
+      <View style={s.tileTop}>
+        <Ionicons name={icon} size={20} color={highlight ? Colors.primary : Colors.textSecondary} />
+        <Text style={s.tileLabel} numberOfLines={1}>{label}</Text>
+      </View>
+      <Text style={[s.tileCount, highlight && { color: Colors.primary }]}>{loading ? '–' : count}</Text>
+      <Text style={s.tileHint} numberOfLines={2}>{loading ? 'Loading' : hint}</Text>
+    </Pressable>
   );
 }
 
 const s = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: Colors.surface, // Warm off-white #F8FAFC
-  },
-  desktopLayout: {
-    flex: 1,
-    flexDirection: 'row',
-  },
+  screen: { flex: 1, backgroundColor: Colors.surface },
+  scroll: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.xxl },
+  stack: { gap: Spacing.lg },
 
-  /* Navigation Rail */
-  navRail: {
-    width: 240,
-    backgroundColor: Colors.card,
-    borderRightWidth: 1,
-    borderRightColor: Colors.border,
-    padding: Spacing.lg,
-    justifyContent: 'space-between',
-  },
-  railBrandGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    marginBottom: Spacing.xl,
-  },
-  railBrandLogo: {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  railBrandLogoIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-    color: '#FFFFFF',
-  },
-  railBrandTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  railBrandSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-  railNavGroup: {
-    gap: 6,
-    flex: 1,
-  },
-  railNavItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: BorderRadii.input,
-  },
-  railNavItemActive: {
-    backgroundColor: Colors.primaryLight,
-  },
-  railNavIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-  },
-  railNavLabel: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  railNavLabelActive: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  railFooter: {
-    gap: Spacing.sm,
-    paddingTop: Spacing.md,
-    borderTopWidth: 1,
-    borderTopColor: Colors.border,
-  },
-  storeSelectorPill: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    padding: 8,
-  },
-  storeSelectorText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  railHelpBtn: {
-    paddingVertical: 4,
-  },
-  railHelpText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  railProfileCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    paddingTop: 6,
-  },
-  railAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  railAvatarText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  railProfileName: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  railProfileRole: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
+  availability: { padding: Spacing.lg },
+  availabilityOn: { borderColor: Colors.successBorder },
+  availabilityRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
+  availabilityActions: { marginTop: Spacing.md },
+  dot: { width: 12, height: 12, borderRadius: 6 },
+  availabilityTitle: { fontFamily: FontFamily.semibold, fontSize: 18, lineHeight: 24, color: Colors.textPrimary },
+  availabilitySub: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 20, color: Colors.textSecondary, marginTop: 2 },
 
-  /* Main Console Area */
-  mainConsole: {
-    flex: 1,
-  },
-  topHeader: {
-    backgroundColor: Colors.card,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  pageTitle: {
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    letterSpacing: -0.4,
-  },
-  storeSubTitle: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
-  headerActionsRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-  },
-  liveConnectionBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+  toggle: {
+    width: 112,
+    height: 48,
     borderRadius: BorderRadii.pill,
+    justifyContent: 'center',
+    paddingHorizontal: 6,
   },
-  offlineConnectionBadge: {
-    backgroundColor: Colors.dangerLight,
-    borderColor: Colors.dangerBorder,
-  },
-  liveDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  liveDotText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  notifBellBtn: {
+  toggleOn: { backgroundColor: Colors.success },
+  toggleOff: { backgroundColor: Colors.border },
+  toggleText: { position: 'absolute', fontFamily: FontFamily.bold, fontSize: 12, letterSpacing: 0.6 },
+  toggleTextOn: { left: 14, color: Colors.background },
+  toggleTextOff: { right: 12, color: Colors.textSecondary },
+  knob: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    position: 'relative',
-  },
-  notifBellIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 16,
-  },
-  notifBadge: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: Colors.danger,
-    position: 'absolute',
-    top: 6,
-    right: 6,
-  },
-
-  /* Body Scroll */
-  scrollBody: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: Spacing.xl,
-  },
-
-  /* Demo State Switcher */
-  demoStateBar: {
     backgroundColor: Colors.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.card,
-    padding: Spacing.sm,
-    marginBottom: Spacing.lg,
-  },
-  demoStateLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    marginBottom: 6,
-  },
-  demoChipRow: {
-    gap: 6,
-  },
-  demoChip: {
-    backgroundColor: Colors.surface,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-  },
-  demoChipActive: {
-    backgroundColor: Colors.primaryLight,
-    borderColor: Colors.primaryBorder,
-  },
-  demoChipText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textSecondary,
-  },
-  demoChipTextActive: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-
-  /* Error Banner */
-  errorCard: {
-    backgroundColor: Colors.dangerLight,
-    borderWidth: 1,
-    borderColor: Colors.dangerBorder,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  errorCardText: {
-    fontSize: 13,
-    color: Colors.danger,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-
-  /* Operational Duty Card */
-  dutyCard: {
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1.5,
-    padding: Spacing.lg,
-    marginBottom: Spacing.lg,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 6,
+    shadowColor: Colors.textPrimary,
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    shadowOffset: { width: 0, height: 1 },
     elevation: 2,
   },
-  dutyCardOnline: {
-    borderColor: Colors.successBorder,
-    backgroundColor: Colors.successLight,
-  },
-  dutyCardOffline: {
-    borderColor: Colors.dangerBorder,
-    backgroundColor: Colors.dangerLight,
-  },
-  dutyCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  dutyStatusPillWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  dutyDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  dutyStatusText: {
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  dutyHelperLine: {
-    fontSize: 12.5,
-    color: Colors.textSecondary,
-    fontFamily: 'PlusJakartaSans_500Medium',
-    fontWeight: '500',
-  },
+  knobOn: { alignSelf: 'flex-end' },
+  knobOff: { alignSelf: 'flex-start' },
 
-  /* Switches */
-  switchTrack: {
-    width: 52,
-    height: 28,
-    borderRadius: 14,
-    padding: 2,
-    justifyContent: 'center',
-  },
-  switchTrackOnline: {
-    backgroundColor: Colors.success,
-  },
-  switchTrackOffline: {
-    backgroundColor: '#94A3B8',
-  },
-  switchThumb: {
-    width: 24,
-    height: 24,
+  tiles: { flexDirection: 'row', gap: Spacing.sm },
+  tile: { flex: 1, minWidth: 0, padding: Spacing.md, gap: 2, minHeight: 120 },
+  tileHighlight: { borderColor: Colors.primaryBorder, backgroundColor: Colors.primaryLight },
+  tileTop: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  tileLabel: { flexShrink: 1, fontFamily: FontFamily.semibold, fontSize: 13, lineHeight: 18, color: Colors.textSecondary },
+  tileCount: { fontFamily: FontFamily.bold, fontSize: 30, lineHeight: 38, color: Colors.textPrimary, fontVariant: ['tabular-nums'], marginTop: 4 },
+  tileHint: { fontFamily: FontFamily.regular, fontSize: 12, lineHeight: 16, color: Colors.textMuted },
+
+  columns: { gap: Spacing.lg },
+  columnsWide: { flexDirection: 'row', alignItems: 'flex-start' },
+  column: { gap: Spacing.sm, minWidth: 0 },
+  list: { gap: Spacing.sm },
+  sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  sectionHeadPlain: { paddingVertical: 12 },
+  link: { minHeight: 44, justifyContent: 'center', paddingLeft: Spacing.md },
+  linkText: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.primary },
+
+  empty: { alignItems: 'center', gap: 6, paddingVertical: Spacing.lg },
+  emptyTitle: { fontFamily: FontFamily.semibold, fontSize: 15, lineHeight: 22, color: Colors.textPrimary, textAlign: 'center' },
+  emptySub: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 20, color: Colors.textSecondary, textAlign: 'center', maxWidth: 320 },
+
+  todayCard: { flexDirection: 'row', padding: 0 },
+  todayCell: { flex: 1, padding: Spacing.lg, gap: 2, minHeight: 44 },
+  todayCellBorder: { borderLeftWidth: 1, borderLeftColor: Colors.border },
+  todayLabel: { fontFamily: FontFamily.medium, fontSize: 13, color: Colors.textMuted },
+  todayValue: { fontFamily: FontFamily.bold, fontSize: 22, lineHeight: 28, color: Colors.textPrimary, fontVariant: ['tabular-nums'] },
+
+  stockRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 52, paddingVertical: Spacing.sm },
+  stockName: { fontFamily: FontFamily.medium, fontSize: 14, lineHeight: 20, color: Colors.textPrimary },
+  stockLeft: { fontFamily: FontFamily.semibold, fontSize: 13 },
+
+  overlay: { flex: 1, backgroundColor: `${Colors.textPrimary}66`, alignItems: 'center', justifyContent: 'center', padding: Spacing.lg },
+  dialog: { width: '100%', maxWidth: 440, backgroundColor: Colors.card, borderRadius: 16, padding: Spacing.xl, gap: Spacing.md },
+  dialogTitle: { fontFamily: FontFamily.bold, fontSize: 19, lineHeight: 26, color: Colors.textPrimary },
+  dialogSub: { fontFamily: FontFamily.regular, fontSize: 14, lineHeight: 20, color: Colors.textSecondary },
+  dialogActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.sm },
+  reason: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    minHeight: 48,
+    paddingHorizontal: Spacing.md,
     borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-  },
-  switchThumbOnline: {
-    alignSelf: 'flex-end',
-  },
-  switchThumbOffline: {
-    alignSelf: 'flex-start',
-  },
-
-  /* Hero Performance Row */
-  heroGridRow: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    marginBottom: Spacing.lg,
-  },
-  heroCard: {
-    flex: 1,
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.lg,
-  },
-  heroCardLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 4,
-  },
-  heroCardVal: {
-    fontSize: 24,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  heroCardValHighlight: {
-    fontSize: 24,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.primary,
-  },
-  heroCardTrend: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-    marginTop: 4,
-  },
-  heroCardSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 4,
-  },
-
-  /* Quality Cards */
-  qualityCard: {
-    flex: 1,
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.lg,
-  },
-  qualityHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  qualityCardTitle: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  qualityRatingText: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.primary,
-  },
-  miniProgressBarBg: {
-    height: 6,
-    backgroundColor: Colors.border,
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 6,
-  },
-  miniProgressBarFill: {
-    height: '100%',
-    borderRadius: 3,
-  },
-  qualityCardSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-  },
-
-  /* Grid Columns */
-  gridRow: {
-    flexDirection: 'column',
-    gap: Spacing.lg,
-  },
-  gridRowExpanded: {
-    flexDirection: 'row',
-  },
-  colLeft: {
-    flex: 7,
-  },
-  colRight: {
-    flex: 5,
-  },
-
-  /* Section Card */
-  sectionCard: {
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    padding: Spacing.lg,
-    marginBottom: Spacing.lg,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.02,
-    shadowRadius: 6,
-    elevation: 1,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: Spacing.md,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  sectionHeaderLink: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-
-  /* Active Orders Queue */
-  emptyQueueCard: {
-    padding: Spacing.xl,
-    alignItems: 'center',
-  },
-  emptyQueueIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 32,
-    marginBottom: 6,
-  },
-  emptyQueueTitle: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  emptyQueueSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 2,
-  },
-  orderQueueRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.surface,
-  },
-  orderQueueIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 8,
-    backgroundColor: Colors.primaryLight,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  orderQueueIconText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 18,
-  },
-  orderQueueId: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  orderQueueSla: {
-    fontSize: 12,
-    color: Colors.warning,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  orderActionBtn: {
-    backgroundColor: Colors.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.input,
-  },
-  orderActionBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-
-  /* Stock Attention */
-  stockHealthyText: {
-    fontSize: 12,
-    color: Colors.success,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  stockWarningRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.surface,
-  },
-  stockItemName: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  stockItemSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-    marginTop: 2,
-  },
-  warningText: {
-    color: Colors.danger,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  quickRestockBtn: {
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-  },
-  quickRestockBtnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-
-  /* Activity Feed */
-  feedList: {
-    gap: 8,
-    marginTop: Spacing.xs,
-  },
-  feedRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-  },
-  feedDot: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 14,
-  },
-  feedText: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    lineHeight: 16,
-  },
-
-  /* Modals */
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: Spacing.lg,
-  },
-  modalCard: {
-    width: '100%',
-    maxWidth: 440,
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    padding: Spacing.xl,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginBottom: 4,
-  },
-  modalSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.md,
-  },
-  reasonOption: {
-    padding: Spacing.md,
-    borderRadius: BorderRadii.input,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: 8,
-  },
-  reasonOptionSelected: {
-    borderColor: Colors.primary,
-    backgroundColor: Colors.primaryLight,
-  },
-  reasonText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  reasonTextSelected: {
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-  },
-  modalBtnRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    marginTop: Spacing.md,
-  },
-  modalCancelBtn: {
-    flex: 1,
-    height: 44,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalCancelBtnText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  modalConfirmPauseBtn: {
-    flex: 1,
-    height: 44,
-    backgroundColor: Colors.danger,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalConfirmPauseBtnText: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-
-  /* PC SCREEN 10: 620px Incoming Order Offer Modal Styles */
-  modalOverlayNavy: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)', // Deep navy translucent backdrop
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: Spacing.lg,
-  },
-  incomingOrderSheet: {
-    width: '100%',
-    maxWidth: 620, // 560-680px range desktop elevated modal sheet
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    padding: Spacing.xl,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.25,
-    shadowRadius: 24,
-    elevation: 12,
-  },
-  incomingSheetHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: Spacing.xs,
-  },
-  incomingTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-  },
-  newOfferBadge: {
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-  },
-  newOfferBadgeText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  orderIdText: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  liveConnTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#F0FDF4',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: BorderRadii.pill,
-  },
-  liveDotGreen: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: Colors.success,
-  },
-  liveConnText: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-  },
-  countdownBlock: {
-    backgroundColor: '#FEF3C7',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: BorderRadii.pill,
-  },
-  countdownTimerText: {
-    fontSize: 16,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.warning, // Amber for countdown urgency
-  },
-  countdownTimerRed: {
-    color: Colors.danger, // Red only in final critical countdown (<= 10s)
-  },
-  progressBarTrack: {
-    height: 6,
-    backgroundColor: Colors.surface,
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginTop: 8,
-    marginBottom: 8,
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: Colors.warning,
-    borderRadius: 3,
-  },
-  progressBarFillRed: {
-    backgroundColor: Colors.danger,
-  },
-  broadcastNoteText: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.md,
-    fontFamily: 'PlusJakartaSans_500Medium',
-    fontWeight: '500',
-  },
-  orderInfoHeroCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadii.input,
-    padding: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: Spacing.md,
-  },
-  customerMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingBottom: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    marginBottom: Spacing.md,
-    gap: Spacing.md,
-  },
-  customerMetaLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
-  },
-  customerNameText: {
-    fontSize: 15,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-    marginTop: 2,
-  },
-  customerSlaText: {
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 2,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  payoutHighlightCard: {
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: BorderRadii.input,
-    alignItems: 'flex-end',
-  },
-  payoutHighlightLabel: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.success,
-    letterSpacing: 0.5,
-  },
-  payoutHighlightVal: {
-    fontSize: 20,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.success,
-  },
-  payoutHighlightSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textMuted,
-  },
-  itemTableTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textMuted,
-    letterSpacing: 0.5,
-    marginBottom: Spacing.xs,
-  },
-  itemPreviewTable: {
-    gap: 8,
-  },
-  itemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.sm,
-    backgroundColor: Colors.card,
-    padding: 8,
-    borderRadius: BorderRadii.input,
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  itemThumbIcon: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 20,
-  },
-  itemName: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  itemSub: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 12,
-    color: Colors.textSecondary,
-    marginTop: 1,
-  },
-  itemPrice: {
-    fontSize: 13,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.textPrimary,
-  },
-  audioToastBox: {
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: BorderRadii.input,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: Spacing.md,
-    alignItems: 'center',
-  },
-  audioToastText: {
-    fontSize: 12,
-    color: Colors.primary,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-  },
-  declineGhostBtn: {
-    width: 110,
-    height: 48,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: Colors.card,
-  },
-  declineGhostBtnText: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textSecondary,
-  },
-  acceptPrimaryBtn: {
-    flex: 1,
-    height: 48,
-    backgroundColor: Colors.primary,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  acceptPrimaryBtnDisabled: {
-    opacity: 0.7,
-  },
-  claimingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  acceptPrimaryBtnText: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  incomingOrderCard: {
-    width: '100%',
-    maxWidth: 420,
-    backgroundColor: Colors.card,
-    borderRadius: BorderRadii.card,
-    padding: Spacing.xl,
-    alignItems: 'center',
-  },
-  incomingHeader: {
-    backgroundColor: Colors.primaryLight,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: BorderRadii.pill,
-    marginBottom: Spacing.md,
-  },
-  incomingTitle: {
-    fontSize: 12,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: Colors.primary,
-  },
-  incomingGrandTotal: {
-    fontSize: 32,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  incomingAddress: {
-    fontFamily: 'PlusJakartaSans_400Regular',
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginTop: 4,
-    marginBottom: Spacing.xl,
-    textAlign: 'center',
-  },
-  incomingActionRow: {
-    flexDirection: 'row',
-    gap: Spacing.md,
-    width: '100%',
-  },
-  declineBtn: {
-    flex: 1,
-    height: 48,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  declineBtnText: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700',
-    color: Colors.textSecondary,
-  },
-  acceptBtn: {
-    flex: 1.5,
-    height: 48,
-    backgroundColor: Colors.success,
-    borderRadius: BorderRadii.input,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  acceptBtnText: {
-    fontSize: 14,
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
+  reasonOn: { borderColor: Colors.primaryBorder, backgroundColor: Colors.primaryLight },
+  reasonText: { flex: 1, fontFamily: FontFamily.regular, fontSize: 15, color: Colors.textPrimary },
+  reasonTextOn: { fontFamily: FontFamily.semibold, color: Colors.primary },
 });

@@ -1,116 +1,76 @@
 /**
- * GlowVAI Vendor App — Design System Theme
- * Colors, typography, spacing, shadows — mirroring the Figma screen flow
+ * Compatibility layer for older imports of `src/theme`.
+ *
+ * The single source of truth is `./tokens` (colours, spacing, radii, shadows) and
+ * `./typography` (Inter type scale). Every value here is derived from those files so
+ * there is only one palette. New code should import from `./tokens` and `./typography`.
  */
+import { Colors as T, Spacing as TS, BorderRadii, Shadows as TShadows } from './tokens';
+import { FontFamily } from './typography';
 
 export const Colors = {
-  // Core palette
-  ink:        '#0a0a0a',
-  inkLight:   '#1c1c1c',
-  sub:        '#6b6b6b',
-  line:       '#e7e7e7',
-  card:       '#f7f7f7',
-  bg:         '#ffffff',
-  pageBg:     '#f1f1f1',
+  ink: T.textPrimary,
+  inkLight: T.textPrimary,
+  sub: T.textSecondary,
+  line: T.border,
+  card: T.card,
+  bg: T.background,
+  pageBg: T.canvas,
 
-  // Status colors (Exact user specified green #16A34A and red #DC2626)
-  green:      '#16A34A', // Active duty green
-  greenBg:    '#F0FDF4',
-  red:        '#DC2626', // Offline duty red
-  redBg:      '#FEF2F2',
-  amber:      '#b5820a',
-  amberBg:    '#fbeecb',
+  green: T.successText,
+  greenBg: T.successLight,
+  red: T.dangerText,
+  redBg: T.dangerLight,
+  amber: T.warningText,
+  amberBg: T.warningLight,
 
-  danger:       '#DC2626',
-  dangerLight:  '#FEF2F2',
-  dangerBorder: '#FCA5A5',
-  successTint:  '#DCFCE7',
+  danger: T.danger,
+  dangerLight: T.dangerLight,
+  dangerBorder: T.dangerBorder,
+  successTint: T.successLight,
 
-  // Vibrant Brand Royal Blue Palette (#1D4ED8)
-  primary:      '#1D4ED8',
-  primaryDark:  '#1E40AF',
-  primaryLight: '#EFF6FF',
-  primaryBorder:'#BFDBFE',
+  primary: T.primary,
+  primaryDark: T.primaryPressed,
+  primaryLight: T.primaryLight,
+  primaryBorder: T.primaryBorder,
 
-  // Brand Primary
-  brand:        '#1D4ED8',
-  brandText:    '#ffffff',
+  brand: T.primary,
+  brandText: T.textOnPrimary,
 
-  // Dark Carbon
-  carbon:       '#0f172a',
-  carbonLight:  '#1e293b',
+  carbon: T.textPrimary,
+  carbonLight: T.textSecondary,
 
-  // Neutral pills
-  pillNeutral:    '#f1f5f9',
-  pillNeutralText:'#334155',
+  pillNeutral: T.surface,
+  pillNeutralText: T.textSecondary,
 } as const;
 
 export const Typography = {
-  h1:        { fontSize: 20, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const, letterSpacing: -0.5 },
-  h2:        { fontSize: 17, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const, letterSpacing: -0.2 },
-  h3:        { fontSize: 15, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' as const },
-  section:   { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' as const, textTransform: 'uppercase' as const, letterSpacing: 0.8, color: Colors.sub },
-  body:      { fontSize: 14, fontFamily: 'PlusJakartaSans_400Regular', fontWeight: '400' as const },
-  bodyBold:  { fontSize: 14, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' as const },
-  small:     { fontSize: 12.5, fontFamily: 'PlusJakartaSans_400Regular', fontWeight: '400' as const, color: Colors.sub },
-  label:     { fontSize: 12, fontFamily: 'PlusJakartaSans_600SemiBold', fontWeight: '600' as const, color: Colors.sub },
-  big:       { fontSize: 34, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const, letterSpacing: -0.8 },
-  stat:      { fontSize: 20, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const },
-  timer:     { fontSize: 28, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' as const },
-
-  // Syne Semi-Bold & Bold Brand Wordmarks
-  syneSemiBold: {
-    
-    fontFamily: 'PlusJakartaSans_600SemiBold',
-    fontWeight: '600' as const,
-    letterSpacing: -0.3,
-  },
-  syneBold: {
-    
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700' as const,
-    letterSpacing: -0.5,
-  },
-  syneExtraBold: {
-    
-    fontFamily: 'PlusJakartaSans_700Bold',
-    fontWeight: '700' as const,
-    letterSpacing: -0.8,
-  },
+  h1: { fontSize: 20, fontFamily: FontFamily.bold, letterSpacing: -0.4 },
+  h2: { fontSize: 18, fontFamily: FontFamily.bold, letterSpacing: -0.2 },
+  h3: { fontSize: 16, fontFamily: FontFamily.semibold },
+  section: { fontSize: 12, fontFamily: FontFamily.semibold, textTransform: 'uppercase' as const, letterSpacing: 0.8, color: T.textMuted },
+  body: { fontSize: 14, fontFamily: FontFamily.regular },
+  bodyBold: { fontSize: 14, fontFamily: FontFamily.semibold },
+  small: { fontSize: 13, fontFamily: FontFamily.regular, color: T.textMuted },
+  label: { fontSize: 12, fontFamily: FontFamily.semibold, color: T.textMuted },
+  big: { fontSize: 32, fontFamily: FontFamily.bold, letterSpacing: -0.8 },
+  stat: { fontSize: 20, fontFamily: FontFamily.bold },
+  timer: { fontSize: 28, fontFamily: FontFamily.bold },
 } as const;
 
-export const Spacing = {
-  xs:   4,
-  sm:   8,
-  md:  14,
-  lg:  20,
-  xl:  28,
-  xxl: 36,
-} as const;
+export const Spacing = TS;
 
 export const Radius = {
-  sm:   8,
-  md:  10,
-  lg:  12,
-  xl:  14,
-  pill:20,
-  card:14,
-  full:999,
+  sm: BorderRadii.input,
+  md: BorderRadii.button,
+  lg: BorderRadii.card,
+  xl: BorderRadii.sheet,
+  pill: BorderRadii.pill,
+  card: BorderRadii.card,
+  full: BorderRadii.pill,
 } as const;
 
 export const Shadows = {
-  card: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  sheet: {
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 8,
-  },
+  card: TShadows.card,
+  sheet: TShadows.raised,
 } as const;

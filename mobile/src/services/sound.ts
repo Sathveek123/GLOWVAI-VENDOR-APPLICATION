@@ -51,8 +51,6 @@ class SoundService {
         if (Notification.permission === 'granted') {
           new Notification(title, {
             body,
-            icon: 'https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=100&q=80',
-            badge: 'https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=100&q=80',
             tag: data?.orderId || 'glowvai-order',
             requireInteraction: true,
           });
@@ -87,7 +85,7 @@ class SoundService {
 
     // 2. Push notification
     if (orderSummary) {
-      this.showPushNotification('🛍️ NEW ORDER INCOMING!', orderSummary);
+      this.showPushNotification('New order offer', orderSummary);
     }
 
     // 3. Web Audio synthesizer chime

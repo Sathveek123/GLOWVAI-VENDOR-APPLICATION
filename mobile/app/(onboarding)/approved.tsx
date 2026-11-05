@@ -1,65 +1,155 @@
 /**
- * Approved Screen — You're live on Glowvai!
+ * Shown once the store's KYC is APPROVED. Confirms the status with the backend,
+ * then opens the seller dashboard with the vendor the session belongs to.
  */
+import React, { useEffect, useState } from 'react';
+import { View, Text, StyleSheet } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, SafeAreaView, Animated, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Colors, Spacing } from '../../src/theme';
-import { PrimaryButton } from '../../src/components/ui';
-import AppHeader from '../../src/components/AppHeader';
+import { vendorApi, ApiError } from '../../src/services/api';
+import { clearSession, getSession } from '../../src/services/session';
+import { cacheStatus, getCachedStatus, normalizeStatus } from '../../src/features/onboarding/status';
+import { clearResumeStep } from '../../src/features/onboarding/draft';
+import useVendorStore from '../../src/store/useVendorStore';
+import {
+  SellerFrame,
+  Section,
+  Button,
+  Banner,
+  CenteredLoader,
+  useDocumentTitle,
+  SellerColors as C,
+  S,
+} from '../../src/features/onboarding/kit';
+import { FontFamily } from '../../src/theme/typography';
+
+const NEXT_STEPS: { title: string; text: string }[] = [
+  { title: 'Add your products', text: 'Add each product with its price, stock and photos from the Inventory tab.' },
+  { title: 'Go online', text: 'Switch your store online from the dashboard when you’re ready to take orders. Orders reach you only while you are online.' },
+];
 
 export default function ApprovedScreen() {
-  const router    = useRouter();
-  const scaleAnim = useRef(new Animated.Value(0)).current;
+  const router = useRouter();
+  const { setVendor } = useVendorStore();
+  useDocumentTitle('Store approved');
+
+  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<any>(null);
+  const [offline, setOffline] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState('');
 
   useEffect(() => {
-    Animated.spring(scaleAnim, {
-      toValue: 1, tension: 60, friction: 8, useNativeDriver: true,
-    }).start();
-    AsyncStorage.setItem('vendor_registered', 'true');
+    (async () => {
+      const session = await getSession();
+      if (!session.token) {
+        router.replace('/(auth)/login');
+        return;
+      }
+      if (!session.vendorId) {
+        router.replace('/(onboarding)/pending');
+        return;
+      }
+      try {
+        const res: any = await vendorApi.me();
+        const v = res?.vendor;
+        const status = normalizeStatus(v);
+        await cacheStatus(status);
+        if (status !== 'APPROVED') {
+          router.replace('/(onboarding)/pending');
+          return;
+        }
+        setProfile(v);
+        await clearResumeStep();
+      } catch (e: any) {
+        if (e instanceof ApiError && e.status === 401) {
+          await clearSession();
+          router.replace('/(auth)/login');
+          return;
+        }
+        // Offline: trust the status this device last confirmed, otherwise go back to status.
+        const known = await getCachedStatus();
+        if (known !== 'APPROVED') {
+          router.replace('/(onboarding)/pending');
+          return;
+        }
+        setOffline(true);
+      }
+      setLoading(false);
+    })();
   }, []);
 
+  const openDashboard = async () => {
+    setOpening(true);
+    const session = await getSession();
+    if (!session.token) {
+      router.replace('/(auth)/login');
+      return;
+    }
+    const storeId = session.storeId || profile?.storeId;
+    if (!session.vendorId || !storeId) {
+      // Don't sign the seller out: the store record is incomplete on our side.
+      setOpening(false);
+      setOpenError('Your store isn’t fully set up on our side yet, so the dashboard can’t open. Try again in a few minutes, or contact seller support.');
+      return;
+    }
+    setVendor({
+      vendorId: session.vendorId,
+      storeId,
+      name: profile?.name || profile?.ownerName || '',
+      shopName: profile?.shopName,
+      phone: profile?.phone || (await AsyncStorage.getItem('vendor_phone')) || '',
+      email: profile?.email,
+      isOnline: !!profile?.isOnline,
+    });
+    router.replace('/(vendor)/home');
+  };
+
+  if (loading) return <CenteredLoader label="Checking your application" />;
+
   return (
-    <SafeAreaView style={s.root}>
-      <AppHeader title="Application status" subtitle="Account Approved & Live" />
-      <View style={s.body}>
-        <Animated.View style={[s.successDot, { transform: [{ scale: scaleAnim }] }]}>
-          <Ionicons name="checkmark" size={18} style={{ color: '#475569' }} />
-        </Animated.View>
-        <Text style={s.heading}>You're live on Glowvai</Text>
-        <Text style={s.sub}>Your shop is now visible to nearby customers. Start receiving orders!</Text>
-
-        <View style={s.statsRow}>
-          <View style={s.stat}><Text style={s.statN}>0</Text><Text style={s.statL}>Orders</Text></View>
-          <View style={s.stat}><Text style={s.statN}>₹0</Text><Text style={s.statL}>Earnings</Text></View>
-          <View style={s.stat}><Text style={s.statN}>—</Text><Text style={s.statL}>Rating</Text></View>
+    <SellerFrame testID="approved">
+      {offline ? <Banner tone="warning" message="You’re offline. Some details may be out of date until you reconnect." /> : null}
+      {openError ? <Banner tone="error" message={openError} /> : null}
+      <Section>
+        <View style={st.icon}>
+          <Ionicons name="checkmark" size={30} color={C.textOnPrimary} />
         </View>
-      </View>
-
-      <View style={s.foot}>
-        <PrimaryButton label="Go to Home" onPress={() => router.replace('/(vendor)/home')} />
-      </View>
-    </SafeAreaView>
+        <Text accessibilityRole="header" style={st.title}>
+          Your store is approved
+        </Text>
+        <Text style={st.body}>
+          {profile?.shopName ? `${profile.shopName} can now sell on GlowVai.` : 'Your store can now sell on GlowVai.'} Here{'’'}s what to do next.
+        </Text>
+        <View style={{ marginTop: S.lg }}>
+          {NEXT_STEPS.map((s, i) => (
+            <View key={s.title} style={st.step}>
+              <View style={st.stepNum}>
+                <Text style={st.stepNumText}>{i + 1}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={st.stepTitle}>{s.title}</Text>
+                <Text style={st.stepText}>{s.text}</Text>
+              </View>
+            </View>
+          ))}
+        </View>
+        <View style={{ flexDirection: 'row', marginTop: S.md }}>
+          <Button label="Go to dashboard" iconRight="arrow-forward" onPress={openDashboard} loading={opening} style={{ flex: 1 }} />
+        </View>
+      </Section>
+    </SellerFrame>
   );
 }
 
-const s = StyleSheet.create({
-  root: { flex: 1, backgroundColor: Colors.bg },
-  body: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: Spacing.xl, gap: 14 },
-  successDot: {
-    width: 80, height: 80, borderRadius: 22,
-    backgroundColor: Colors.green,
-    alignItems: 'center', justifyContent: 'center',
-    marginBottom: 4,
-  },
-  check:   { color: '#fff', fontSize: 34, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700' },
-  heading: { fontSize: 20, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: Colors.ink, textAlign: 'center' },
-  sub:     { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 14, color: Colors.sub, textAlign: 'center', lineHeight: 20, maxWidth: 260 },
-  statsRow:{ flexDirection: 'row', gap: 10, marginTop: 10 },
-  stat:    { flex: 1, backgroundColor: Colors.card, borderRadius: 14, padding: 14, alignItems: 'center' },
-  statN:   { fontSize: 20, fontFamily: 'PlusJakartaSans_700Bold', fontWeight: '700', color: Colors.ink },
-  statL:   { fontFamily: 'PlusJakartaSans_400Regular', fontSize: 12, color: Colors.sub, marginTop: 2 },
-  foot:    { padding: Spacing.lg, paddingBottom: 32 },
+const st = StyleSheet.create({
+  icon: { width: 56, height: 56, borderRadius: 28, backgroundColor: C.successText, alignItems: 'center', justifyContent: 'center', marginBottom: S.lg },
+  title: { fontFamily: FontFamily.bold, fontSize: 24, lineHeight: 30, letterSpacing: -0.4, color: C.textPrimary },
+  body: { fontSize: 15, lineHeight: 22, color: C.textSecondary, marginTop: S.sm },
+  step: { flexDirection: 'row', alignItems: 'flex-start', gap: S.md, paddingVertical: S.md, borderTopWidth: 1, borderTopColor: C.border },
+  stepNum: { width: 28, height: 28, borderRadius: 14, backgroundColor: C.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  stepNumText: { fontFamily: FontFamily.bold, fontSize: 14, color: C.primary },
+  stepTitle: { fontFamily: FontFamily.semibold, fontSize: 15, lineHeight: 21, color: C.textPrimary },
+  stepText: { fontSize: 14, lineHeight: 20, color: C.textSecondary, marginTop: 2 },
 });

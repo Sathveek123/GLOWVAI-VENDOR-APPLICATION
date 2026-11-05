@@ -1,9 +1,7 @@
 /**
  * IncomingOfferHost: listens for new order offers and shows the offer sheet over any screen.
  *
- * Mount it once in app/(vendor)/_layout.tsx:  <IncomingOfferHost />
- * Home and Orders also mount <IncomingOfferHost fallback /> so offers keep working until
- * the layout does. Only one instance is ever active: a layout instance wins over fallbacks.
+ * Mounted once in app/(vendor)/_layout.tsx, so offers appear over every tab and screen.
  *
  * What it does
  *  - Registers the vendor on every socket connect and keeps the store's isConnected current.
@@ -13,9 +11,10 @@
  *  - Applies 'order:statusUpdated' and 'order:rejected' to the shared order store.
  *  - Marks an open offer as taken on 'ORDER_CLAIMED_BY_OTHER', or as gone when cancelled.
  *  - Repeats the alert chime until the vendor responds or closes the sheet.
+ *  - Feeds the Orders tab badge (new offers + orders to pack).
  * File: mobile/src/features/orders/IncomingOfferHost.tsx
  */
-import React, { useCallback, useEffect, useReducer, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'expo-router';
 import { create } from 'zustand';
 import useVendorStore, { normalizeOrder } from '../../store/useVendorStore';
@@ -24,6 +23,7 @@ import { ordersApi } from '../../services/api';
 import { useVendorSession } from '../../services/session';
 import { ORDER_EVENTS, getSocket, registerVendor } from '../../services/socket';
 import { soundService } from '../../services/sound';
+import { useNavBadge } from '../../components/MobileBottomNav';
 import { bucketOf } from './model';
 import OfferSheet from './OfferSheet';
 
@@ -95,47 +95,22 @@ function toOffer(payload: any): { raw: any; offer: QueuedOffer } | null {
   return { raw, offer: { order, receivedAt, expiresAt } };
 }
 
-// ── Single active instance ────────────────────────────────────────────────────
-let hostSeq = 0;
-let hosts: { id: number; fallback: boolean }[] = [];
-const hostListeners = new Set<() => void>();
-const notifyHosts = () => hostListeners.forEach((fn) => fn());
-
-function activeHostId(): number | undefined {
-  return (hosts.find((h) => !h.fallback) ?? hosts[0])?.id;
-}
-
-function useIsActiveHost(fallback: boolean): boolean {
-  const idRef = useRef(0);
-  if (!idRef.current) idRef.current = ++hostSeq;
-  const [, force] = useReducer((x: number) => x + 1, 0);
-  useEffect(() => {
-    const id = idRef.current;
-    hosts.push({ id, fallback });
-    hostListeners.add(force);
-    notifyHosts();
-    return () => {
-      hosts = hosts.filter((h) => h.id !== id);
-      hostListeners.delete(force);
-      notifyHosts();
-    };
-  }, [fallback]);
-  return activeHostId() === idRef.current;
-}
-
-export function IncomingOfferHost({ fallback = false }: { fallback?: boolean }) {
-  const active = useIsActiveHost(fallback);
-  return active ? <OfferHostRuntime /> : null;
-}
-
-export default IncomingOfferHost;
-
-function OfferHostRuntime() {
+/** Mounted once, in app/(vendor)/_layout.tsx. */
+export function IncomingOfferHost() {
   const router = useRouter();
   const session = useVendorSession();
   const upsertOrder = useVendorStore((s) => s.upsertOrder);
   const updateOrder = useVendorStore((s) => s.updateOrder);
   const setConnected = useVendorStore((s) => s.setConnected);
+
+  // Orders tab badge: offers waiting plus orders to pack, from the shared order list.
+  const badgeCount = useVendorStore((s) =>
+    s.orders.reduce((n, o) => {
+      const b = bucketOf(o.status);
+      return b === 'incoming' || b === 'preparing' ? n + 1 : n;
+    }, 0),
+  );
+  useNavBadge('orders', badgeCount);
   const queue = useOfferQueue((s) => s.queue);
   const enqueue = useOfferQueue((s) => s.enqueue);
   const markOutcome = useOfferQueue((s) => s.markOutcome);
@@ -278,3 +253,5 @@ function OfferHostRuntime() {
     />
   );
 }
+
+export default IncomingOfferHost;

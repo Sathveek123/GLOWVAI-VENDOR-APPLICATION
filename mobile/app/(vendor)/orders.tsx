@@ -16,16 +16,13 @@ import {
   Platform,
   RefreshControl,
   StyleSheet,
-  useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { BorderRadii, Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily } from '../../src/theme/typography';
 import type { Order } from '../../src/store/useVendorStore';
 import ScreenShell from '../../src/components/ScreenShell';
-import MobileBottomNav from '../../src/components/MobileBottomNav';
 import {
-  IncomingOfferHost,
   ORDER_TABS,
   OrderBucket,
   OrderCard,
@@ -33,7 +30,6 @@ import {
   useOrdersFeed,
 } from '../../src/features/orders';
 import { Banner, Card, StateView } from '../../src/features/orders/ui';
-import DesktopNavLinks from '../../src/features/orders/DesktopNavLinks';
 
 type TabKey = Exclude<OrderBucket, 'other'>;
 const DATE_RANGES = [
@@ -68,8 +64,6 @@ function inRange(ts: number, range: DateKey, now: number) {
 export default function OrdersScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ tab?: string }>();
-  const { width } = useWindowDimensions();
-  const isExpanded = width >= 1024;
   const feed = useOrdersFeed();
 
   const requestedTab = ORDER_TABS.some(t => t.key === params.tab) ? (params.tab as TabKey) : null;
@@ -170,13 +164,12 @@ export default function OrdersScreen() {
         header={{
           title: 'Orders',
           showBell: true,
-          rightActions: isExpanded ? <DesktopNavLinks current="orders" /> : undefined,
         }}
         backgroundColor={Colors.surface}
         refreshControl={
           <RefreshControl refreshing={feed.refreshing} onRefresh={feed.refresh} tintColor={Colors.primary} colors={[Colors.primary]} />
         }
-        contentContainerStyle={[s.scroll, !isExpanded && s.scrollWithNav]}
+        contentContainerStyle={s.scroll}
       >
         <View style={s.stack}>
           {/* Tabs */}
@@ -259,8 +252,6 @@ export default function OrdersScreen() {
         </View>
       </ScreenShell>
 
-      <MobileBottomNav currentTab="orders" />
-      <IncomingOfferHost fallback />
     </View>
   );
 }
@@ -268,7 +259,6 @@ export default function OrdersScreen() {
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.surface },
   scroll: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.md, paddingBottom: Spacing.xxl },
-  scrollWithNav: { paddingBottom: 112 },
   stack: { gap: Spacing.md },
   list: { gap: Spacing.sm },
 

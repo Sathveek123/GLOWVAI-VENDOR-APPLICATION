@@ -26,9 +26,7 @@ import { useVendorSession } from '../../src/services/session';
 import { vendorApi, earningsApi, inventoryApi } from '../../src/services/api';
 import { setVendorStatus } from '../../src/services/socket';
 import ScreenShell from '../../src/components/ScreenShell';
-import MobileBottomNav from '../../src/components/MobileBottomNav';
 import {
-  IncomingOfferHost,
   OrderCard,
   bucketOf,
   formatAgo,
@@ -39,7 +37,6 @@ import {
   withTimeout,
 } from '../../src/features/orders';
 import { Banner, Card, PrimaryButton, SecondaryButton, StateView, ui } from '../../src/features/orders/ui';
-import DesktopNavLinks from '../../src/features/orders/DesktopNavLinks';
 
 const PAUSE_REASONS = ['Store busy', 'Restocking shelves', 'Staff break', 'Closing for the day'];
 const LOW_STOCK_LEVEL = 5;
@@ -262,13 +259,12 @@ export default function StoreCommandCenter() {
           title: storeName || 'Your store',
           subtitle: storeArea || 'Store Command Center',
           showBell: true,
-          rightActions: isExpanded ? <DesktopNavLinks current="home" /> : undefined,
         }}
         backgroundColor={Colors.surface}
         refreshControl={
           <RefreshControl refreshing={feed.refreshing} onRefresh={handleRefresh} tintColor={Colors.primary} colors={[Colors.primary]} />
         }
-        contentContainerStyle={[s.scroll, !isExpanded && s.scrollWithNav]}
+        contentContainerStyle={s.scroll}
       >
         <View style={s.stack}>
           {/* Availability */}
@@ -428,8 +424,6 @@ export default function StoreCommandCenter() {
         </View>
       </ScreenShell>
 
-      <MobileBottomNav currentTab="home" />
-      <IncomingOfferHost fallback />
 
       {/* Going offline: a reason helps GlowVai support, and keeps the switch from being flipped by accident. */}
       <Modal visible={pauseOpen} transparent animationType="fade" onRequestClose={() => setPauseOpen(false)}>
@@ -520,7 +514,6 @@ function Tile({
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.surface },
   scroll: { paddingHorizontal: Spacing.lg, paddingTop: Spacing.lg, paddingBottom: Spacing.xxl },
-  scrollWithNav: { paddingBottom: 112 },
   stack: { gap: Spacing.lg },
 
   availability: { padding: Spacing.lg },

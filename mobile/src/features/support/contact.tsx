@@ -23,7 +23,7 @@ export function SupportContactActions({ subject }: { subject?: string }) {
   if (!HAS_SUPPORT_CONTACT) {
     return (
       <Text style={s.fallback}>
-        Use the GlowVai support contact shared with you when your store was set up.
+        Seller support contact details aren’t available in this version of the app yet. Send a ticket from Help & support.
       </Text>
     );
   }

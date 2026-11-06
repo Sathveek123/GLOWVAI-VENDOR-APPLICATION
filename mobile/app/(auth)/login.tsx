@@ -1,176 +1,138 @@
 /**
- * Seller sign-in: mobile number. New and returning sellers both start here;
- * after the code is verified, new sellers continue to store registration.
+ * Store sign-in: Firebase email + password (project glowvai-38bde).
+ * After sign-in the splash router (app/index.tsx) decides the next screen.
  */
-import React, { useState } from 'react';
-import { View, Text, ScrollView, StyleSheet, Platform, KeyboardAvoidingView } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, StyleSheet, Platform, type TextInput } from 'react-native';
 import { useRouter } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
-  SellerHeader,
-  Section,
-  TextField,
-  Button,
+  AuthFrame,
+  AuthLinkRow,
   Banner,
-  useLayout,
+  Button,
+  LinkButton,
+  PasswordField,
+  TextField,
   useDocumentTitle,
+  useLayout,
   SellerColors as C,
   S,
 } from '../../src/features/onboarding/kit';
-import { normalizeIndianMobile, formatMobile, validateMobile } from '../../src/features/onboarding/validation';
-import { FontFamily } from '../../src/theme/typography';
-
-const CHECKLIST = [
-  'PAN of your business or the owner, and your GSTIN if you are GST-registered',
-  'Bank account number and IFSC',
-  'A photo of your shop front with the name board',
-  'ID proof of the owner (Aadhaar, PAN card, passport or driving licence)',
-];
+import { authErrorMessage, PHONE_SIGN_IN_NOTE, signIn } from '../../src/features/onboarding/auth';
+import { validateEmail } from '../../src/features/onboarding/validation';
+import { authReady } from '../../src/services/session';
+import { clearVendorMe } from '../../src/services/vendorApi/account';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { isPhone, isDesktop } = useLayout();
+  const { isPhone } = useLayout();
   useDocumentTitle('Sign in');
 
-  const [phone, setPhone] = useState('');
-  const [touched, setTouched] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [submitError, setSubmitError] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showAll, setShowAll] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const passwordRef = useRef<TextInput>(null);
 
-  const error = validateMobile(phone);
-  const valid = !error;
+  // Already signed in (for example after Back): let the router decide.
+  useEffect(() => {
+    let active = true;
+    authReady().then(user => {
+      if (active && user) router.replace('/');
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
-  const onChange = (v: string) => {
-    setPhone(normalizeIndianMobile(v));
-    setSubmitError('');
+  const errors = {
+    email: validateEmail(email),
+    password: password ? '' : 'Enter your password',
   };
 
-  const handleSend = async () => {
-    setTouched(true);
-    if (!valid || loading) return;
-    setLoading(true);
-    setSubmitError('');
+  const submit = async () => {
+    setShowAll(true);
+    if (errors.email || errors.password || busy) return;
+    setBusy(true);
+    setError('');
     try {
-      await AsyncStorage.setItem('vendor_phone', `+91 ${phone}`);
-      router.push('/(auth)/otp');
-    } catch (_) {
-      setSubmitError('We couldn’t continue. Check that your browser allows site storage, then try again.');
-    } finally {
-      setLoading(false);
+      await signIn(email, password);
+      clearVendorMe();
+      router.replace('/');
+    } catch (e) {
+      setError(authErrorMessage(e));
+      setBusy(false);
     }
   };
 
-  const form = (
-    <Section style={{ marginBottom: 0 }}>
-      <Text accessibilityRole="header" style={[st.title, !isPhone && { fontSize: 26, lineHeight: 32 }]}>
-        Sign in or register your store
-      </Text>
-      <Text style={st.lead}>Enter your mobile number. You{'’'}ll confirm it with a one-time code on the next screen.</Text>
-
-      {submitError ? <Banner tone="error" message={submitError} /> : null}
+  return (
+    <AuthFrame
+      title="Sign in to your store"
+      lead="Use the email and password of your GlowVai Seller account."
+      testID="login"
+      below={
+        <AuthLinkRow text="New to GlowVai?" link="Create a store account" onPress={() => router.push('/(auth)/register')} testID="login-register" />
+      }
+    >
+      {error ? <Banner tone="error" message={error} /> : null}
 
       <TextField
-        label="Mobile number"
-        prefix="+91"
-        placeholder="98765 43210"
-        value={formatMobile(phone)}
-        onChangeText={onChange}
-        onBlur={() => phone && setTouched(true)}
-        onSubmitEditing={handleSend}
-        keyboardType="phone-pad"
-        textContentType="telephoneNumber"
-        autoComplete="tel"
-        maxLength={16}
+        label="Email"
+        placeholder="name@example.com"
+        value={email}
+        onChangeText={v => {
+          setEmail(v.replace(/\s/g, ''));
+          setError('');
+        }}
+        error={showAll ? errors.email : ''}
+        keyboardType="email-address"
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="email"
+        textContentType="username"
+        returnKeyType="next"
+        onSubmitEditing={() => passwordRef.current?.focus()}
         autoFocus={Platform.OS === 'web' && !isPhone}
+        maxLength={120}
+        testID="login-email"
+      />
+      <PasswordField
+        ref={passwordRef}
+        label="Password"
+        placeholder="Your password"
+        value={password}
+        onChangeText={v => {
+          setPassword(v);
+          setError('');
+        }}
+        error={showAll ? errors.password : ''}
+        autoComplete="current-password"
+        textContentType="password"
         returnKeyType="go"
-        error={touched ? error : ''}
-        helper={!touched && phone && error ? error : 'Indian mobile numbers only'}
-        testID="login-phone"
+        onSubmitEditing={submit}
+        maxLength={128}
+        last
+        testID="login-password"
       />
-
-      <Button
-        testID="login-submit"
-        label="Continue"
-        iconRight="arrow-forward"
-        onPress={handleSend}
-        loading={loading}
-      />
-
-      <View style={st.newRow}>
-        <Ionicons name="storefront-outline" size={18} color={C.textSecondary} style={{ marginRight: 8, marginTop: 1 }} />
-        <Text style={st.newText}>
-          <Text style={{ fontFamily: FontFamily.semibold, color: C.textPrimary }}>New to GlowVai? </Text>
-          Use this form to register. After you verify your number, we{'’'}ll take you through 4 short steps to set up your store.
-        </Text>
+      <View style={st.forgot}>
+        <LinkButton label="Forgot password?" onPress={() => router.push({ pathname: '/(auth)/forgot-password', params: email ? { email } : {} })} testID="login-forgot" />
       </View>
-    </Section>
-  );
 
-  const checklist = (
-    <View>
-      <Text accessibilityRole="header" style={st.checkTitle}>
-        Registering? Keep these handy
-      </Text>
-      {CHECKLIST.map(item => (
-        <View key={item} style={st.checkRow}>
-          <Ionicons name="checkmark-circle-outline" size={20} color={C.primary} style={{ marginRight: 10, marginTop: 1 }} />
-          <Text style={st.checkText}>{item}</Text>
-        </View>
-      ))}
-    </View>
-  );
+      <Button label="Sign in" onPress={submit} loading={busy} testID="login-submit" />
 
-  return (
-    <SafeAreaView edges={['left', 'right']} style={st.root}>
-      <SellerHeader maxWidth={isDesktop ? 960 : 440} />
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView
-          contentContainerStyle={[st.scroll, { paddingHorizontal: isPhone ? S.lg : S.xl }]}
-          keyboardShouldPersistTaps="handled"
-        >
-          {isDesktop ? (
-            <View style={st.desktop}>
-              <View style={st.intro}>
-                <Text style={st.eyebrow}>GlowVai Seller</Text>
-                <Text accessibilityRole="header" style={st.introTitle}>
-                  Sell your skincare products on GlowVai
-                </Text>
-                <Text style={st.introText}>
-                  Manage your store, orders, stock and payouts from one place.
-                </Text>
-                <View style={{ marginTop: S.xl }}>{checklist}</View>
-              </View>
-              <View style={{ width: 440 }}>{form}</View>
-            </View>
-          ) : (
-            <View style={st.single}>
-              {form}
-              <View style={{ marginTop: S.xl, paddingHorizontal: S.xs }}>{checklist}</View>
-            </View>
-          )}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+      <View style={st.note}>
+        <Ionicons name="phone-portrait-outline" size={18} color={C.textSecondary} style={st.noteIcon} />
+        <Text style={st.noteText}>{PHONE_SIGN_IN_NOTE}</Text>
+      </View>
+    </AuthFrame>
   );
 }
 
 const st = StyleSheet.create({
-  root: { flex: 1, backgroundColor: C.page },
-  scroll: { flexGrow: 1, justifyContent: 'center', paddingVertical: S.xxl },
-  single: { width: '100%', maxWidth: 440, alignSelf: 'center' },
-  desktop: { width: '100%', maxWidth: 960, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 64 },
-  intro: { flex: 1 },
-  eyebrow: { fontFamily: FontFamily.semibold, fontSize: 14, color: C.primary, marginBottom: S.sm },
-  introTitle: { fontFamily: FontFamily.bold, fontSize: 34, lineHeight: 42, letterSpacing: -0.6, color: C.textPrimary },
-  introText: { fontSize: 16, lineHeight: 24, color: C.textSecondary, marginTop: S.md },
-  title: { fontFamily: FontFamily.bold, fontSize: 24, lineHeight: 30, letterSpacing: -0.4, color: C.textPrimary },
-  lead: { fontSize: 15, lineHeight: 22, color: C.textSecondary, marginTop: S.sm, marginBottom: S.xl },
-
-  newRow: { flexDirection: 'row', alignItems: 'flex-start', marginTop: S.xl, paddingTop: S.lg, borderTopWidth: 1, borderTopColor: C.border },
-  newText: { flex: 1, fontSize: 14, lineHeight: 21, color: C.textSecondary },
-  checkTitle: { fontFamily: FontFamily.bold, fontSize: 16, lineHeight: 22, color: C.textPrimary, marginBottom: S.md },
-  checkRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: S.md },
-  checkText: { flex: 1, fontSize: 15, lineHeight: 22, color: C.textSecondary },
+  forgot: { alignItems: 'flex-end', marginTop: S.xs, marginBottom: S.md, marginRight: -S.sm },
+  note: { flexDirection: 'row', alignItems: 'flex-start', marginTop: S.xl, paddingTop: S.lg, borderTopWidth: 1, borderTopColor: C.border },
+  noteIcon: { marginRight: S.sm, marginTop: 1 },
+  noteText: { flex: 1, fontSize: 14, lineHeight: 20, color: C.textSecondary },
 });

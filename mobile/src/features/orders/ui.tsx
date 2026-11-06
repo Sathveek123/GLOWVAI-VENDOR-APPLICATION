@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { BorderRadii, Colors, Spacing } from '../../theme/tokens';
 import { FontFamily } from '../../theme/typography';
+import type { Order } from '../../store/useVendorStore';
 import type { StatusTone } from './model';
 import { statusMeta } from './model';
 
@@ -23,18 +24,18 @@ type IconName = keyof typeof Ionicons.glyphMap;
 
 export const TONE_COLORS: Record<StatusTone, { fg: string; bg: string; border: string }> = {
   action: { fg: Colors.primary, bg: Colors.primaryLight, border: Colors.primaryBorder },
-  progress: { fg: Colors.warning, bg: Colors.warningLight, border: Colors.warningBorder },
-  success: { fg: Colors.success, bg: Colors.successLight, border: Colors.successBorder },
+  progress: { fg: Colors.warningText, bg: Colors.warningLight, border: Colors.warningBorder },
+  success: { fg: Colors.successText, bg: Colors.successLight, border: Colors.successBorder },
   neutral: { fg: Colors.textSecondary, bg: Colors.surface, border: Colors.border },
-  danger: { fg: Colors.danger, bg: Colors.dangerLight, border: Colors.dangerBorder },
+  danger: { fg: Colors.dangerText, bg: Colors.dangerLight, border: Colors.dangerBorder },
 };
 
 export function Card({ children, style }: { children: React.ReactNode; style?: StyleProp<ViewStyle> }) {
   return <View style={[ui.card, style]}>{children}</View>;
 }
 
-export function StatusPill({ status }: { status: string }) {
-  const meta = statusMeta(status);
+export function StatusPill({ order }: { order: Pick<Order, 'status' | 'isOffer' | 'cancelled'> }) {
+  const meta = statusMeta(order);
   const tone = TONE_COLORS[meta.tone];
   return (
     <View style={[ui.pill, { backgroundColor: tone.bg, borderColor: tone.border }]}>

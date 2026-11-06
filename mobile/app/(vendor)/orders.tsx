@@ -1,7 +1,8 @@
 /**
  * Orders and history (PRD screen 11).
- * Tabs: Incoming, Preparing, Ready for pickup, Completed, Cancelled. Opens on the most
- * urgent tab that has orders. Search by order reference. History tabs add a date filter.
+ * Tabs: Offers, Preparing, Packed, Completed, Cancelled. Opens on the most urgent tab that
+ * has orders. Search by order reference. History tabs add a date filter.
+ * Orders come from the shared list kept current by src/features/orders/sync.ts.
  * No customer details on this screen.
  * File: mobile/app/(vendor)/orders.tsx
  */
@@ -26,10 +27,13 @@ import {
   ORDER_TABS,
   OrderBucket,
   OrderCard,
+  SyncNotice,
   bucketOf,
-  useOrdersFeed,
+  refreshOrdersNow,
+  useOrdersDemand,
+  useOrdersSync,
 } from '../../src/features/orders';
-import { Banner, Card, StateView } from '../../src/features/orders/ui';
+import { Card, StateView } from '../../src/features/orders/ui';
 
 type TabKey = Exclude<OrderBucket, 'other'>;
 const DATE_RANGES = [
@@ -40,17 +44,17 @@ const DATE_RANGES = [
 type DateKey = (typeof DATE_RANGES)[number]['key'];
 
 const EMPTY_COPY: Record<TabKey, { title: string; sub: string; icon: keyof typeof Ionicons.glyphMap }> = {
-  incoming: { title: 'No new offers', sub: 'New orders ring on this device and appear here while you are online.', icon: 'notifications-outline' },
+  offers: { title: 'No new offers', sub: 'Offers appear here while your store is online and this app is open.', icon: 'notifications-outline' },
   preparing: { title: 'Nothing to pack', sub: 'Orders you accept appear here until they are packed.', icon: 'basket-outline' },
-  ready: { title: 'No orders waiting for a rider', sub: 'Packed orders wait here until the rider picks them up.', icon: 'bicycle-outline' },
-  completed: { title: 'No completed orders', sub: 'Orders handed to a rider or delivered appear here.', icon: 'checkmark-done-outline' },
-  cancelled: { title: 'No cancelled orders', sub: 'Declined, expired and cancelled orders appear here.', icon: 'close-circle-outline' },
+  packed: { title: 'No packed orders waiting', sub: "Packed orders wait here until GlowVai's delivery partner picks them up.", icon: 'cube-outline' },
+  completed: { title: 'No completed orders yet', sub: 'Orders that are out for delivery or delivered appear here.', icon: 'checkmark-done-outline' },
+  cancelled: { title: 'No cancelled orders', sub: 'Orders cancelled by the customer or GlowVai appear here.', icon: 'close-circle-outline' },
 };
 
 const ACTION_BY_TAB: Partial<Record<TabKey, string>> = {
-  incoming: 'Review',
-  preparing: 'Pick & pack',
-  ready: 'Pickup',
+  offers: 'Review',
+  preparing: 'Pack',
+  packed: 'View',
 };
 
 function inRange(ts: number, range: DateKey, now: number) {
@@ -64,7 +68,14 @@ function inRange(ts: number, range: DateKey, now: number) {
 export default function OrdersScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ tab?: string }>();
-  const feed = useOrdersFeed();
+  useOrdersDemand();
+  const feed = useOrdersSync();
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await refreshOrdersNow();
+    setRefreshing(false);
+  };
 
   const requestedTab = ORDER_TABS.some(t => t.key === params.tab) ? (params.tab as TabKey) : null;
   const [tab, setTab] = useState<TabKey | null>(requestedTab);
@@ -85,47 +96,45 @@ export default function OrdersScreen() {
   }, [requestedTab]);
 
   const byTab = useMemo(() => {
-    const groups: Record<TabKey, Order[]> = { incoming: [], preparing: [], ready: [], completed: [], cancelled: [] };
+    const groups: Record<TabKey, Order[]> = { offers: [], preparing: [], packed: [], completed: [], cancelled: [] };
     for (const o of feed.orders) {
-      const b = bucketOf(o.status);
+      const b = bucketOf(o);
       if (b !== 'other') groups[b].push(o);
     }
     // Work tabs: oldest first. History: newest first.
-    (['incoming', 'preparing', 'ready'] as TabKey[]).forEach(k => groups[k].sort((a, b) => a.createdAt - b.createdAt));
-    (['completed', 'cancelled'] as TabKey[]).forEach(k => groups[k].sort((a, b) => b.createdAt - a.createdAt));
+    (['offers', 'preparing', 'packed'] as TabKey[]).forEach(k => groups[k].sort((a, b) => a.placedAt - b.placedAt));
+    (['completed', 'cancelled'] as TabKey[]).forEach(k => groups[k].sort((a, b) => (b.updatedAt || b.placedAt) - (a.updatedAt || a.placedAt)));
     return groups;
   }, [feed.orders]);
 
   // Default to the most urgent tab that has orders, once the list has loaded.
   useEffect(() => {
     if (tab || !feed.hasLoaded) return;
-    const urgent = (['incoming', 'preparing', 'ready'] as TabKey[]).find(k => byTab[k].length > 0);
-    setTab(urgent ?? 'incoming');
+    const urgent = (['offers', 'preparing', 'packed'] as TabKey[]).find(k => byTab[k].length > 0);
+    setTab(urgent ?? 'offers');
   }, [tab, feed.hasLoaded, byTab]);
 
-  const activeTab: TabKey = tab ?? 'incoming';
+  const activeTab: TabKey = tab ?? 'offers';
   const isHistory = activeTab === 'completed' || activeTab === 'cancelled';
   const q = query.trim().toLowerCase().replace(/^#/, '');
 
   const rows = useMemo(() => {
     let list = byTab[activeTab];
-    if (isHistory) list = list.filter(o => inRange(o.createdAt, range, now));
-    if (q) list = list.filter(o => o.orderId.toLowerCase().includes(q));
+    if (isHistory) list = list.filter(o => inRange(o.placedAt, range, now));
+    if (q) list = list.filter(o => o.reference.toLowerCase().includes(q) || o.orderId.toLowerCase().includes(q));
     return list;
   }, [byTab, activeTab, isHistory, range, now, q]);
 
   const openOrder = (o: Order) => {
-    const b = bucketOf(o.status);
-    const pathname = b === 'ready' || b === 'completed' ? '/(vendor)/ready-pickup' : '/(vendor)/order-detail';
-    router.push({ pathname, params: { orderId: o.orderId } } as any);
+    router.push({ pathname: '/(vendor)/order-detail', params: { orderId: o.orderId } } as any);
   };
 
   const renderBody = () => {
-    if (!feed.hasLoaded && feed.state === 'loading') {
-      return <StateView kind="loading" title="Loading orders" />;
-    }
     if (!feed.hasLoaded && feed.state === 'error') {
-      return <StateView kind="error" title="We could not load your orders" message={feed.error} actionLabel="Retry" onAction={feed.refresh} />;
+      return <StateView kind="error" title="We could not load your orders" message={feed.error || undefined} actionLabel="Retry" onAction={feed.retry} />;
+    }
+    if (!feed.hasLoaded) {
+      return <StateView kind="loading" title="Loading orders" />;
     }
     if (rows.length === 0) {
       if (q || (isHistory && range !== 'all' && byTab[activeTab].length > 0)) {
@@ -167,7 +176,7 @@ export default function OrdersScreen() {
         }}
         backgroundColor={Colors.surface}
         refreshControl={
-          <RefreshControl refreshing={feed.refreshing} onRefresh={feed.refresh} tintColor={Colors.primary} colors={[Colors.primary]} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} colors={[Colors.primary]} />
         }
         contentContainerStyle={s.scroll}
       >
@@ -183,7 +192,7 @@ export default function OrdersScreen() {
             {ORDER_TABS.map(t => {
               const selected = t.key === activeTab;
               const count = byTab[t.key].length;
-              const showCount = feed.hasLoaded && (t.key === 'incoming' || t.key === 'preparing' || t.key === 'ready');
+              const showCount = feed.hasLoaded && (t.key === 'offers' || t.key === 'preparing' || t.key === 'packed');
               return (
                 <Pressable
                   key={t.key}
@@ -244,9 +253,7 @@ export default function OrdersScreen() {
             </View>
           )}
 
-          {feed.state === 'error' && feed.hasLoaded && (
-            <Banner tone="warning" title="Showing the last loaded orders" message={feed.error} actionLabel="Retry" onAction={feed.refresh} />
-          )}
+          <SyncNotice />
 
           {renderBody()}
         </View>

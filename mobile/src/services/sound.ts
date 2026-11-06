@@ -1,13 +1,11 @@
 import { Platform, Vibration } from 'react-native';
 /**
- * GlowVAI Vendor App — Audio, Vibration & Push Notification Service
- * ═══════════════════════════════════════════════════════════════════════════
- * Instant merchant alerts designed for noisy retail & dark store environments:
- *   • Incoming Flash Order: Urgent multi-tone chime pattern + vibration pulse + native push notification
- *   • Order Confirmed / Packed: Crisp pleasant completion chime
- *   • Rejection / Timeout: Low alert tone
- *   • Low Stock Warning: Double beep warning
- * ═══════════════════════════════════════════════════════════════════════════
+ * GlowVai Vendor App: alert sounds and vibration.
+ *   - New order offer: a short chime plus vibration (and a browser notification on web,
+ *     only if the vendor already allowed notifications).
+ *   - Accepted / packed: a soft confirmation ding.
+ * Sound uses Web Audio, so it plays on web only; native phones vibrate. There is no push
+ * notification while the app is closed yet.
  */
 
 class SoundService {
@@ -66,7 +64,9 @@ class SoundService {
     if (Platform.OS !== 'web') {
       // Native phones: React Native's built-in Vibration API (no extra package needed).
       const durations = Array.isArray(pattern) ? pattern : [0, pattern];
-      Vibration.vibrate(durations);
+      try {
+        Vibration.vibrate(durations);
+      } catch (_) {}
       return;
     }
     if (typeof window !== 'undefined' && 'navigator' in window && navigator.vibrate) {
@@ -77,7 +77,9 @@ class SoundService {
   }
 
   /**
-   * Play the high-priority Swiggy/Zomato style double-ping chime + vibration for new incoming orders
+   * A short chime and vibration for a new order offer. Every step fails silently: on native
+   * phones there is no Web Audio, so only the vibration plays; browsers may block sound until
+   * the page has been tapped once.
    */
   public playIncomingOrderChime(orderSummary?: string) {
     // 1. Hardware vibration

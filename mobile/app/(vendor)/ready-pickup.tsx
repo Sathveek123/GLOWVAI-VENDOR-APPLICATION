@@ -1,258 +1,141 @@
 /**
- * Ready for pickup (PRD screen 13, handover half).
- * Shows the pickup status, what to match with the rider, and rider details only when
- * the server provides them. The vendor does not record pickup or delivery here:
- * GlowVai records the pickup, and this screen follows it. QR verification is not built yet,
- * and the customer's delivery code is never used as a handover PIN.
+ * Ready for pickup (PRD screen 13, handover half): the packed orders waiting at the store.
+ *
+ * GlowVai assigns the delivery partner and records the pickup; this screen follows it.
+ * Pickup verification (QR or code) comes later, so there is no handover button and no
+ * rider details here: nothing on this screen changes an order.
  * File: mobile/app/(vendor)/ready-pickup.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
-import React, { useEffect, useState } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Platform, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily } from '../../src/theme/typography';
+import type { Order } from '../../src/store/useVendorStore';
 import ScreenShell from '../../src/components/ScreenShell';
 import {
-  StatusStrip,
+  SyncNotice,
   bucketOf,
+  formatAgo,
   formatClock,
+  refreshOrdersNow,
   unitCount,
   unitsLabel,
-  useOrder,
+  useOrdersDemand,
+  useOrdersSync,
 } from '../../src/features/orders';
-import { Banner, Card, PrimaryButton, SecondaryButton, StateView, ui } from '../../src/features/orders/ui';
-
-const REFRESH_MS = 20_000;
+import { Banner, Card, StateView, ui } from '../../src/features/orders/ui';
 
 export default function ReadyForPickupScreen() {
   const router = useRouter();
-  const { orderId } = useLocalSearchParams<{ orderId: string }>();
-  const { order, state, error, retry, refresh } = useOrder(orderId);
-  const [checking, setChecking] = useState(false);
-  const [checkFailed, setCheckFailed] = useState(false);
+  const { orderId } = useLocalSearchParams<{ orderId?: string }>();
+  useOrdersDemand();
+  const sync = useOrdersSync();
+  const [now, setNow] = useState(() => Date.now());
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     if (Platform.OS === 'web' && typeof document !== 'undefined') {
-      document.title = `Pickup #${orderId || ''} | GlowVai Vendor`;
+      document.title = 'Ready for pickup · GlowVai Seller';
     }
-  }, [orderId]);
-
-  // Follow the pickup while waiting for the rider.
-  const waiting = !!order && bucketOf(order.status) === 'ready';
-  useEffect(() => {
-    if (!waiting) return;
-    const timer = setInterval(() => { refresh(); }, REFRESH_MS);
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(timer);
-  }, [waiting, refresh]);
+  }, []);
 
-  const header = { title: 'Ready for pickup', showBack: true };
+  const waiting = useMemo(
+    () => sync.orders.filter(o => bucketOf(o) === 'packed').sort((a, b) => (a.packedAt || a.placedAt) - (b.packedAt || b.placedAt)),
+    [sync.orders],
+  );
+  const focus = orderId ? sync.orders.find(o => o.orderId === orderId) : undefined;
+  const focusBucket = focus ? bucketOf(focus) : null;
 
-  if (state === 'loading') {
-    return (
-      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
-        <StateView kind="loading" title="Loading order" />
-      </ScreenShell>
-    );
-  }
-  if (state === 'missing' || (!order && state !== 'error')) {
-    return (
-      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
-        <StateView
-          kind="empty"
-          icon="search-outline"
-          title="Order not found"
-          message="It may have been removed, or the link is out of date."
-          actionLabel="Back to orders"
-          onAction={() => router.replace('/(vendor)/orders')}
-        />
-      </ScreenShell>
-    );
-  }
-  if (state === 'error' || !order) {
-    return (
-      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
-        <StateView kind="error" title="We could not load this order" message={error} actionLabel="Retry" onAction={retry} />
-      </ScreenShell>
-    );
-  }
-
-  const bucket = bucketOf(order.status);
-
-  if (bucket === 'incoming' || bucket === 'preparing') {
-    return (
-      <ScreenShell header={header} scroll={false} backgroundColor={Colors.surface}>
-        <StateView
-          kind="empty"
-          icon="basket-outline"
-          title="This order is not packed yet"
-          message="Finish Pick & pack first. The order comes here once it is marked as packed."
-          actionLabel="Go to Pick & pack"
-          onAction={() => router.replace({ pathname: '/(vendor)/order-detail', params: { orderId: order.orderId } } as any)}
-        />
-      </ScreenShell>
-    );
-  }
-
-  const statusCard = (() => {
-    switch (order.status) {
-      case 'PACKED':
-        return {
-          icon: 'cube-outline' as const,
-          color: Colors.warning,
-          bg: Colors.warningLight,
-          title: 'Packed. Waiting for the rider',
-          sub: order.packedAt ? `Packed at ${formatClock(order.packedAt)}. Keep it at the pickup point.` : 'Keep it at the pickup point.',
-        };
-      case 'READY_FOR_PICKUP':
-        return {
-          icon: 'cube-outline' as const,
-          color: Colors.warning,
-          bg: Colors.warningLight,
-          title: 'Ready for pickup',
-          sub: 'Hand the package over when the rider arrives.',
-        };
-      case 'DISPATCHED':
-      case 'OUT_FOR_DELIVERY':
-        return {
-          icon: 'bicycle-outline' as const,
-          color: Colors.success,
-          bg: Colors.successLight,
-          title: 'Picked up by the rider',
-          sub: order.dispatchedAt ? `Pickup recorded at ${formatClock(order.dispatchedAt)}. Nothing more to do.` : 'Pickup recorded. Nothing more to do.',
-        };
-      case 'DELIVERED':
-        return {
-          icon: 'checkmark-circle-outline' as const,
-          color: Colors.success,
-          bg: Colors.successLight,
-          title: 'Delivered',
-          sub: 'The delivery was confirmed. Nothing more to do.',
-        };
-      default:
-        return {
-          icon: 'close-circle-outline' as const,
-          color: Colors.textSecondary,
-          bg: Colors.surface,
-          title: bucket === 'cancelled' ? 'This order was cancelled' : 'Status is updating',
-          sub: bucket === 'cancelled' ? 'Do not hand this package over. Contact GlowVai support if a rider arrives.' : 'Check again in a moment.',
-        };
-    }
-  })();
-
-  const rider = order.rider;
-  const checkNow = async () => {
-    setChecking(true);
-    const ok = await refresh();
-    setCheckFailed(!ok);
-    setChecking(false);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await refreshOrdersNow();
+    setRefreshing(false);
   };
+
+  const open = (o: Order) => router.push({ pathname: '/(vendor)/order-detail', params: { orderId: o.orderId } } as any);
 
   return (
     <ScreenShell
-      header={header}
+      header={{ title: 'Ready for pickup', subtitle: sync.hasLoaded ? `${waiting.length} waiting` : undefined, showBack: true }}
       backgroundColor={Colors.surface}
       contentContainerStyle={s.scroll}
-      stickyFooter={
-        <View style={s.footer}>
-          {checkFailed && (
-            <Banner tone="warning" message="We could not check the status. Check your internet connection and try again." />
-          )}
-          {bucket === 'ready' ? (
-            <SecondaryButton label="Check pickup status" icon="refresh" onPress={checkNow} busy={checking} />
-          ) : (
-            <PrimaryButton label="Back to orders" onPress={() => router.replace('/(vendor)/orders')} />
-          )}
-        </View>
-      }
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
     >
       <View style={s.stack}>
-        <Card><StatusStrip status={order.status} /></Card>
+        <SyncNotice />
 
-        {/* Status */}
-        <Card style={s.statusCard}>
-          <View style={[s.statusIcon, { backgroundColor: statusCard.bg }]}>
-            <Ionicons name={statusCard.icon} size={28} color={statusCard.color} />
+        {focus && focusBucket === 'completed' ? (
+          <Banner tone="success" message={`Order ${focus.reference} is with GlowVai's delivery partner. Nothing more to do.`} />
+        ) : null}
+        {focus && focusBucket === 'cancelled' ? (
+          <Banner tone="warning" title={`Order ${focus.reference} was cancelled`} message="Do not hand it over. Put the items back on the shelf." />
+        ) : null}
+
+        <Card style={s.info}>
+          <View style={s.infoIcon}>
+            <Ionicons name="bicycle-outline" size={22} color={Colors.primary} />
           </View>
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={s.statusTitle} accessibilityLiveRegion="polite">{statusCard.title}</Text>
-            <Text style={ui.body}>{statusCard.sub}</Text>
-          </View>
-        </Card>
-
-        {/* What to match with the rider */}
-        <Card style={{ gap: Spacing.md }}>
-          <Text style={ui.sectionTitle}>Match with the rider</Text>
-          <Field label="Order reference" value={`#${order.orderId}`} mono />
-          <Field label="Package" value={unitsLabel(unitCount(order))} />
-          {!!order.pickupBay && <Field label="Pickup point" value={order.pickupBay} mono />}
-          {!!order.packageRef && <Field label="Package reference" value={order.packageRef} mono />}
-        </Card>
-
-        {/* Rider */}
-        <Card style={{ gap: Spacing.md }}>
-          <Text style={ui.sectionTitle}>Rider</Text>
-          {rider ? (
-            <View style={s.riderRow}>
-              <View style={s.riderAvatar}>
-                <Ionicons name="person-outline" size={22} color={Colors.textSecondary} />
-              </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={s.riderName}>{rider.name || 'Rider assigned'}</Text>
-                <Text style={ui.muted}>
-                  {[
-                    rider.partner,
-                    typeof rider.etaMinutes === 'number' ? `Arriving in about ${rider.etaMinutes} min` : '',
-                    rider.status,
-                  ].filter(Boolean).join(' · ') || 'Details will update here.'}
-                </Text>
-              </View>
-            </View>
-          ) : (
+          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+            <Text style={ui.sectionTitle}>GlowVai assigns the delivery partner</Text>
             <Text style={ui.body}>
-              {bucket === 'ready'
-                ? 'No rider assigned yet. Rider details appear here when GlowVai assigns one.'
-                : 'Rider details were not shared for this order.'}
+              Keep each packed order together with its reference on it. When the delivery partner arrives, match the reference before you hand it over. Pickup verification in the app comes later.
             </Text>
-          )}
+          </View>
         </Card>
 
-        {bucket === 'ready' && (
-          <Banner
-            tone="info"
-            title="QR pickup check is coming"
-            message="For now, check the order reference with the rider before handing over. GlowVai records the pickup, and this screen updates by itself."
-          />
+        {!sync.hasLoaded && sync.state === 'error' ? (
+          <Card><StateView kind="error" title="We could not load your orders" message={sync.error || undefined} actionLabel="Retry" onAction={sync.retry} /></Card>
+        ) : !sync.hasLoaded ? (
+          <Card><StateView kind="loading" title="Loading orders" /></Card>
+        ) : waiting.length === 0 ? (
+          <Card>
+            <StateView
+              kind="empty"
+              icon="cube-outline"
+              title="No packed orders waiting"
+              message="Orders you mark as packed wait here until GlowVai's delivery partner picks them up."
+            />
+          </Card>
+        ) : (
+          <View style={{ gap: Spacing.sm }}>
+            {waiting.map(o => (
+              <Pressable
+                key={o.orderId}
+                onPress={() => open(o)}
+                accessibilityRole="button"
+                accessibilityLabel={`Order ${o.reference}, ${unitsLabel(unitCount(o))}, packed ${formatAgo(o.packedAt, now)}`}
+                style={({ pressed }) => [ui.card, s.row, o.orderId === orderId && s.rowFocus, pressed && { backgroundColor: Colors.surface }]}
+              >
+                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                  <Text style={s.ref} numberOfLines={1} selectable>{o.reference}</Text>
+                  <Text style={ui.muted}>
+                    {[
+                      unitsLabel(unitCount(o)),
+                      o.packedAt ? `packed at ${formatClock(o.packedAt)}` : '',
+                      o.status === 'READY_FOR_PICKUP' ? 'ready for pickup' : 'waiting for GlowVai',
+                    ].filter(Boolean).join(' · ')}
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={Colors.textMuted} />
+              </Pressable>
+            ))}
+          </View>
         )}
       </View>
     </ScreenShell>
   );
 }
 
-function Field({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <View style={s.field}>
-      <Text style={s.fieldLabel}>{label}</Text>
-      <Text style={[s.fieldValue, mono && s.fieldMono]} selectable numberOfLines={1}>{value}</Text>
-    </View>
-  );
-}
-
 const s = StyleSheet.create({
   scroll: { padding: Spacing.lg, paddingBottom: Spacing.xl },
   stack: { gap: Spacing.md },
-  footer: { gap: Spacing.sm, paddingBottom: Spacing.xs },
-
-  statusCard: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  statusIcon: { width: 52, height: 52, borderRadius: 26, alignItems: 'center', justifyContent: 'center' },
-  statusTitle: { fontFamily: FontFamily.bold, fontSize: 18, lineHeight: 24, color: Colors.textPrimary, marginBottom: 2 },
-
-  field: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: Spacing.md, minHeight: 28 },
-  fieldLabel: { fontFamily: FontFamily.regular, fontSize: 14, color: Colors.textSecondary },
-  fieldValue: { flexShrink: 1, fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary, textAlign: 'right' },
-  fieldMono: { fontFamily: FontFamily.monoBold, fontSize: 16 },
-
-  riderRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
-  riderAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: Colors.surface, alignItems: 'center', justifyContent: 'center' },
-  riderName: { fontFamily: FontFamily.semibold, fontSize: 16, lineHeight: 22, color: Colors.textPrimary },
+  info: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
+  infoIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: Colors.primaryLight, alignItems: 'center', justifyContent: 'center' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, minHeight: 72 },
+  rowFocus: { borderColor: Colors.primaryBorder },
+  ref: { fontFamily: FontFamily.mono, fontSize: 15, lineHeight: 20, color: Colors.textPrimary },
 });

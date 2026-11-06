@@ -1,5 +1,5 @@
 /**
- * Order stepper: Offer, Pick & pack, Ready for pickup, With rider.
+ * Order stepper: Offer, Preparing, Packed, With delivery.
  * Done steps show a check, the current step is filled blue, later steps are grey.
  * File: mobile/src/features/orders/StatusStrip.tsx
  */
@@ -8,10 +8,11 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Colors, Spacing } from '../../theme/tokens';
 import { FontFamily } from '../../theme/typography';
+import type { Order } from '../../store/useVendorStore';
 import { ORDER_STEPS, stepIndex } from './model';
 
-export default function StatusStrip({ status }: { status: string }) {
-  const current = stepIndex(status);
+export default function StatusStrip({ order }: { order: Pick<Order, 'status' | 'isOffer' | 'cancelled'> }) {
+  const current = stepIndex(order);
   if (current < 0) return null;
   return (
     <View

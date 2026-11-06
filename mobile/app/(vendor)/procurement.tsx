@@ -9,6 +9,8 @@ export default function ProcurementScreen() {
   return (
     <ComingLater
       title="Purchase orders"
+      heading="Purchase orders are not available yet"
+      icon="clipboard-outline"
       message="Ordering from suppliers is not part of the GlowVai seller app yet. Keep buying stock the way you do today and update quantities in Inventory."
     />
   );

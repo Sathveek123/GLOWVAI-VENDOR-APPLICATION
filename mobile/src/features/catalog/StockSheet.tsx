@@ -1,165 +1,134 @@
 /**
- * Update stock: one exact quantity, one reason, one save. Quick-add chips only change
- * the number on screen; nothing is sent until Save. Also pauses or resumes selling.
+ * Set stock for one GlowVai product: how many are on the shelf, whether the store is
+ * selling it, and an optional own price (at most the MRP). One Save, one PUT
+ * /api/vendor/inventory; the sheet closes only after GlowVai confirms.
  * File: mobile/src/features/catalog/StockSheet.tsx
  */
 import React, { useEffect, useState } from 'react';
-import { View, Text, Pressable, StyleSheet } from 'react-native';
-import { inventoryApi } from '../../services/api';
-import type { InventoryItem } from '../../store/useVendorStore';
+import { View, Text, Pressable, StyleSheet, Switch, TextInput, Platform } from 'react-native';
 import { Colors, Spacing as S } from '../../theme/tokens';
 import { FontFamily, TypeScale } from '../../theme/typography';
-import { Banner, Button, TextField } from '../onboarding/kit';
-import { ProductThumb, Sheet, Pill } from './ui';
-import { expiryLine, expiryState, friendlyError, onHand, reserved, sellState, SELL_LABEL } from './stock';
+import { friendlyError } from '../../services/vendorApi/http';
+import { MAX_STOCK, type InventoryRecord } from '../../services/vendorApi/inventory';
+import { Banner, PrimaryButton } from '../orders/ui';
+import { catalogTitle, type CatalogProduct } from './catalogSource';
+import { saveInventory } from './inventory';
+import { ProductThumb, Sheet } from './ui';
+import { formatRupees, priceError } from './stock';
 
-const REASONS = ['Received new stock', 'Counted the shelf', 'Damaged or expired', 'Sold in the shop'] as const;
-type Reason = (typeof REASONS)[number];
 const QUICK = [1, 6, 12];
-const MAX_QTY = 9999;
 
 export default function StockSheet({
-  item,
-  photo,
-  volume,
+  product,
+  record,
   onClose,
   onSaved,
 }: {
-  item: InventoryItem | null;
-  photo?: string;
-  volume?: string;
+  product: CatalogProduct | null;
+  record?: InventoryRecord;
   onClose: () => void;
-  onSaved: (productId: string, fields: Partial<InventoryItem>, message: string) => void;
+  onSaved: (message: string) => void;
 }) {
-  const current = item ? onHand(item) : 0;
-  const held = item ? reserved(item) : 0;
   const [qty, setQty] = useState('');
-  const [reason, setReason] = useState<Reason | null>(null);
+  const [available, setAvailable] = useState(true);
+  const [price, setPrice] = useState('');
   const [saving, setSaving] = useState(false);
-  const [toggling, setToggling] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!item) return;
-    setQty(String(onHand(item)));
-    setReason(null);
+    if (!product) return;
+    setQty(record ? String(record.stock) : '');
+    setAvailable(record ? record.isAvailable : true);
+    setPrice(record?.unitPriceOverride ? String(record.unitPriceOverride) : '');
     setError('');
     setSaving(false);
-    setToggling(false);
-  }, [item?.productId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [product?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!item) return <Sheet visible={false} title="" onClose={onClose}>{null}</Sheet>;
+  if (!product) return <Sheet visible={false} title="" onClose={onClose}>{null}</Sheet>;
 
   const trimmed = qty.trim();
   const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
   let qtyError = '';
   if (trimmed === '') qtyError = 'Enter how many are on the shelf now.';
   else if (!Number.isInteger(parsed)) qtyError = 'Use whole numbers only, 0 or more.';
-  else if (parsed > MAX_QTY) qtyError = `That is more than ${MAX_QTY}. Check the number.`;
-  else if (parsed < held) qtyError = `${held} ${held === 1 ? 'unit is' : 'units are'} held for open orders, so stock cannot go below ${held}.`;
-  const changed = !qtyError && parsed !== current;
-  const canSave = changed && !!reason && !saving;
+  else if (parsed > MAX_STOCK) qtyError = `That is more than ${MAX_STOCK.toLocaleString('en-IN')}. Check the number.`;
+  const pErr = priceError(price, product.mrp);
+  const priceValue = price.trim() ? Number(price.trim()) : undefined;
 
-  const expired = expiryState(item) === 'expired';
-  const state = sellState(item);
-  const canResume = !item.active && !expired && current > 0 && item.approvalStatus !== 'REJECTED';
+  const changed =
+    !record ||
+    parsed !== record.stock ||
+    available !== record.isAvailable ||
+    (priceValue ?? 0) !== (record.unitPriceOverride ?? 0);
+  const canSave = !qtyError && !pErr && changed && !saving;
 
   const bump = (n: number) => {
-    const base = Number.isInteger(parsed) ? parsed : current;
-    setQty(String(Math.min(MAX_QTY, base + n)));
-    if (!reason) setReason('Received new stock');
+    const base = Number.isInteger(parsed) ? parsed : 0;
+    setQty(String(Math.min(MAX_STOCK, base + n)));
+    setError('');
   };
 
   const save = async () => {
-    if (!canSave || !reason) return;
+    if (!canSave) return;
     setSaving(true);
     setError('');
     try {
-      const res: any = await inventoryApi.setStockExact(item.productId, parsed, reason);
-      const fields: Partial<InventoryItem> = res?.item
-        ? res.item
-        : { stock: parsed, stockOnHand: parsed, updatedAt: Date.now() };
-      onSaved(item.productId, fields, `Stock saved: ${parsed} on the shelf.`);
+      await saveInventory([{ productId: product.id, stock: parsed, isAvailable: available, unitPriceOverride: priceValue }]);
+      onSaved(
+        !available
+          ? 'Saved. This product is paused for your store.'
+          : parsed === 0
+            ? 'Saved. This product is out of stock in your store.'
+            : `Saved: ${parsed} on the shelf.`,
+      );
     } catch (err) {
-      setError(`Stock not saved. ${friendlyError(err)}`);
+      setError(`Not saved. ${friendlyError(err)}`);
     } finally {
       setSaving(false);
     }
   };
 
-  const toggleSelling = async () => {
-    if (toggling) return;
-    const next = !item.active;
-    setToggling(true);
-    setError('');
-    try {
-      const res: any = await inventoryApi.update(item.productId, { active: next });
-      onSaved(
-        item.productId,
-        res?.item ? res.item : { active: next, status: next ? 'active' : 'paused', updatedAt: Date.now() },
-        next ? 'Selling resumed.' : 'Selling paused. Customers will not see this product.',
-      );
-    } catch (err) {
-      setError(`${next ? 'Could not resume selling' : 'Could not pause selling'}. ${friendlyError(err)}`);
-    } finally {
-      setToggling(false);
-    }
-  };
-
-  const tone = state === 'selling' ? 'success' : state === 'expired' || state === 'rejected' || state === 'out' ? 'danger' : state === 'pending' ? 'info' : 'neutral';
-
   return (
     <Sheet
       visible
-      title="Update stock"
+      title={record ? 'Update stock' : 'Add to your store'}
       onClose={onClose}
       footer={
-        <Button
-          label={saving ? 'Saving' : 'Save stock'}
+        <PrimaryButton
+          label={saving ? 'Saving' : 'Save'}
           onPress={save}
-          loading={saving}
+          busy={saving}
           disabled={!canSave}
-          accessibilityLabel={`Save stock for ${item.name}`}
+          accessibilityLabel={`Save stock for ${product.productName}`}
         />
       }
     >
       <View style={st.product}>
-        <ProductThumb uri={photo} brand={item.brand} label={item.name} size={56} />
+        <ProductThumb uri={product.pictures[0]} brand={product.brandName} label={product.productName} size={56} />
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          {item.brand ? <Text style={st.brand}>{item.brand}</Text> : null}
-          <Text style={st.name} numberOfLines={2}>{item.name}</Text>
-          {volume ? <Text style={st.meta}>{volume}</Text> : null}
+          {product.brandName ? <Text style={st.brand}>{product.brandName}</Text> : null}
+          <Text style={st.name} numberOfLines={2}>{catalogTitle(product)}</Text>
+          <Text style={st.meta}>
+            GlowVai price {formatRupees(product.brandPrice)}{product.mrp > product.brandPrice ? ` · MRP ${formatRupees(product.mrp)}` : ''}
+          </Text>
         </View>
       </View>
 
-      <View style={st.figures}>
-        <Figure label="On the shelf" value={current} />
-        <Figure label="Held for orders" value={held} />
-        <Figure label="Can be sold" value={Math.max(0, current - held)} />
-      </View>
-
-      {expired ? (
-        <Banner
-          tone="error"
-          title="Expired: not for sale"
-          message={`${expiryLine(item.expiryDate)}. Take it off the shelf, pause selling and set the stock to 0 with the reason "Damaged or expired".`}
-        />
-      ) : null}
-
-      <TextField
-        label="How many are on the shelf now?"
+      <Text style={st.label} nativeID="qtyLabel">How many are on the shelf now?</Text>
+      <TextInput
         value={qty}
         onChangeText={t => {
-          setQty(t.replace(/[^0-9]/g, '').slice(0, 5));
+          setQty(t.replace(/[^0-9]/g, '').slice(0, 6));
           setError('');
         }}
         keyboardType="number-pad"
         inputMode="numeric"
-        error={trimmed !== String(current) ? qtyError || undefined : undefined}
-        helper={held ? `${held} held for open orders are included in this number.` : 'Count every unit you have for sale.'}
-        inputStyle={st.qtyInput}
+        placeholder="0"
+        placeholderTextColor={Colors.textSubtle}
+        accessibilityLabel="Units on the shelf"
+        style={[st.input, st.qtyInput, !!qtyError && trimmed !== '' && st.inputError]}
       />
-
+      {qtyError && trimmed !== '' ? <Text style={st.error}>{qtyError}</Text> : null}
       <View style={st.quickRow}>
         {QUICK.map(n => (
           <Pressable
@@ -173,64 +142,53 @@ export default function StockSheet({
           </Pressable>
         ))}
       </View>
+      <Text style={st.hint}>Count every unit you have for sale. Stock held for accepted orders is already taken off.</Text>
 
-      <Text style={st.label} nativeID="reasonLabel">Why is the stock changing?</Text>
-      <View accessibilityRole="radiogroup" accessibilityLabel="Reason for the change" style={st.reasons}>
-        {REASONS.map(r => {
-          const on = reason === r;
-          return (
-            <Pressable
-              key={r}
-              onPress={() => setReason(r)}
-              accessibilityRole="radio"
-              accessibilityState={{ checked: on, selected: on }}
-              style={[st.reason, on && st.reasonOn]}
-            >
-              <View style={[st.radio, on && st.radioOn]}>{on ? <View style={st.radioDot} /> : null}</View>
-              <Text style={[st.reasonText, on && { color: Colors.primary }]}>{r}</Text>
-            </Pressable>
-          );
-        })}
-      </View>
-      {changed && !reason ? <Text style={st.hint}>Choose a reason to save.</Text> : null}
-
-      {error ? <Banner tone="error" message={error} style={{ marginTop: S.md, marginBottom: 0 }} /> : null}
-
-      <View style={st.sellBox}>
-        <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-          <Text style={st.label}>On the GlowVai shop</Text>
-          <Pill label={SELL_LABEL[state]} tone={tone} />
-          {!item.active && !canResume ? (
-            <Text style={st.hint}>
-              {expired
-                ? 'Expired stock cannot be put back on sale.'
-                : current === 0
-                  ? 'Add stock before you resume selling.'
-                  : 'GlowVai has not approved this product.'}
-            </Text>
-          ) : null}
+      <View style={st.switchRow}>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Text style={st.label}>Sell this product</Text>
+          <Text style={st.hint}>{available ? 'GlowVai can send you orders for it.' : 'Paused: GlowVai will not send you orders for it.'}</Text>
         </View>
-        {item.active || canResume ? (
-          <Button
-            label={item.active ? 'Pause selling' : 'Resume selling'}
-            variant="secondary"
-            compact
-            loading={toggling}
-            onPress={toggleSelling}
-            accessibilityLabel={`${item.active ? 'Pause' : 'Resume'} selling ${item.name}`}
-          />
-        ) : null}
+        <Switch
+          value={available}
+          onValueChange={v => {
+            setAvailable(v);
+            setError('');
+          }}
+          trackColor={{ false: Colors.borderStrong, true: Colors.primary }}
+          thumbColor={Colors.card}
+          {...({ activeThumbColor: Colors.card } as object)}
+          accessibilityLabel="Sell this product"
+        />
       </View>
-    </Sheet>
-  );
-}
 
-function Figure({ label, value }: { label: string; value: number }) {
-  return (
-    <View style={st.figure} accessible accessibilityLabel={`${label}: ${value}`}>
-      <Text style={st.figureValue}>{value}</Text>
-      <Text style={st.figureLabel}>{label}</Text>
-    </View>
+      <Text style={[st.label, { marginTop: S.lg }]}>Your price (optional)</Text>
+      <View style={[st.input, st.priceWrap, !!pErr && st.inputError]}>
+        <Text style={st.rupee}>₹</Text>
+        <TextInput
+          value={price}
+          onChangeText={t => {
+            setPrice(t.replace(/[^0-9.]/g, '').slice(0, 9));
+            setError('');
+          }}
+          keyboardType="decimal-pad"
+          inputMode="decimal"
+          placeholder={String(Math.round(product.brandPrice))}
+          placeholderTextColor={Colors.textSubtle}
+          accessibilityLabel="Your price in rupees, optional"
+          style={st.priceInput}
+        />
+      </View>
+      {pErr ? (
+        <Text style={st.error}>{pErr}</Text>
+      ) : (
+        <Text style={st.hint}>
+          Leave empty to use the GlowVai price.{product.mrp > 0 ? ` At most the MRP, ${formatRupees(product.mrp)}.` : ''}
+        </Text>
+      )}
+
+      {error ? <View style={{ marginTop: S.md }}><Banner tone="danger" message={error} /></View> : null}
+    </Sheet>
   );
 }
 
@@ -240,20 +198,24 @@ const st = StyleSheet.create({
   name: { ...TypeScale.bodyStrong, color: Colors.textPrimary },
   meta: { ...TypeScale.caption, color: Colors.textSecondary },
 
-  figures: {
-    flexDirection: 'row',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    backgroundColor: Colors.surface,
-    marginBottom: S.lg,
+  label: { fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: Colors.textPrimary, marginBottom: 6 },
+  input: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: Colors.inputBorder,
+    borderRadius: 10,
+    paddingHorizontal: S.md,
+    backgroundColor: Colors.card,
+    fontFamily: FontFamily.regular,
+    fontSize: 16,
+    color: Colors.textPrimary,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : {}),
   },
-  figure: { flex: 1, paddingVertical: S.md, alignItems: 'center' },
-  figureValue: { fontFamily: FontFamily.bold, fontSize: 20, lineHeight: 26, color: Colors.textPrimary, fontVariant: ['tabular-nums'] },
-  figureLabel: { ...TypeScale.caption, color: Colors.textSecondary, textAlign: 'center' },
-
+  inputError: { borderColor: Colors.danger },
   qtyInput: { fontFamily: FontFamily.semibold, fontSize: 20, fontVariant: ['tabular-nums'] },
-  quickRow: { flexDirection: 'row', gap: S.sm, marginTop: -S.sm, marginBottom: S.lg },
+  error: { ...TypeScale.caption, color: Colors.dangerText, marginTop: 4 },
+  hint: { ...TypeScale.caption, color: Colors.textSecondary, marginTop: 4 },
+  quickRow: { flexDirection: 'row', gap: S.sm, marginTop: S.sm },
   quick: {
     minWidth: 64,
     minHeight: 44,
@@ -265,32 +227,23 @@ const st = StyleSheet.create({
   },
   quickText: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.primary },
 
-  label: { fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: Colors.textPrimary, marginBottom: 6 },
-  reasons: { gap: S.xs },
-  reason: {
+  switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: S.md,
-    minHeight: 44,
-    paddingHorizontal: S.md,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  reasonOn: { borderColor: Colors.primary, backgroundColor: Colors.primaryLight },
-  radio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: Colors.inputBorder, alignItems: 'center', justifyContent: 'center' },
-  radioOn: { borderColor: Colors.primary },
-  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.primary },
-  reasonText: { ...TypeScale.body, color: Colors.textPrimary },
-  hint: { ...TypeScale.caption, color: Colors.textSecondary, marginTop: S.xs },
-
-  sellBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: S.md,
-    marginTop: S.xl,
+    marginTop: S.lg,
     paddingTop: S.lg,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: Colors.border,
+  },
+  priceWrap: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  rupee: { fontFamily: FontFamily.semibold, fontSize: 16, color: Colors.textSecondary },
+  priceInput: {
+    flex: 1,
+    minHeight: 46,
+    fontFamily: FontFamily.regular,
+    fontSize: 16,
+    color: Colors.textPrimary,
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : {}),
   },
 });

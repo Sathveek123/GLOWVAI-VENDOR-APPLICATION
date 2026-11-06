@@ -1,107 +1,51 @@
 /**
- * GlowVAI Vendor App — Global Zustand Store
- * State for: vendor profile, orders, inventory, earnings, notifications, UI
+ * GlowVai Vendor App: shared state for orders and inventory.
+ *
+ * Orders arrive only from GET /api/vendor/orders (the VendorOrder projection, see
+ * docs/VENDOR_API.md) and are written here by the polling controller in
+ * src/features/orders/sync.ts and by accept / decline / packed results.
+ * Inventory arrives from GET /api/vendor/inventory (src/features/catalog/inventory.ts).
+ *
+ * Privacy (PRD 3.3, 9.1): normalizeOrder keeps an allow-list of fields, so a customer's phone,
+ * address, location, email or payment ids never reach the UI even if a server sent them.
+ * The customer's first name is kept only on orders this store has accepted.
  */
 import { create } from 'zustand';
+import type { InventoryRecord } from '../services/vendorApi/inventory';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-/**
- * Order statuses the vendor app understands. The vendor backend writes the first group;
- * the GlowVai shop writes the second. Anything else is shown as "Updating".
- */
-export type OrderStatus =
-  | 'PENDING'
-  | 'ACCEPTED'
-  | 'PREPARING'
-  | 'PACKED'
-  | 'READY_FOR_PICKUP'
-  | 'DISPATCHED'
-  | 'DELIVERED'
-  | 'CANCELLED'
-  | 'REJECTED'
-  | 'VENDOR_TIMEOUT'
-  | 'PLACED'
-  | 'VENDOR_PENDING'
-  | 'VENDOR_ACCEPTED'
-  | 'VENDOR_REJECTED'
-  | 'OUT_FOR_DELIVERY';
+// ── Orders ───────────────────────────────────────────────────────────────────
 
 export interface OrderItem {
-  productId?: string;
-  sku?: string;
+  productId: string;
   productName: string;
-  /** Shade, size or variant, when the order carries one. */
-  variant?: string;
+  brand?: string;
   quantity: number;
+  /** Unit price of the item (₹). */
   price: number;
   imageUrl?: string;
-  bin?: string;
 }
 
-/** Delivery partner details needed for handover. Never a phone number. */
-export interface OrderRider {
-  name?: string;
-  partner?: string;
-  etaMinutes?: number;
-  status?: string;
-}
-
-/**
- * A vendor-safe order. The customer's phone, precise address, location and delivery
- * OTP are never kept here (PRD 3.3, 9.1): normalizeOrder drops them on the way in.
- */
+/** A vendor-safe order (the server's VendorOrder projection, with safe types). */
 export interface Order {
   orderId: string;
-  status: OrderStatus | (string & {});
-  /** First name only, and only shown after the order is accepted. */
-  customerFirstName?: string;
+  /** What to show and match with GlowVai (the server sends the order id). */
+  reference: string;
+  status: string;
+  vendorStatus?: string;
+  /** True while the order is an open offer to this store. */
+  isOffer: boolean;
   items: OrderItem[];
-  pricing?: {
-    subtotal?: number;
-    grandTotal?: number;
-    discount?: number;
-    /** Estimated vendor earnings, only when the server sends it. */
-    vendorEarnings?: number;
-  };
-  storeId?: string;
-  vendorId?: string;
-  createdAt: number;
-  updatedAt?: number;
+  itemCount: number;
+  /** Sum of unit price x quantity. Not the customer's bill and not the store's earnings. */
+  itemsValue: number;
+  placedAt: number;
+  updatedAt: number;
   acceptedAt?: number;
-  preparingAt?: number;
   packedAt?: number;
-  readyAt?: number;
-  dispatchedAt?: number;
-  deliveredAt?: number;
-  pickupBay?: string;
-  packageRef?: string;
-  /** Preparation target in minutes, only when the server sends it. */
-  prepTimeMinutes?: number;
-  /** When the offer stops being acceptable (server time, ms). */
-  offerExpiresAt?: number;
-  /** Packing-relevant instructions only. */
-  packingInstructions?: string;
-  rider?: OrderRider;
-  rejectionReason?: string;
-  timeline?: { status: string; timestamp: number; note?: string }[];
-}
-
-function toMs(value: unknown): number | undefined {
-  if (value == null || value === '') return undefined;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const asNum = Number(value);
-    if (value.trim() !== '' && Number.isFinite(asNum)) return asNum;
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? undefined : parsed;
-  }
-  // Firestore Timestamp shapes
-  const v = value as { toMillis?: () => number; seconds?: number; _seconds?: number };
-  if (typeof v.toMillis === 'function') return v.toMillis();
-  if (typeof v.seconds === 'number') return v.seconds * 1000;
-  if (typeof v._seconds === 'number') return v._seconds * 1000;
-  return undefined;
+  /** First name only, and only after this store accepted the order. */
+  customerFirstName?: string;
+  cancelled: boolean;
+  cancellationReason?: string;
 }
 
 function num(value: unknown): number | undefined {
@@ -114,97 +58,72 @@ function text(value: unknown): string | undefined {
 }
 
 /**
- * Maps a raw order from the vendor backend or the GlowVai shop into the vendor-safe shape.
- * Drops the customer's phone, address, coordinates and OTPs so they never reach the UI.
- * (The API must stop sending them too; hiding them here is defence in depth.)
+ * Maps a VendorOrder from the server into the app's order shape. Only the projection's
+ * fields are read; anything else on the object is dropped.
  */
 export function normalizeOrder(raw: any): Order {
   const r = raw || {};
   const items: OrderItem[] = (Array.isArray(r.items) ? r.items : []).map((it: any) => ({
-    productId: text(it?.productId),
-    sku: text(it?.sku),
-    productName: text(it?.productName) || text(it?.title) || text(it?.name) || 'Unnamed item',
-    variant: text(it?.variant) || text(it?.shade) || text(it?.size),
-    quantity: num(it?.quantity) ?? 1,
-    price: num(it?.price) ?? num(it?.unitPrice) ?? 0,
-    imageUrl: text(it?.imageUrl) || text(it?.image),
-    bin: text(it?.bin),
+    productId: text(it?.productId) || '',
+    productName: text(it?.title) || 'Unnamed item',
+    brand: text(it?.brand),
+    quantity: Math.max(0, Math.floor(num(it?.quantity) ?? 0)),
+    price: num(it?.unitPrice) ?? 0,
+    imageUrl: text(it?.imageUrl) && /^https?:\/\//i.test(String(it.imageUrl)) ? String(it.imageUrl).trim() : undefined,
   }));
-  const p = r.pricing || {};
-  const riderSrc = r.rider || r.deliveryAssignment || null;
-  const rider: OrderRider | undefined = riderSrc
-    ? {
-        name: text(riderSrc.name) || text(riderSrc.riderName),
-        partner: text(riderSrc.partner) || text(riderSrc.deliveryPartnerType) || text(riderSrc.partnerName),
-        etaMinutes: num(riderSrc.etaMinutes) ?? num(riderSrc.estimatedArrivalMinutes),
-        status: text(riderSrc.status),
-      }
-    : undefined;
-  const fullName = text(r.customerFirstName) || text(r.customerName);
+  const orderId = text(r.orderId) || '';
+  const status = text(r.status) || 'UNKNOWN';
+  const isOffer = r.isOffer === true;
+  const cancelled = r.cancelled === true || status === 'CANCELLED';
+  const computedValue = items.reduce((sum, it) => sum + it.price * it.quantity, 0);
+  const firstName = !isOffer ? text(r.customerFirstName)?.split(/\s+/)[0] : undefined;
   return {
-    orderId: String(r.orderId || r.id || ''),
-    status: text(r.status) || 'PENDING',
-    customerFirstName: fullName ? fullName.split(/\s+/)[0] : undefined,
+    orderId,
+    reference: text(r.reference) || orderId,
+    status,
+    vendorStatus: text(r.vendorStatus),
+    isOffer,
     items,
-    pricing: {
-      subtotal: num(p.subtotal),
-      grandTotal: num(p.grandTotal),
-      discount: num(p.discount) ?? num(p.discountAmount),
-      vendorEarnings: num(p.vendorEarnings) ?? num(r.vendorEarnings),
-    },
-    storeId: text(r.storeId),
-    vendorId: text(r.vendorId),
-    createdAt: toMs(r.createdAt) ?? 0,
-    updatedAt: toMs(r.updatedAt),
-    acceptedAt: toMs(r.acceptedAt) ?? toMs(r.vendorAcceptedAt),
-    preparingAt: toMs(r.preparingAt),
-    packedAt: toMs(r.packedAt) ?? toMs(r.vendorPackedAt),
-    readyAt: toMs(r.readyAt),
-    dispatchedAt: toMs(r.dispatchedAt) ?? toMs(r.pickedUpAt),
-    deliveredAt: toMs(r.deliveredAt),
-    pickupBay: text(r.pickupBay),
-    packageRef: text(r.packageRef),
-    prepTimeMinutes: num(r.prepTimeMinutes) ?? num(r.packTargetMinutes) ?? num(r.preparationTimeMinutes),
-    offerExpiresAt: toMs(r.offerExpiresAt) ?? toMs(r.expiresAt),
-    // Only packing notes. Customer delivery notes can hold address details, so they are not read.
-    packingInstructions: text(r.packingInstructions),
-    rider: rider && (rider.name || rider.partner || rider.etaMinutes != null || rider.status) ? rider : undefined,
-    rejectionReason: text(r.rejectionReason) || text(r.vendorRejectionReason),
-    timeline: Array.isArray(r.timeline)
-      ? r.timeline.map((t: any) => ({ status: String(t?.status || ''), timestamp: toMs(t?.timestamp) ?? 0, note: text(t?.note) }))
-      : undefined,
+    itemCount: num(r.itemCount) ?? items.reduce((n, it) => n + it.quantity, 0),
+    itemsValue: num(r.itemsValue) ?? computedValue,
+    placedAt: num(r.placedAt) ?? 0,
+    updatedAt: num(r.updatedAt) ?? 0,
+    acceptedAt: num(r.acceptedAt),
+    packedAt: num(r.packedAt),
+    customerFirstName: firstName,
+    cancelled,
+    cancellationReason: cancelled ? text(r.cancellationReason) : undefined,
   };
 }
 
-export interface InventoryItem {
-  productId: string;
-  name: string;
-  category: string;
-  sku: string;
-  mrp: number;
-  sellingPrice: number;
-  stock: number;
-  bin: string;
-  gstPercent: number;
-  images: string[];
-  active: boolean;
-  description?: string;
-  brand?: string;
-  expiryDate?: string;
-  updatedAt: number;
-  // Marketplace fields (set by the backend)
-  vendorId?: string;
-  storeId?: string;
-  shopCategory?: string | null;
-  packSize?: string;
-  keyActives?: string[];
-  status?: 'active' | 'paused' | 'deleted';
-  stockOnHand?: number;
-  availableStock?: number;
-  approvalStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
-  rejectionReason?: string | null;
-  listing?: { live: boolean; blockers: string[] };
+export interface OrdersPageInput {
+  offers: unknown[];
+  orders: unknown[];
+  removed: string[];
+  full: boolean;
 }
+
+export type SyncState = 'idle' | 'loading' | 'ready' | 'error';
+
+export interface OrdersSyncStatus {
+  state: SyncState;
+  /** True once one load has succeeded since sign-in. */
+  hasLoaded: boolean;
+  /** Friendly copy for the last failed refresh; the last good list is kept. */
+  error: string | null;
+  lastSyncedAt: number;
+}
+
+// ── Inventory ────────────────────────────────────────────────────────────────
+
+export interface InventoryStatus {
+  state: SyncState;
+  hasLoaded: boolean;
+  error: string | null;
+  loadedAt: number;
+}
+
+// ── Legacy profile (onboarding still writes it; screens read useVendorMe instead) ──
 
 export interface VendorProfile {
   vendorId: string;
@@ -212,161 +131,129 @@ export interface VendorProfile {
   storeId: string;
   phone: string;
   email?: string;
-  address?: string;
   isOnline: boolean;
-  fcmToken?: string;
   shopName?: string;
-  shopType?: string;
   city?: string;
-  locality?: string;
-  pincode?: string;
-  openTime?: string;
-  closeTime?: string;
-  rating?: number;
-  totalOrders?: number;
-  verificationStatus?: 'PENDING' | 'APPROVED' | 'REJECTED';
-  joinedAt?: number;
-  avatarUrl?: string;
-  bankName?: string;
-  accountHolderName?: string;
-  accountNumber?: string;
-  ifscCode?: string;
-  upiId?: string;
-  gstin?: string;
-  fssai?: string;
-  panNumber?: string;
+  [key: string]: unknown;
 }
 
-export interface Notification {
-  id: string;
-  vendorId?: string;
-  type: 'NEW_ORDER' | 'ORDER_CANCELLED' | 'PAYOUT' | 'SYSTEM' | string;
-  title: string;
-  body: string;
-  orderId?: string;
-  read: boolean;
-  createdAt: number;
-}
-
-export interface EarningsSummary {
-  today: { orders: number; revenue: number; earnings: number };
-  weekly: { date: string; orders: number; revenue: number; earnings: number }[];
-  total: { orders: number; revenue: number; earnings: number; pendingPayout: number };
-}
-
-// ── Store ─────────────────────────────────────────────────────────────────────
+// ── Store ────────────────────────────────────────────────────────────────────
 
 interface VendorStore {
-  // Vendor
+  orders: Order[];
+  ordersSync: OrdersSyncStatus;
+  /** Offers this store declined or closed out this session. They are not offered again. */
+  dismissedOffers: Record<string, true>;
+  applyOrdersPage: (page: OrdersPageInput) => void;
+  upsertOrder: (order: Order) => void;
+  removeOrders: (orderIds: string[]) => void;
+  dismissOffer: (orderId: string) => void;
+  /** Drops open offers (the store went offline, so it is no longer offered anything). */
+  clearOffers: () => void;
+  setOrdersSync: (patch: Partial<OrdersSyncStatus>) => void;
+
+  inventory: Record<string, InventoryRecord>;
+  inventoryStatus: InventoryStatus;
+  replaceInventory: (records: InventoryRecord[]) => void;
+  mergeInventory: (records: InventoryRecord[]) => void;
+  setInventoryStatus: (patch: Partial<InventoryStatus>) => void;
+
+  /** True when the last presence heartbeat failed (GlowVai may stop sending offers). */
+  heartbeatFailed: boolean;
+  setHeartbeatFailed: (v: boolean) => void;
+
   vendor: VendorProfile | null;
   setVendor: (v: VendorProfile) => void;
-  setOnlineStatus: (v: boolean) => void;
 
-  // Orders
-  orders: Order[];
-  /** Replaces the order list. Raw API orders are normalised (customer contact data dropped). */
-  setOrders: (orders: any[]) => void;
-  /** Adds or replaces one order from a raw API or socket payload. */
-  upsertOrder: (order: any) => void;
-  updateOrder: (orderId: string, fields: Partial<Order>) => void;
-
-  // Inventory
-  inventory: InventoryItem[];
-  setInventory: (items: InventoryItem[] | ((prev: InventoryItem[]) => InventoryItem[])) => void;
-  updateInventoryItem: (productId: string, fields: Partial<InventoryItem>) => void;
-  removeInventoryItem: (productId: string) => void;
-  addInventoryItem: (item: InventoryItem) => void;
-
-  // Earnings
-  earnings: EarningsSummary | null;
-  setEarnings: (e: EarningsSummary) => void;
-
-  // Notifications
-  notifications: Notification[];
-  setNotifications: (n: Notification[]) => void;
-  addNotification: (n: Notification) => void;
-  markNotificationRead: (id: string) => void;
-  unreadCount: () => number;
-
-  // UI
-  isConnected: boolean;
-  setConnected: (v: boolean) => void;
-  isLoading: boolean;
-  setLoading: (v: boolean) => void;
+  /** Clears everything (sign-out). */
+  reset: () => void;
 }
 
-const useVendorStore = create<VendorStore>((set, get) => ({
-  // Vendor
+const initialSync: OrdersSyncStatus = { state: 'idle', hasLoaded: false, error: null, lastSyncedAt: 0 };
+const initialInventory: InventoryStatus = { state: 'idle', hasLoaded: false, error: null, loadedAt: 0 };
+
+function byId(list: Order[]): Map<string, Order> {
+  return new Map(list.map(o => [o.orderId, o]));
+}
+
+/** The newer of two copies of an order (polls overlap by 5 seconds, so an older copy can arrive late). */
+function newer(current: Order | undefined, incoming: Order): Order {
+  if (!current) return incoming;
+  if (incoming.updatedAt && current.updatedAt && incoming.updatedAt < current.updatedAt) return current;
+  return incoming;
+}
+
+const useVendorStore = create<VendorStore>((set) => ({
+  orders: [],
+  ordersSync: initialSync,
+  dismissedOffers: {},
+
+  applyOrdersPage: (page) =>
+    set((s) => {
+      const incoming = [...page.orders, ...page.offers]
+        .map(normalizeOrder)
+        .filter(o => !!o.orderId && !(o.isOffer && s.dismissedOffers[o.orderId]));
+      if (page.full) {
+        const map = new Map<string, Order>();
+        // Own orders win over an offer copy of the same order.
+        for (const o of incoming) if (!map.has(o.orderId) || !o.isOffer) map.set(o.orderId, o);
+        return { orders: [...map.values()] };
+      }
+      const map = byId(s.orders);
+      for (const o of incoming) map.set(o.orderId, newer(map.get(o.orderId), o));
+      // "removed": the server says the order is neither this store's nor offered to it any more.
+      for (const id of page.removed || []) map.delete(id);
+      return { orders: [...map.values()] };
+    }),
+
+  upsertOrder: (order) =>
+    set((s) => {
+      if (!order.orderId) return {};
+      const map = byId(s.orders);
+      map.set(order.orderId, newer(map.get(order.orderId), order));
+      return { orders: [...map.values()] };
+    }),
+
+  removeOrders: (ids) =>
+    set((s) => {
+      const drop = new Set(ids);
+      return { orders: s.orders.filter(o => !drop.has(o.orderId)) };
+    }),
+
+  dismissOffer: (orderId) =>
+    set((s) => ({
+      dismissedOffers: { ...s.dismissedOffers, [orderId]: true },
+      orders: s.orders.filter(o => !(o.orderId === orderId && o.isOffer)),
+    })),
+
+  clearOffers: () => set((s) => ({ orders: s.orders.filter(o => !o.isOffer) })),
+
+  setOrdersSync: (patch) => set((s) => ({ ordersSync: { ...s.ordersSync, ...patch } })),
+
+  inventory: {},
+  inventoryStatus: initialInventory,
+  replaceInventory: (records) =>
+    set({ inventory: Object.fromEntries(records.map(r => [r.productId, r])) }),
+  mergeInventory: (records) =>
+    set((s) => ({ inventory: { ...s.inventory, ...Object.fromEntries(records.map(r => [r.productId, r])) } })),
+  setInventoryStatus: (patch) => set((s) => ({ inventoryStatus: { ...s.inventoryStatus, ...patch } })),
+
+  heartbeatFailed: false,
+  setHeartbeatFailed: (heartbeatFailed) => set({ heartbeatFailed }),
+
   vendor: null,
   setVendor: (vendor) => set((s) => ({ vendor: { ...(s.vendor || {}), ...vendor } })),
-  setOnlineStatus: (isOnline) =>
-    set((s) => ({
-      vendor: s.vendor ? { ...s.vendor, isOnline } : null,
-    })),
 
-  // Orders
-  orders: [],
-  setOrders: (orders) =>
-    set({ orders: (Array.isArray(orders) ? orders : []).map(normalizeOrder).filter((o) => !!o.orderId) }),
-  upsertOrder: (raw) =>
-    set((s) => {
-      const order = normalizeOrder(raw);
-      if (!order.orderId) return {};
-      const exists = s.orders.some((o) => o.orderId === order.orderId);
-      return {
-        orders: exists
-          ? s.orders.map((o) => (o.orderId === order.orderId ? order : o))
-          : [order, ...s.orders],
-      };
+  reset: () =>
+    set({
+      orders: [],
+      ordersSync: initialSync,
+      dismissedOffers: {},
+      inventory: {},
+      inventoryStatus: initialInventory,
+      heartbeatFailed: false,
+      vendor: null,
     }),
-  updateOrder: (orderId, fields) =>
-    set((s) => ({
-      orders: s.orders.map((o) =>
-        o.orderId === orderId ? { ...o, ...fields } : o
-      ),
-    })),
-
-  // Inventory
-  inventory: [],
-  setInventory: (inventory) =>
-    set((s) => ({
-      inventory: typeof inventory === 'function' ? inventory(s.inventory) : (Array.isArray(inventory) ? inventory : []),
-    })),
-  updateInventoryItem: (productId, fields) =>
-    set((s) => ({
-      inventory: (Array.isArray(s.inventory) ? s.inventory : []).map((i) =>
-        i.productId === productId ? { ...i, ...fields } : i
-      ),
-    })),
-  removeInventoryItem: (productId) =>
-    set((s) => ({
-      inventory: (Array.isArray(s.inventory) ? s.inventory : []).filter((i) => i.productId !== productId),
-    })),
-  addInventoryItem: (item) =>
-    set((s) => ({ inventory: [item, ...(Array.isArray(s.inventory) ? s.inventory : [])] })),
-
-  // Earnings
-  earnings: null,
-  setEarnings: (earnings) => set({ earnings }),
-
-  // Notifications
-  notifications: [],
-  setNotifications: (notifications) => set({ notifications }),
-  addNotification: (n) =>
-    set((s) => ({ notifications: [n, ...s.notifications] })),
-  markNotificationRead: (id) =>
-    set((s) => ({
-      notifications: s.notifications.map((n) =>
-        n.id === id ? { ...n, read: true } : n
-      ),
-    })),
-  unreadCount: () => get().notifications.filter((n) => !n.read).length,
-
-  // UI
-  isConnected: false,
-  setConnected: (isConnected) => set({ isConnected }),
-  isLoading: false,
-  setLoading: (isLoading) => set({ isLoading }),
 }));
 
 export default useVendorStore;

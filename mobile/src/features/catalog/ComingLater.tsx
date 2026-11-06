@@ -1,6 +1,6 @@
 /**
- * Placeholder for features planned for a later phase (PRD 13.3). Says so plainly and
- * points back to what the vendor can do today. No sample figures.
+ * Honest placeholder for features that are not connected yet (PRD 13.3). Says so plainly
+ * and points to what the vendor can do today. No sample figures.
  * File: mobile/src/features/catalog/ComingLater.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -13,7 +13,20 @@ import { TypeScale } from '../../theme/typography';
 import { Button, useDocumentTitle } from '../onboarding/kit';
 import { cardStyle } from './ui';
 
-export default function ComingLater({ title, message }: { title: string; message: string }) {
+export default function ComingLater({
+  title,
+  message,
+  heading = 'Not available yet',
+  icon = 'time-outline',
+  action = { label: 'Go to Inventory', route: '/(vendor)/catalog' },
+}: {
+  title: string;
+  message: string;
+  heading?: string;
+  icon?: keyof typeof Ionicons.glyphMap;
+  /** Where to go instead. Pass null for no button. */
+  action?: { label: string; route: string } | null;
+}) {
   const router = useRouter();
   useDocumentTitle(title);
   return (
@@ -21,11 +34,13 @@ export default function ComingLater({ title, message }: { title: string; message
       <View style={s.wrap}>
         <View style={[cardStyle, s.card]}>
           <View style={s.icon}>
-            <Ionicons name="time-outline" size={26} color={Colors.primary} />
+            <Ionicons name={icon} size={26} color={Colors.primary} />
           </View>
-          <Text accessibilityRole="header" style={s.heading}>Coming later</Text>
+          <Text accessibilityRole="header" style={s.heading}>{heading}</Text>
           <Text style={s.body}>{message}</Text>
-          <Button label="Go to Inventory" variant="secondary" compact onPress={() => router.replace('/(vendor)/catalog')} style={s.btn} />
+          {action ? (
+            <Button label={action.label} variant="secondary" compact onPress={() => router.replace(action.route as any)} style={s.btn} />
+          ) : null}
         </View>
       </View>
     </ScreenShell>

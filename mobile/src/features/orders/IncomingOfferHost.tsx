@@ -1,253 +1,104 @@
 /**
- * IncomingOfferHost: listens for new order offers and shows the offer sheet over any screen.
+ * IncomingOfferHost: shows a new order offer as a sheet over any screen, and feeds the
+ * Orders tab badge. Mounted once in app/(vendor)/_layout.tsx.
  *
- * Mounted once in app/(vendor)/_layout.tsx, so offers appear over every tab and screen.
- *
- * What it does
- *  - Registers the vendor on every socket connect and keeps the store's isConnected current.
- *  - Queues offers from 'order:incoming' / 'ORDER_OFFER' (deduped by orderId).
- *  - Re-reads pending offers from the API on connect and every 30 s, because push
- *    delivery is not guaranteed (PRD 3.2).
- *  - Applies 'order:statusUpdated' and 'order:rejected' to the shared order store.
- *  - Marks an open offer as taken on 'ORDER_CLAIMED_BY_OTHER', or as gone when cancelled.
- *  - Repeats the alert chime until the vendor responds or closes the sheet.
- *  - Feeds the Orders tab badge (new offers + orders to pack).
+ * Offers come from the order list kept current by src/features/orders/sync.ts (polling;
+ * there is no push yet). Each offer opens the sheet once. Closing the sheet without an
+ * answer keeps the offer in Orders > Offers. A short chime and vibration mark a new offer.
  * File: mobile/src/features/orders/IncomingOfferHost.tsx
  */
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { create } from 'zustand';
-import useVendorStore, { normalizeOrder } from '../../store/useVendorStore';
-import type { Order } from '../../store/useVendorStore';
-import { ordersApi } from '../../services/api';
-import { useVendorSession } from '../../services/session';
-import { ORDER_EVENTS, getSocket, registerVendor } from '../../services/socket';
+import useVendorStore, { type Order } from '../../store/useVendorStore';
 import { soundService } from '../../services/sound';
 import { useNavBadge } from '../../components/MobileBottomNav';
-import { bucketOf } from './model';
+import { bucketOf, itemsSummary } from './model';
 import OfferSheet from './OfferSheet';
 
-const POLL_MS = 30_000;
-const CHIME_EVERY_MS = 4_000;
+/** The chime repeats this often, a few times, until the vendor answers or closes the sheet. */
+const CHIME_EVERY_MS = 12_000;
+const CHIME_REPEATS = 3;
 
-interface QueuedOffer {
-  order: Order;
-  receivedAt: number;
-  /** Expiry on this device's clock, only when the server sent one. */
-  expiresAt?: number;
-  outcome?: 'taken' | 'gone';
-}
-
-interface OfferQueueState {
-  queue: QueuedOffer[];
-  /** Offers the vendor answered or closed this session. Not offered again. */
-  handled: Record<string, true>;
-  enqueue: (offer: QueuedOffer) => void;
-  markOutcome: (orderId: string, outcome: 'taken' | 'gone') => void;
-  close: (orderId: string) => void;
-}
-
-export const useOfferQueue = create<OfferQueueState>((set) => ({
-  queue: [],
-  handled: {},
-  enqueue: (offer) =>
-    set((s) => {
-      const id = offer.order.orderId;
-      if (!id || s.handled[id] || s.queue.some((q) => q.order.orderId === id)) return {};
-      return { queue: [...s.queue, offer] };
-    }),
-  markOutcome: (orderId, outcome) =>
-    set((s) => ({
-      queue: s.queue.map((q) => (q.order.orderId === orderId && !q.outcome ? { ...q, outcome } : q)),
-    })),
-  close: (orderId) =>
-    set((s) => ({
-      queue: s.queue.filter((q) => q.order.orderId !== orderId),
-      handled: { ...s.handled, [orderId]: true },
-    })),
-}));
-
-function toMs(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value) {
-    const n = Number(value);
-    if (Number.isFinite(n)) return n;
-    const p = Date.parse(value);
-    return Number.isNaN(p) ? undefined : p;
-  }
-  return undefined;
-}
-
-/** Builds a queued offer from a socket payload ({ order, sentAt, expiresAt? }) or a bare order. */
-function toOffer(payload: any): { raw: any; offer: QueuedOffer } | null {
-  const raw = payload?.order ?? payload;
-  const order = normalizeOrder(raw);
-  if (!order.orderId || bucketOf(order.status) !== 'incoming') return null;
-  const receivedAt = Date.now();
-  const serverExpiry = toMs(payload?.offerExpiresAt) ?? toMs(payload?.expiresAt) ?? order.offerExpiresAt;
-  let expiresAt: number | undefined;
-  if (serverExpiry) {
-    // Correct for clock difference using the server's send time, when it is plausible.
-    const sentAt = toMs(payload?.serverTime) ?? toMs(payload?.sentAt);
-    const offset = sentAt ? receivedAt - sentAt : 0;
-    expiresAt = serverExpiry + (Math.abs(offset) < 10 * 60_000 ? offset : 0);
-  }
-  return { raw, offer: { order, receivedAt, expiresAt } };
-}
-
-/** Mounted once, in app/(vendor)/_layout.tsx. */
 export function IncomingOfferHost() {
   const router = useRouter();
-  const session = useVendorSession();
-  const upsertOrder = useVendorStore((s) => s.upsertOrder);
-  const updateOrder = useVendorStore((s) => s.updateOrder);
-  const setConnected = useVendorStore((s) => s.setConnected);
+  const orders = useVendorStore(s => s.orders);
 
-  // Orders tab badge: offers waiting plus orders to pack, from the shared order list.
-  const badgeCount = useVendorStore((s) =>
-    s.orders.reduce((n, o) => {
-      const b = bucketOf(o.status);
-      return b === 'incoming' || b === 'preparing' ? n + 1 : n;
+  // Orders tab badge: offers waiting plus orders to pack.
+  const badge = useMemo(
+    () => orders.reduce((n, o) => {
+      const b = bucketOf(o);
+      return b === 'offers' || b === 'preparing' ? n + 1 : n;
     }, 0),
+    [orders],
   );
-  useNavBadge('orders', badgeCount);
-  const queue = useOfferQueue((s) => s.queue);
-  const enqueue = useOfferQueue((s) => s.enqueue);
-  const markOutcome = useOfferQueue((s) => s.markOutcome);
-  const closeOffer = useOfferQueue((s) => s.close);
+  useNavBadge('orders', badge);
 
-  const current = queue[0];
-  const respondedRef = useRef<string | null>(null);
+  const [closed, setClosed] = useState<Record<string, true>>({});
+  const [active, setActive] = useState<Order | null>(null);
+  const seen = useRef<Set<string>>(new Set());
+  const answered = useRef<string | null>(null);
 
-  const receive = useCallback(
-    (payload: any) => {
-      const built = toOffer(payload);
-      if (!built) return;
-      upsertOrder(built.raw);
-      enqueue(built.offer);
-    },
-    [enqueue, upsertOrder],
+  const waiting = useMemo(
+    () => orders
+      .filter(o => bucketOf(o) === 'offers' && !closed[o.orderId])
+      .sort((a, b) => a.placedAt - b.placedAt),
+    [orders, closed],
   );
 
-  const pollPending = useCallback(() => {
-    ordersApi
-      .getPending()
-      .then((res: any) => {
-        (Array.isArray(res?.orders) ? res.orders : []).forEach((o: any) => receive({ order: o }));
-      })
-      .catch(() => {
-        // The socket and the Orders screen still work; the next poll retries.
-      });
-  }, [receive]);
-
-  // Socket wiring. Re-run when the session ids load.
+  // Open the oldest waiting offer when nothing is showing.
   useEffect(() => {
-    if (!session.loaded) return;
-    let socket: ReturnType<typeof getSocket>;
-    try {
-      socket = getSocket();
-    } catch (_) {
-      return;
-    }
-    const register = () => registerVendor(session.vendorId || '', session.storeId || '');
-    const onConnect = () => {
-      // Deferred: updating state inside the connect callback crashed the web renderer before.
-      setTimeout(() => {
-        setConnected(true);
-        register();
-        pollPending();
-      }, 0);
-    };
-    const onDisconnect = () => setConnected(false);
-    const onOffer = (payload: any) => receive(payload);
-    const onClaimed = (p: any) => p?.orderId && markOutcome(String(p.orderId), 'taken');
-    const onStatus = (p: any) => {
-      if (!p?.orderId) return;
-      const id = String(p.orderId);
-      const fields: Partial<Order> = { status: p.status };
-      if (p.pickupBay) fields.pickupBay = p.pickupBay;
-      if (p.updatedAt) fields.updatedAt = Number(p.updatedAt) || undefined;
-      updateOrder(id, fields);
-      const bucket = bucketOf(p.status);
-      if (bucket === 'cancelled') markOutcome(id, 'gone');
-    };
-    const onRejected = (p: any) => {
-      if (!p?.orderId) return;
-      updateOrder(String(p.orderId), { status: p.status || 'REJECTED', rejectionReason: p.reason });
-    };
+    if (!active && waiting[0]) setActive(waiting[0]);
+  }, [active, waiting]);
 
-    setConnected(socket.connected);
-    if (socket.connected) register();
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
-    ORDER_EVENTS.offer.forEach((ev) => socket.on(ev, onOffer));
-    socket.on(ORDER_EVENTS.claimedByOther, onClaimed);
-    socket.on(ORDER_EVENTS.statusUpdated, onStatus);
-    socket.on(ORDER_EVENTS.rejected, onRejected);
-    return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      ORDER_EVENTS.offer.forEach((ev) => socket.off(ev, onOffer));
-      socket.off(ORDER_EVENTS.claimedByOther, onClaimed);
-      socket.off(ORDER_EVENTS.statusUpdated, onStatus);
-      socket.off(ORDER_EVENTS.rejected, onRejected);
-    };
-  }, [session.loaded, session.vendorId, session.storeId, receive, markOutcome, updateOrder, setConnected, pollPending]);
+  const activeId = active?.orderId;
+  const live = activeId ? orders.find(o => o.orderId === activeId) : undefined;
+  const outcome: 'gone' | 'cancelled' | undefined = !activeId
+    ? undefined
+    : !live
+      ? 'gone'
+      : live.cancelled
+        ? 'cancelled'
+        : undefined;
 
-  // Pending offers from the API: once on start, then on a timer.
+  // A short alert for each offer the first time it appears.
   useEffect(() => {
-    if (!session.loaded) return;
-    pollPending();
-    const timer = setInterval(pollPending, POLL_MS);
-    return () => clearInterval(timer);
-  }, [session.loaded, pollPending]);
-
-  // Alert sound and vibration until the vendor responds to the current offer.
-  const currentId = current?.order.orderId;
-  const currentOutcome = current?.outcome;
-  useEffect(() => {
-    if (!currentId || currentOutcome || respondedRef.current === currentId) return;
-    soundService.playIncomingOrderChime();
+    if (!activeId || seen.current.has(activeId)) return;
+    seen.current.add(activeId);
+    answered.current = null;
+    soundService.playIncomingOrderChime(active ? itemsSummary(active) : undefined);
+    let count = 0;
     const timer = setInterval(() => {
-      if (respondedRef.current !== currentId) soundService.playIncomingOrderChime();
+      count += 1;
+      if (answered.current === activeId || count > CHIME_REPEATS) {
+        clearInterval(timer);
+        return;
+      }
+      soundService.playIncomingOrderChime();
     }, CHIME_EVERY_MS);
-    return () => {
-      clearInterval(timer);
-      soundService.stopRinging();
-    };
-  }, [currentId, currentOutcome]);
+    return () => clearInterval(timer);
+    // `active` is read only for the notification text.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
-  // If the order moved on elsewhere (accepted from Order detail, cancelled), stop offering it.
-  // The sheet's own accept is left alone so it can show "Order accepted".
-  const storeStatus = useVendorStore((s) =>
-    currentId ? s.orders.find((o) => o.orderId === currentId)?.status : undefined,
-  );
-  useEffect(() => {
-    if (!currentId || !storeStatus || respondedRef.current === currentId) return;
-    const bucket = bucketOf(storeStatus);
-    if (bucket === 'incoming') return;
-    if (bucket === 'cancelled') markOutcome(currentId, 'gone');
-    else closeOffer(currentId);
-  }, [currentId, storeStatus, markOutcome, closeOffer]);
+  if (!active) return null;
 
-  if (!current) return null;
-
-  const close = () => closeOffer(current.order.orderId);
+  const close = () => {
+    answered.current = active.orderId;
+    setClosed(c => ({ ...c, [active.orderId]: true }));
+    setActive(null);
+  };
 
   return (
     <OfferSheet
       visible
-      order={current.order}
-      expiresAt={current.expiresAt}
-      receivedAt={current.receivedAt}
-      serverOutcome={current.outcome}
+      order={live && live.isOffer ? live : active}
+      serverOutcome={outcome}
       onInteract={() => {
-        respondedRef.current = current.order.orderId;
-        soundService.stopRinging();
+        answered.current = active.orderId;
       }}
-      onStartPicking={(order) => {
+      onStartPacking={order => {
         close();
-        router.push({ pathname: '/(vendor)/order-detail', params: { orderId: order.orderId } } as any);
+        router.push({ pathname: '/(vendor)/pack-order', params: { orderId: order.orderId } } as any);
       }}
       onClose={close}
     />

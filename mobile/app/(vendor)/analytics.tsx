@@ -1,166 +1,147 @@
 /**
- * Store summary: a simple operations view of today's orders, the items ordered most today
- * and orders by status. Money lives on Earnings, so no amounts are shown here.
- *
- * Data: GET /api/analytics/:storeId -> { analytics: { today, topProducts, orderStatusBreakdown } }.
+ * Store activity: simple, real numbers from this store's recent orders (the same list the
+ * Orders screen shows): orders per day for the last 7 days, the value of the items in them,
+ * and how many were accepted, packed and cancelled. No earnings: GlowVai's fees are not
+ * known to the app. No sample data.
+ * File: mobile/app/(vendor)/analytics.tsx
  */
-import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { RefreshControl, StyleSheet, Text, View } from 'react-native';
 import ScreenShell from '../../src/components/ScreenShell';
-import { friendlyError, num, pickNum } from '../../src/features/money/format';
-import { Card, ErrorCard, InfoRow, LinkRow, LoadingCard, SectionLabel, StateCard, kit, page } from '../../src/features/money/ui';
-import { analyticsApi } from '../../src/services/api';
-import { getSession } from '../../src/services/session';
+import { Card, LoadingCard, Note, SectionLabel, StateCard, kit, page } from '../../src/features/money/ui';
+import {
+  SyncNotice,
+  bucketOf,
+  formatINR,
+  refreshOrdersNow,
+  startOfDay,
+  useOrdersDemand,
+  useOrdersSync,
+} from '../../src/features/orders';
 import { Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily, TypeScale } from '../../src/theme/typography';
 
-interface Summary {
-  received: number | null;
-  delivered: number | null;
-  waiting: number | null;
-  topItems: { name: string; count: number }[];
-  byStatus: { key: string; label: string; count: number }[];
-}
+const DAY_MS = 86_400_000;
 
-const STATUS_LABEL: Record<string, string> = {
-  PENDING: 'Waiting for you',
-  ACCEPTED: 'Accepted',
-  PACKED: 'Packed',
-  DISPATCHED: 'With delivery partner',
-  DELIVERED: 'Delivered',
-  CANCELLED: 'Cancelled',
-};
-
-function toSummary(res: any): Summary {
-  const a = res?.analytics ?? {};
-  const today = a.today ?? {};
-  const topItems = (Array.isArray(a.topProducts) ? a.topProducts : [])
-    .map((p: any) => ({ name: typeof p?.name === 'string' ? p.name : '', count: num(p?.count) ?? 0 }))
-    .filter((p: { name: string; count: number }) => p.name && p.count > 0);
-  const breakdown = a.orderStatusBreakdown && typeof a.orderStatusBreakdown === 'object' ? a.orderStatusBreakdown : {};
-  const byStatus = Object.keys(STATUS_LABEL)
-    .map((key) => ({ key, label: STATUS_LABEL[key], count: num(breakdown[key]) ?? 0 }))
-    .filter((r) => r.count > 0);
-  return {
-    received: pickNum(today, ['ordersTotal']),
-    delivered: pickNum(today, ['ordersDelivered']),
-    waiting: pickNum(today, ['ordersPending']),
-    topItems,
-    byStatus,
-  };
-}
-
-type Load = { state: 'loading' } | { state: 'no-store' } | { state: 'error'; message: string } | { state: 'ready'; data: Summary };
-
-export default function StoreSummaryScreen() {
-  const router = useRouter();
-  const [load, setLoad] = useState<Load>({ state: 'loading' });
+export default function StoreActivityScreen() {
+  useOrdersDemand();
+  const sync = useOrdersSync();
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchData = useCallback(async (silent = false) => {
-    if (!silent) setLoad({ state: 'loading' });
-    try {
-      const session = await getSession();
-      if (!session.storeId) {
-        setLoad({ state: 'no-store' });
-        return;
+  const stats = useMemo(() => {
+    const today = startOfDay();
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const start = new Date(today - i * DAY_MS);
+      const from = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
+      return { from, to: from + DAY_MS, orders: 0, value: 0 };
+    });
+    const weekStart = days[days.length - 1].from;
+    let accepted = 0;
+    let packed = 0;
+    let cancelled = 0;
+    let value = 0;
+    for (const o of sync.orders) {
+      if (o.isOffer) continue;
+      const at = o.acceptedAt || o.placedAt;
+      if (!at || at < weekStart) continue;
+      const b = bucketOf(o);
+      if (b === 'cancelled') {
+        cancelled += 1;
+        continue;
       }
-      const res = await analyticsApi.getDashboard(session.storeId);
-      setLoad({ state: 'ready', data: toSummary(res) });
-    } catch (err) {
-      setLoad({ state: 'error', message: friendlyError(err) });
+      accepted += 1;
+      if (o.packedAt || b === 'packed' || b === 'completed') packed += 1;
+      value += o.itemsValue;
+      const day = days.find(d => at >= d.from && at < d.to);
+      if (day) {
+        day.orders += 1;
+        day.value += o.itemsValue;
+      }
     }
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    return { days, accepted, packed, cancelled, value };
+  }, [sync.orders]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await fetchData(true);
+    await refreshOrdersNow();
     setRefreshing(false);
   };
 
+  const dayLabel = (from: number, i: number) =>
+    i === 0 ? 'Today' : i === 1 ? 'Yesterday' : new Date(from).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' });
+
   return (
     <ScreenShell
-      header={{ title: 'Store summary', showBack: true }}
+      header={{ title: 'Store activity', showBack: true }}
       backgroundColor={Colors.surface}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
     >
       <View style={page.body}>
-        {load.state === 'loading' ? <LoadingCard label="Loading your store summary" /> : null}
-        {load.state === 'error' ? <ErrorCard title="Could not load the summary" message={load.message} onRetry={() => fetchData()} /> : null}
-        {load.state === 'no-store' ? (
-          <StateCard icon="storefront-outline" title="No store linked yet" body="Your store summary appears here once your store is approved." />
-        ) : null}
-
-        {load.state === 'ready' ? (
+        <SyncNotice />
+        {!sync.hasLoaded && sync.state === 'error' ? (
+          <StateCard icon="cloud-offline-outline" tone="danger" title="Could not load your orders" body={sync.error || undefined} action={{ label: 'Retry', onPress: () => void sync.retry() }} />
+        ) : !sync.hasLoaded ? (
+          <LoadingCard label="Loading your orders" />
+        ) : stats.accepted + stats.cancelled === 0 ? (
+          <StateCard
+            icon="stats-chart-outline"
+            title="No orders in the last 7 days"
+            body="Once you accept orders, how many you handled each day and the value of their items will show here."
+          />
+        ) : (
           <>
-            <SectionLabel>Today</SectionLabel>
-            <Card style={s.stats}>
-              <Stat label="Received" value={load.data.received} />
-              <View style={s.statDivider} />
-              <Stat label="Delivered" value={load.data.delivered} />
-              <View style={s.statDivider} />
-              <Stat label="Waiting" value={load.data.waiting} />
+            <SectionLabel>Last 7 days</SectionLabel>
+            <View style={s.tiles}>
+              <Tile label="Accepted" value={String(stats.accepted)} />
+              <Tile label="Packed" value={String(stats.packed)} />
+              <Tile label="Cancelled" value={String(stats.cancelled)} />
+            </View>
+            <Card>
+              <Text style={kit.muted}>Items value of accepted orders</Text>
+              <Text style={s.big}>{formatINR(stats.value)}</Text>
+              <Text style={kit.muted}>What the items were worth at GlowVai prices. This is not your payout.</Text>
             </Card>
 
-            <SectionLabel>Most ordered today</SectionLabel>
-            {load.data.topItems.length === 0 ? (
-              <Card>
-                <Text style={kit.body}>No items ordered yet today.</Text>
-              </Card>
-            ) : (
-              <Card padded={false}>
-                {load.data.topItems.map((p, i, arr) => (
-                  <InfoRow key={p.name} label={`${i + 1}`} value={p.name} last={i === arr.length - 1} right={<Text style={kit.amount}>{p.count} sold</Text>} />
-                ))}
-              </Card>
-            )}
-
-            <SectionLabel>All orders by status</SectionLabel>
-            {load.data.byStatus.length === 0 ? (
-              <Card>
-                <Text style={kit.body}>No orders yet. Orders appear here once customers start ordering from your store.</Text>
-              </Card>
-            ) : (
-              <Card padded={false}>
-                {load.data.byStatus.map((r, i, arr) => (
-                  <View key={r.key} style={[s.statusRow, i < arr.length - 1 && s.divider]}>
-                    <Text style={kit.body}>{r.label}</Text>
-                    <Text style={kit.amount}>{r.count}</Text>
-                  </View>
-                ))}
-              </Card>
-            )}
+            <SectionLabel>Orders per day</SectionLabel>
+            <Card padded={false}>
+              {stats.days.map((d, i) => (
+                <View
+                  key={d.from}
+                  style={[s.dayRow, i < stats.days.length - 1 && s.divider]}
+                  accessible
+                  accessibilityLabel={`${dayLabel(d.from, i)}: ${d.orders} ${d.orders === 1 ? 'order' : 'orders'}, items value ${formatINR(d.value)}`}
+                >
+                  <Text style={s.day}>{dayLabel(d.from, i)}</Text>
+                  <Text style={s.count}>{d.orders} {d.orders === 1 ? 'order' : 'orders'}</Text>
+                  <Text style={s.value}>{d.orders ? formatINR(d.value) : '–'}</Text>
+                </View>
+              ))}
+            </Card>
           </>
-        ) : null}
-
-        <Card padded={false}>
-          <LinkRow icon="wallet-outline" label="Earnings" detail="What you will receive and your settlements" onPress={() => router.push('/(vendor)/earnings')} last />
-        </Card>
+        )}
+        <Note>Counted from your most recent orders on GlowVai (up to the latest 50). Cancelled orders are not counted in the value.</Note>
       </View>
     </ScreenShell>
   );
 }
 
-function Stat({ label, value }: { label: string; value: number | null }) {
+function Tile({ label, value }: { label: string; value: string }) {
   return (
-    <View style={s.stat} accessible accessibilityLabel={`${label}: ${value ?? 'not available'}`}>
-      <Text style={s.statValue}>{value ?? '—'}</Text>
+    <Card style={s.tile}>
       <Text style={kit.muted}>{label}</Text>
-    </View>
+      <Text style={s.tileValue}>{value}</Text>
+    </Card>
   );
 }
 
 const s = StyleSheet.create({
-  stats: { flexDirection: 'row', alignItems: 'center' },
-  stat: { flex: 1, alignItems: 'center', gap: 2 },
-  statValue: { fontFamily: FontFamily.semibold, fontSize: 24, lineHeight: 30, color: Colors.textPrimary, fontVariant: ['tabular-nums'] },
-  statDivider: { width: StyleSheet.hairlineWidth, alignSelf: 'stretch', backgroundColor: Colors.border },
-  statusRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Spacing.lg, minHeight: 48 },
+  tiles: { flexDirection: 'row', gap: Spacing.sm },
+  tile: { flex: 1, minWidth: 0, padding: Spacing.md },
+  tileValue: { fontFamily: FontFamily.bold, fontSize: 24, lineHeight: 30, color: Colors.textPrimary, fontVariant: ['tabular-nums'] },
+  big: { fontFamily: FontFamily.bold, fontSize: 28, lineHeight: 36, color: Colors.textPrimary, marginVertical: 2, fontVariant: ['tabular-nums'] },
+  dayRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, paddingHorizontal: Spacing.lg, minHeight: 52 },
   divider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border },
-  label: { ...TypeScale.body },
+  day: { ...TypeScale.body, fontFamily: FontFamily.medium, color: Colors.textPrimary, flex: 1 },
+  count: { ...TypeScale.body, color: Colors.textSecondary, fontVariant: ['tabular-nums'] },
+  value: { ...TypeScale.bodyStrong, color: Colors.textPrimary, minWidth: 72, textAlign: 'right', fontVariant: ['tabular-nums'] },
 });

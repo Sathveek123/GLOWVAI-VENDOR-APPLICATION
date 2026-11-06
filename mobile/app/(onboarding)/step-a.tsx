@@ -1,175 +1,196 @@
 /**
- * Onboarding step 1 of 4: store details (name, owner, address, map pin, opening hours).
+ * Onboarding step 1 of 4: store details. Store and owner name, contact mobile, address with
+ * state and pincode, the pincodes the store delivers to, and opening hours (stored 24-hour).
+ * Saved on this device as a draft; nothing is sent until step 4.
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { View, Text, Pressable, StyleSheet, Platform } from 'react-native';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useRouter } from 'expo-router';
-import { clearSession } from '../../src/services/session';
 import RealInteractiveMap from '../../src/components/RealInteractiveMap';
 import {
   SellerFrame,
   Section,
   FieldRow,
   TextField,
+  SelectField,
   Button,
   Banner,
   Segmented,
   StepFooter,
-  CenteredLoader,
+  GateFallback,
   useLayout,
   useDocumentTitle,
   SellerColors as C,
   S,
   type SaveState,
 } from '../../src/features/onboarding/kit';
-import { useRequireSession } from '../../src/features/onboarding/guard';
+import { useOnboardingGate } from '../../src/features/onboarding/guard';
+import { signOutVendor } from '../../src/services/session';
 import {
-  BUSINESS_TYPES,
   DRAFT_KEYS,
   loadDraft,
   saveDraft,
+  seedDraftsFromApplication,
   setResumeStep,
   formatSavedTime,
-  type BusinessType,
   type StoreDraft,
 } from '../../src/features/onboarding/draft';
+import { storeErrors, hasErrors } from '../../src/features/onboarding/application';
 import {
   digitsOnly,
+  formatMobile,
   from24h,
   maskTime,
-  parseTime,
+  normalizeIndianMobile,
   to24h,
-  validateEmailOptional,
   validatePincode,
-  validateRequired,
+  INDIAN_STATES,
+  MAX_SERVICE_PINCODES,
   type Meridiem,
 } from '../../src/features/onboarding/validation';
 import { FontFamily } from '../../src/theme/typography';
 
 const MERIDIEMS = ['AM', 'PM'] as const;
-
-// The map picker is a web iframe. The phone apps have no map or location access yet, so the pin
-// is optional there and the location button is only offered where the browser can provide it.
+// The map picker is a web page in an iframe; the phone apps have no map yet, so the pin is optional.
 const MAP_AVAILABLE = Platform.OS === 'web';
-const GEOLOCATION_AVAILABLE =
-  Platform.OS === 'web' && typeof navigator !== 'undefined' && !!(navigator as any).geolocation;
+
+const LABELS: [string, string][] = [
+  ['storeName', 'store name'],
+  ['ownerName', 'owner name'],
+  ['contactNumber', 'contact mobile'],
+  ['address', 'shop address'],
+  ['city', 'city'],
+  ['state', 'state'],
+  ['pincode', 'pincode'],
+  ['servicePincodes', 'delivery pincodes'],
+  ['openTime', 'opening time'],
+  ['closeTime', 'closing time'],
+];
 
 export default function StepA() {
   const router = useRouter();
   const { isPhone } = useLayout();
-  const { ready } = useRequireSession();
+  const gate = useOnboardingGate();
   useDocumentTitle('Store details');
 
   const [storeName, setStoreName] = useState('');
   const [ownerName, setOwnerName] = useState('');
-  const [businessType, setBusinessType] = useState<BusinessType | ''>('');
-  const [email, setEmail] = useState('');
+  const [contact, setContact] = useState('');
   const [address, setAddress] = useState('');
   const [locality, setLocality] = useState('');
   const [city, setCity] = useState('');
+  const [stateName, setStateName] = useState('');
   const [pincode, setPincode] = useState('');
+  const [extraPins, setExtraPins] = useState<string[]>([]);
+  const [pinInput, setPinInput] = useState('');
+  const [pinInputError, setPinInputError] = useState('');
   const [openHm, setOpenHm] = useState('09:00');
   const [openMer, setOpenMer] = useState<Meridiem>('AM');
   const [closeHm, setCloseHm] = useState('09:00');
   const [closeMer, setCloseMer] = useState<Meridiem>('PM');
   const [latitude, setLatitude] = useState<number | null>(null);
   const [longitude, setLongitude] = useState<number | null>(null);
-  const [locating, setLocating] = useState(false);
-  const [locError, setLocError] = useState('');
+  const [mapOpen, setMapOpen] = useState(false);
 
+  const [loaded, setLoaded] = useState(false);
+  const [restored, setRestored] = useState<'' | 'draft' | 'server'>('');
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [showAll, setShowAll] = useState(false);
-  const [restored, setRestored] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [savedAt, setSavedAt] = useState('');
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState('');
 
-  useEffect(() => {
-    loadDraft<StoreDraft>(DRAFT_KEYS.a).then(d => {
-      if (!d) return;
-      setStoreName(d.storeName || '');
-      setOwnerName(d.ownerName || '');
-      if (BUSINESS_TYPES.some(t => t.id === d.businessType)) setBusinessType(d.businessType as BusinessType);
-      setEmail(d.email || '');
-      setAddress(d.address || '');
-      setLocality(d.locality || '');
-      setCity(d.city || '');
-      setPincode(d.pincode || '');
-      if (d.openTime) {
-        const [hm, mer] = from24h(d.openTime);
-        if (hm) { setOpenHm(hm); setOpenMer(mer); }
-      }
-      if (d.closeTime) {
-        const [hm, mer] = from24h(d.closeTime);
-        if (hm) { setCloseHm(hm); setCloseMer(mer); }
-      }
-      if (typeof d.latitude === 'number' && typeof d.longitude === 'number') {
-        setLatitude(d.latitude);
-        setLongitude(d.longitude);
-      }
-      setRestored(true);
-    });
-  }, []);
+  const ready = gate.status === 'ready';
+  const application = ready ? gate.me.vendor.application : null;
 
+  useEffect(() => {
+    if (!ready || loaded) return;
+    (async () => {
+      let d = await loadDraft<StoreDraft>(DRAFT_KEYS.a);
+      let from: '' | 'draft' | 'server' = d ? (d.seededFromServer ? 'server' : 'draft') : '';
+      if (!d && application) {
+        // Resubmitting: start from what is already on the server.
+        await seedDraftsFromApplication(application);
+        d = await loadDraft<StoreDraft>(DRAFT_KEYS.a);
+        from = d ? 'server' : '';
+      }
+      if (d) {
+        setStoreName(d.storeName || '');
+        setOwnerName(d.ownerName || '');
+        setContact(normalizeIndianMobile(d.contactNumber || ''));
+        setAddress(d.address || '');
+        setLocality(d.locality || '');
+        setCity(d.city || '');
+        setStateName(d.state || '');
+        setPincode(d.pincode || '');
+        setExtraPins((d.servicePincodes || []).filter(p => p !== d!.pincode));
+        const [ohm, omer] = from24h(d.openTime);
+        if (ohm) {
+          setOpenHm(ohm);
+          setOpenMer(omer);
+        }
+        const [chm, cmer] = from24h(d.closeTime);
+        if (chm) {
+          setCloseHm(chm);
+          setCloseMer(cmer);
+        }
+        if (typeof d.latitude === 'number' && typeof d.longitude === 'number') {
+          setLatitude(d.latitude);
+          setLongitude(d.longitude);
+        }
+      }
+      setRestored(from);
+      setLoaded(true);
+    })();
+  }, [ready]);
+
+  const dirty = () => saveState !== 'idle' && setSaveState('idle');
   const edit = <T,>(setter: (v: T) => void) => (v: T) => {
     setter(v);
-    if (saveState !== 'idle') setSaveState('idle');
+    dirty();
   };
   const touch = (k: string) => () => setTouched(t => ({ ...t, [k]: true }));
 
-  const openMin = parseTime(openHm, openMer);
-  const closeMin = parseTime(closeHm, closeMer);
-  const errors: Record<string, string> = {
-    storeName: validateRequired(storeName, 'your store name'),
-    ownerName: validateRequired(ownerName, 'the owner’s full name', 3),
-    businessType: businessType ? '' : 'Choose your type of business',
-    email: validateEmailOptional(email),
-    address: validateRequired(address, 'the shop address', 5),
-    locality: validateRequired(locality, 'the area or locality'),
-    city: validateRequired(city, 'the city'),
-    pincode: validatePincode(pincode),
-    openTime: openMin === null ? 'Enter a time like 09:00' : '',
-    closeTime:
-      closeMin === null ? 'Enter a time like 09:00' : openMin !== null && closeMin === openMin ? 'Closing time must differ from opening time' : '',
-    location: MAP_AVAILABLE && (latitude == null || longitude == null) ? 'Pin your store on the map' : '',
-  };
-  const order: [string, string][] = [
-    ['storeName', 'store name'],
-    ['ownerName', 'owner name'],
-    ['businessType', 'business type'],
-    ['email', 'a valid email'],
-    ['address', 'shop address'],
-    ['locality', 'area'],
-    ['city', 'city'],
-    ['pincode', 'pincode'],
-    ['openTime', 'opening time'],
-    ['closeTime', 'closing time'],
-    ['location', 'map pin'],
-  ];
-  const missing = order.filter(([k]) => errors[k]).map(([, label]) => label);
-  const valid = missing.length === 0;
-  const err = (k: string) => (touched[k] || showAll ? errors[k] : '');
-  const hint = valid
-    ? ''
-    : `To continue, add: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` and ${missing.length - 3} more` : ''}`;
+  const storePinValid = !validatePincode(pincode);
+  const servicePincodes = storePinValid ? [pincode, ...extraPins.filter(p => p !== pincode)] : extraPins;
 
   const data = (): StoreDraft => ({
     storeName: storeName.trim(),
     ownerName: ownerName.trim(),
-    businessType,
-    email: email.trim(),
+    contactNumber: contact,
     address: address.trim(),
     locality: locality.trim(),
     city: city.trim(),
+    state: stateName,
     pincode,
-    // Stored in 24-hour "HH:MM", the format the GlowVai shop uses.
+    servicePincodes,
     openTime: to24h(openHm, openMer),
     closeTime: to24h(closeHm, closeMer),
     latitude,
     longitude,
   });
+
+  const errors = storeErrors(data());
+  const missing = LABELS.filter(([k]) => errors[k]).map(([, label]) => label);
+  const valid = !hasErrors(errors);
+  const err = (k: string) => (touched[k] || showAll ? errors[k] : '');
+  const hint = valid
+    ? ''
+    : `To continue, add: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` and ${missing.length - 3} more` : ''}`;
+
+  const addPin = () => {
+    const p = digitsOnly(pinInput, 6);
+    const e = validatePincode(p);
+    if (e) return setPinInputError(e);
+    if (servicePincodes.includes(p)) return setPinInputError('This pincode is already in your list');
+    if (servicePincodes.length >= MAX_SERVICE_PINCODES) return setPinInputError(`You can add up to ${MAX_SERVICE_PINCODES} pincodes`);
+    setExtraPins(list => [...list, p]);
+    setPinInput('');
+    setPinInputError('');
+    dirty();
+  };
 
   const onSaveDraft = async () => {
     setSaveState('saving');
@@ -178,7 +199,7 @@ export default function StepA() {
       await setResumeStep('step-a');
       setSavedAt(formatSavedTime());
       setSaveState('saved');
-    } catch (_) {
+    } catch {
       setSaveState('error');
     }
   };
@@ -192,7 +213,7 @@ export default function StepA() {
       await saveDraft(DRAFT_KEYS.a, data());
       await setResumeStep('step-b');
       router.push('/(onboarding)/step-b');
-    } catch (_) {
+    } catch {
       setFormError('We couldn’t save your details on this device. Check storage permissions and try again.');
     } finally {
       setBusy(false);
@@ -201,55 +222,34 @@ export default function StepA() {
 
   const onMapSelect = useCallback(
     (loc: { latitude: number; longitude: number; locality?: string; city?: string; pinCode?: string }) => {
-      setLatitude(loc.latitude);
-      setLongitude(loc.longitude);
-      setLocError('');
-      // Only fill fields the seller hasn't typed yet.
+      setLatitude(Number(loc.latitude.toFixed(6)));
+      setLongitude(Number(loc.longitude.toFixed(6)));
+      // Only fill fields the vendor hasn't typed yet.
       if (loc.locality) setLocality(v => v || loc.locality!);
       if (loc.city) setCity(v => v || loc.city!);
-      if (loc.pinCode && /^\d{6}$/.test(loc.pinCode)) setPincode(v => v || loc.pinCode!);
+      if (loc.pinCode && /^[1-9]\d{5}$/.test(loc.pinCode)) setPincode(v => v || loc.pinCode!);
       setSaveState('idle');
     },
     [],
   );
 
-  const useMyLocation = () => {
-    setLocError('');
-    const geo = typeof navigator !== 'undefined' ? (navigator as any).geolocation : undefined;
-    if (!geo) {
-      setLocError('Location isn’t available here. Drag the pin or search on the map instead.');
-      return;
-    }
-    setLocating(true);
-    geo.getCurrentPosition(
-      (pos: any) => {
-        setLatitude(Number(pos.coords.latitude.toFixed(6)));
-        setLongitude(Number(pos.coords.longitude.toFixed(6)));
-        setLocating(false);
-        setSaveState('idle');
-      },
-      () => {
-        setLocating(false);
-        setLocError('We couldn’t get your location. Allow location access, or drag the pin on the map.');
-      },
-      { enableHighAccuracy: true, timeout: 10000 },
-    );
-  };
-
   const signOut = async () => {
-    await clearSession();
+    await signOutVendor();
     router.replace('/(auth)/login');
   };
 
-  if (!ready) return <CenteredLoader label="Loading your details" />;
+  if (gate.status !== 'ready' || !loaded) {
+    return <GateFallback gate={gate.status === 'ready' ? { status: 'loading' } : gate} loadingLabel="Loading your details" onSignOut={signOut} />;
+  }
 
   const pinned = latitude != null && longitude != null;
+  const accountEmail = gate.user.email || gate.me.account.email;
 
   return (
     <SellerFrame
       step={1}
       title="Store details"
-      description="Tell us about your shop. Customers see the store name; delivery partners use the address and pin."
+      description="Tell us about your shop. Customers see the store name; our delivery partners use the address."
       headerRight={<Button label="Sign out" variant="ghost" compact onPress={signOut} />}
       footer={
         <StepFooter
@@ -265,25 +265,27 @@ export default function StepA() {
       }
       testID="step-a"
     >
-      {restored ? <Banner tone="info" message="We restored the draft saved on this device." /> : null}
+      {restored === 'draft' ? <Banner tone="info" message="We restored the draft saved on this device." /> : null}
+      {restored === 'server' ? (
+        <Banner tone="info" message="We filled in the details you submitted before. Check them, change what is needed, then continue." />
+      ) : null}
       {formError ? <Banner tone="error" message={formError} /> : null}
 
       <Section title="Store">
         <TextField
           label="Store name"
-          placeholder="e.g. City Beauty Store"
+          placeholder="As on your shop name board"
           value={storeName}
           onChangeText={edit(setStoreName)}
           onBlur={touch('storeName')}
           error={err('storeName')}
-          helper="As shown on your shop name board"
           autoCapitalize="words"
           maxLength={80}
           testID="store-name"
         />
         <TextField
-          label="Owner's full name"
-          placeholder="As on the owner's PAN card"
+          label="Owner’s full name"
+          placeholder="As on the owner’s PAN card"
           value={ownerName}
           onChangeText={edit(setOwnerName)}
           onBlur={touch('ownerName')}
@@ -294,26 +296,33 @@ export default function StepA() {
           maxLength={80}
           testID="owner-name"
         />
-        <BusinessTypePicker value={businessType} onChange={v => { edit(setBusinessType)(v); touch('businessType')(); }} error={err('businessType')} />
         <TextField
-          label="Email"
-          optional
-          placeholder="name@example.com"
-          value={email}
-          onChangeText={edit(setEmail)}
-          onBlur={touch('email')}
-          error={err('email')}
-          helper="For order and payout updates"
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoComplete="email"
-          textContentType="emailAddress"
-          maxLength={120}
-          last
+          label="Store contact mobile"
+          prefix="+91"
+          placeholder="98765 43210"
+          value={formatMobile(contact)}
+          onChangeText={v => edit(setContact)(normalizeIndianMobile(v))}
+          onBlur={touch('contactNumber')}
+          error={err('contactNumber')}
+          helper="GlowVai’s team calls this number about your store and orders. Customers never see it."
+          keyboardType="phone-pad"
+          textContentType="telephoneNumber"
+          autoComplete="tel"
+          maxLength={11}
+          testID="contact-number"
         />
+        <View style={st.emailRow}>
+          <Ionicons name="mail-outline" size={18} color={C.textSecondary} style={{ marginTop: 1 }} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={st.emailLabel}>Account email</Text>
+            <Text style={st.emailValue} numberOfLines={1}>
+              {accountEmail}
+            </Text>
+          </View>
+        </View>
       </Section>
 
-      <Section title="Address" description="Where delivery partners pick up orders.">
+      <Section title="Address" description="Where our delivery partners pick up orders.">
         <TextField
           label="Shop address"
           placeholder="Shop no., building, street"
@@ -323,23 +332,22 @@ export default function StepA() {
           error={err('address')}
           autoComplete="street-address"
           textContentType="streetAddressLine1"
-          maxLength={200}
+          maxLength={160}
           testID="address"
         />
         <TextField
           label="Area or locality"
-          placeholder="e.g. Benz Circle"
+          optional
+          placeholder="Area, landmark"
           value={locality}
           onChangeText={edit(setLocality)}
-          onBlur={touch('locality')}
-          error={err('locality')}
-          maxLength={100}
+          maxLength={60}
           testID="locality"
         />
         <FieldRow keepOnPhone>
           <TextField
             label="City"
-            placeholder="e.g. Vijayawada"
+            placeholder="City or town"
             value={city}
             onChangeText={edit(setCity)}
             onBlur={touch('city')}
@@ -351,7 +359,7 @@ export default function StepA() {
           />
           <TextField
             label="Pincode"
-            placeholder="520010"
+            placeholder="6 digits"
             value={pincode}
             onChangeText={edit((v: string) => setPincode(digitsOnly(v, 6)))}
             onBlur={touch('pincode')}
@@ -364,44 +372,113 @@ export default function StepA() {
             testID="pincode"
           />
         </FieldRow>
+        <SelectField
+          label="State"
+          value={stateName}
+          options={INDIAN_STATES}
+          onChange={v => {
+            edit(setStateName)(v);
+            touch('state')();
+          }}
+          placeholder="Choose your state"
+          error={err('state')}
+          testID="state"
+          last={!MAP_AVAILABLE}
+        />
 
-        <Text style={st.label}>Store location on the map{MAP_AVAILABLE ? '' : ' (optional)'}</Text>
-        <Text style={st.helper}>
-          {MAP_AVAILABLE
-            ? 'Search inside the map, tap the map or drag the pin to your shop entrance.'
-            : 'The map isn’t available in the phone app yet. You can continue without a pin; the address above is used.'}
-        </Text>
-        {GEOLOCATION_AVAILABLE ? (
-          <View style={{ flexDirection: 'row', marginBottom: S.md }}>
-            <Button
-              label={locating ? 'Finding you…' : 'Use my current location'}
-              icon="locate-outline"
-              variant="secondary"
-              compact
-              loading={locating}
-              onPress={useMyLocation}
-            />
-          </View>
-        ) : null}
         {MAP_AVAILABLE ? (
-          <View style={[st.map, !!err('location') && { borderColor: C.errorText }]}>
-            <RealInteractiveMap
-              height={isPhone ? 340 : 380}
-              latitude={latitude ?? 16.5062}
-              longitude={longitude ?? 80.648}
-              shopName={storeName || 'Your store'}
-              onLocationSelect={onMapSelect}
-            />
+          <View>
+            <Text style={st.label}>
+              Map pin <Text style={st.optional}>(optional)</Text>
+            </Text>
+            <Text style={st.helper}>A pin helps delivery partners find your entrance.</Text>
+            {mapOpen ? (
+              <View style={st.map}>
+                <RealInteractiveMap
+                  height={isPhone ? 320 : 380}
+                  latitude={latitude ?? 20.5937}
+                  longitude={longitude ?? 78.9629}
+                  shopName={storeName || 'Your store'}
+                  onLocationSelect={onMapSelect}
+                />
+              </View>
+            ) : (
+              <View style={{ flexDirection: 'row' }}>
+                <Button label={pinned ? 'Move the pin' : 'Add a map pin'} icon="location-outline" variant="secondary" compact onPress={() => setMapOpen(true)} />
+              </View>
+            )}
+            <Text style={[st.helper, { marginTop: S.sm, marginBottom: 0 }, pinned && { color: C.successText }]}>
+              {pinned ? 'Pin added. Search, tap or drag on the map to move it.' : mapOpen ? 'Search, tap the map or drag the pin to your shop.' : 'No pin added yet.'}
+            </Text>
           </View>
         ) : null}
-        {locError ? <Banner tone="warning" message={locError} style={{ marginTop: S.md, marginBottom: 0 }} /> : null}
-        {pinned ? (
-          <Text style={[st.helper, { color: C.successText, marginTop: S.sm }]}>
-            Pin set at {latitude!.toFixed(5)}, {longitude!.toFixed(5)}
-          </Text>
-        ) : err('location') ? (
-          <Text style={[st.helper, { color: C.errorText, marginTop: S.sm }]}>{err('location')}</Text>
-        ) : null}
+      </Section>
+
+      <Section
+        title="Where you deliver"
+        description="Orders from these pincodes can reach your store. Your store’s own pincode is always included."
+      >
+        <View style={st.chips} accessibilityRole="list" accessibilityLabel="Delivery pincodes">
+          {servicePincodes.length ? (
+            servicePincodes.map(p => {
+              const own = storePinValid && p === pincode;
+              return (
+                <View key={p} style={[st.chip, own && st.chipOwn]} accessibilityLabel={own ? `${p}, your store` : p}>
+                  <Text style={[st.chipText, own && { color: C.primary }]}>{p}</Text>
+                  {own ? (
+                    <Text style={st.chipTag}>Your store</Text>
+                  ) : (
+                    <Pressable
+                      onPress={() => {
+                        setExtraPins(list => list.filter(x => x !== p));
+                        dirty();
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Remove ${p}`}
+                      hitSlop={8}
+                      style={({ pressed }) => [st.chipRemove, pressed && { opacity: 0.6 }]}
+                    >
+                      <Ionicons name="close" size={16} color={C.textSecondary} />
+                    </Pressable>
+                  )}
+                </View>
+              );
+            })
+          ) : (
+            <Text style={[st.helper, { marginBottom: 0 }]}>Enter your store’s pincode above. It is added here automatically.</Text>
+          )}
+        </View>
+        <View style={st.addRow}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <TextField
+              label={servicePincodes.length ? 'Add another pincode' : 'Add a pincode'}
+              placeholder="6 digits"
+              value={pinInput}
+              onChangeText={v => {
+                setPinInput(digitsOnly(v, 6));
+                setPinInputError('');
+              }}
+              onSubmitEditing={addPin}
+              error={pinInputError || err('servicePincodes')}
+              helper={`${servicePincodes.length} of ${MAX_SERVICE_PINCODES} added`}
+              keyboardType="number-pad"
+              inputMode="numeric"
+              maxLength={6}
+              returnKeyType="done"
+              last
+              testID="service-pincode"
+            />
+          </View>
+          <Button
+            label="Add"
+            icon="add"
+            variant="secondary"
+            onPress={addPin}
+            disabled={servicePincodes.length >= MAX_SERVICE_PINCODES}
+            style={st.addBtn}
+            testID="service-pincode-add"
+          />
+        </View>
       </Section>
 
       <Section title="Opening hours" description="Orders reach you only while your store is open. Choose AM or PM for each time.">
@@ -442,7 +519,6 @@ function TimeField({
   error,
   last,
 }: {
-  last?: boolean;
   label: string;
   hm: string;
   mer: Meridiem;
@@ -450,6 +526,7 @@ function TimeField({
   onMer: (v: Meridiem) => void;
   onBlur: () => void;
   error?: string;
+  last?: boolean;
 }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: S.sm }}>
@@ -467,75 +544,38 @@ function TimeField({
           last={last}
         />
       </View>
-      <View style={{ marginTop: 24 }}>
+      <View style={{ marginTop: 26 }}>
         <Segmented options={MERIDIEMS} value={mer} onChange={onMer} label={label} />
       </View>
     </View>
   );
 }
 
-function BusinessTypePicker({
-  value,
-  onChange,
-  error,
-}: {
-  value: BusinessType | '';
-  onChange: (v: BusinessType) => void;
-  error?: string;
-}) {
-  return (
-    <View style={{ marginBottom: S.lg + 2 }}>
-      <Text style={st.label}>Type of business</Text>
-      <Text style={st.helper}>This decides which tax documents we ask for in the next step.</Text>
-      <View accessibilityRole="radiogroup" accessibilityLabel="Type of business" style={{ gap: S.sm }}>
-        {BUSINESS_TYPES.map(t => {
-          const on = value === t.id;
-          return (
-            <Pressable
-              key={t.id}
-              testID={`business-${t.id}`}
-              onPress={() => onChange(t.id)}
-              accessibilityRole="radio"
-              accessibilityState={{ checked: on, selected: on }}
-              accessibilityLabel={`${t.label}. ${t.desc}`}
-              style={({ pressed }) => [st.option, on && st.optionOn, !!error && !on && { borderColor: C.errorText }, pressed && { opacity: 0.85 }]}
-            >
-              <Ionicons name={on ? 'radio-button-on' : 'radio-button-off'} size={22} color={on ? C.primary : C.inputBorder} />
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text style={st.optionTitle}>{t.label}</Text>
-                <Text style={st.optionDesc}>{t.desc}</Text>
-              </View>
-            </Pressable>
-          );
-        })}
-      </View>
-      {error ? (
-        <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginTop: 6 }} accessibilityLiveRegion="polite">
-          <Ionicons name="alert-circle" size={15} color={C.errorText} style={{ marginRight: 5, marginTop: 2 }} />
-          <Text style={{ flex: 1, fontSize: 13, lineHeight: 19, color: C.errorText }}>{error}</Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
 const st = StyleSheet.create({
-  option: {
+  emailRow: { flexDirection: 'row', alignItems: 'flex-start', gap: S.sm, paddingTop: S.md, borderTopWidth: 1, borderTopColor: C.border },
+  emailLabel: { fontSize: 13, lineHeight: 18, color: C.textSecondary },
+  emailValue: { fontFamily: FontFamily.medium, fontSize: 15, lineHeight: 21, color: C.textPrimary },
+  label: { fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: C.textPrimary, marginBottom: 2 },
+  optional: { fontFamily: FontFamily.regular, color: C.textSubtle },
+  helper: { fontSize: 13, lineHeight: 19, color: C.textSubtle, marginBottom: S.md },
+  map: { borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: C.border },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: S.sm, marginBottom: S.lg },
+  chip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: S.md,
-    minHeight: 56,
-    paddingHorizontal: S.md,
-    paddingVertical: S.sm,
+    gap: 6,
+    minHeight: 36,
+    paddingLeft: S.md,
+    paddingRight: S.xs,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: C.border,
-    borderRadius: 12,
+    borderColor: C.borderStrong,
     backgroundColor: C.card,
   },
-  optionOn: { borderColor: C.primary, backgroundColor: C.primaryLight },
-  optionTitle: { fontFamily: FontFamily.semibold, fontSize: 15, lineHeight: 21, color: C.textPrimary },
-  optionDesc: { fontSize: 13, lineHeight: 18, color: C.textSecondary },
-  label: { fontFamily: FontFamily.semibold, fontSize: 14, lineHeight: 20, color: C.textPrimary, marginBottom: 2 },
-  helper: { fontSize: 13, lineHeight: 19, color: C.textSubtle, marginBottom: S.md },
-  map: { borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: 'transparent' },
+  chipOwn: { borderColor: C.primaryBorder, backgroundColor: C.primaryLight, paddingRight: S.md },
+  chipText: { fontFamily: FontFamily.semibold, fontSize: 15, color: C.textPrimary, fontVariant: ['tabular-nums'] },
+  chipTag: { fontSize: 12, color: C.infoText },
+  chipRemove: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  addRow: { flexDirection: 'row', alignItems: 'flex-start', gap: S.sm },
+  addBtn: { marginTop: 26, minWidth: 88 },
 });

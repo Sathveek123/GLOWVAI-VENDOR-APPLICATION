@@ -1,43 +1,50 @@
 /**
  * Screen 01: splash and session router.
  *
- * Shows the GlowVai brand while it decides where to go:
- *   no session                     -> sign in
- *   signed in, nothing submitted   -> the onboarding step to resume
- *   application not approved       -> application status
- *   approved                       -> dashboard
- * When the server can't be reached and nothing is cached, it shows a calm offline card;
- * "Try again" re-runs the same session check.
+ * Shows the GlowVai brand while it decides where to go (src/features/onboarding/status.ts):
+ *   not signed in                      -> sign in
+ *   email not verified                 -> verify email
+ *   no application yet                 -> onboarding (the saved step, else step A)
+ *   submitted / in review / rejected /
+ *   documents requested / suspended    -> application status
+ *   approved                           -> vendor home
+ * When GlowVai can't be reached it shows friendly copy and "Try again", never a blank screen.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, ActivityIndicator, Pressable, StyleSheet, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import Wordmark, { BrandMark } from '../src/components/Wordmark';
 import { resolveStartRoute } from '../src/features/onboarding/status';
+import { signOutVendor } from '../src/services/session';
 import { Colors, Spacing, BorderRadii, Shadows } from '../src/theme/tokens';
 import { FontFamily } from '../src/theme/typography';
 
-type Phase = 'checking' | 'slow' | 'offline' | 'error';
+type Phase = { kind: 'checking' } | { kind: 'slow' } | { kind: 'failed'; message: string; code: string };
 
 export default function SplashScreen() {
   const router = useRouter();
-  const [phase, setPhase] = useState<Phase>('checking');
+  const [phase, setPhase] = useState<Phase>({ kind: 'checking' });
   const mounted = useRef(true);
 
-  const check = useCallback(async () => {
-    setPhase('checking');
-    const slow = setTimeout(() => mounted.current && setPhase(p => (p === 'checking' ? 'slow' : p)), 4000);
-    try {
-      const result = await resolveStartRoute();
-      if (!mounted.current) return;
-      if ('route' in result) router.replace(result.route as any);
-      else setPhase('offline');
-    } catch (_) {
-      if (mounted.current) setPhase('error');
-    } finally {
-      clearTimeout(slow);
-    }
-  }, [router]);
+  const check = useCallback(
+    async (force = false) => {
+      setPhase({ kind: 'checking' });
+      const slow = setTimeout(() => mounted.current && setPhase(p => (p.kind === 'checking' ? { kind: 'slow' } : p)), 4000);
+      try {
+        const result = await resolveStartRoute(force);
+        if (!mounted.current) return;
+        if ('route' in result) router.replace(result.route as never);
+        else setPhase({ kind: 'failed', message: result.error, code: result.code });
+      } catch {
+        if (mounted.current) {
+          setPhase({ kind: 'failed', message: 'Something went wrong while opening your account. Try again in a moment.', code: 'UNKNOWN' });
+        }
+      } finally {
+        clearTimeout(slow);
+      }
+    },
+    [router],
+  );
 
   useEffect(() => {
     mounted.current = true;
@@ -48,7 +55,12 @@ export default function SplashScreen() {
     };
   }, []);
 
-  const failed = phase === 'offline' || phase === 'error';
+  const switchAccount = async () => {
+    await signOutVendor();
+    router.replace('/(auth)/login');
+  };
+
+  const notVendor = phase.kind === 'failed' && phase.code === 'NOT_A_VENDOR_ACCOUNT';
 
   return (
     <View style={s.root} testID="splash">
@@ -59,35 +71,35 @@ export default function SplashScreen() {
       </View>
 
       <View style={s.statusArea}>
-        {failed ? (
+        {phase.kind === 'failed' ? (
           <View style={s.card} accessibilityRole="alert">
-            <Text style={s.cardTitle}>{phase === 'offline' ? 'You’re offline' : 'We couldn’t open your account'}</Text>
-            <Text style={s.cardBody}>
-              {phase === 'offline'
-                ? 'We couldn’t reach GlowVai. Check your internet connection, then try again.'
-                : 'Something went wrong while checking your sign-in. Try again in a moment.'}
+            <Text style={s.cardTitle}>
+              {phase.code === 'NETWORK' ? 'Connection problem' : notVendor ? 'This is not a store account' : 'We couldn’t open your account'}
             </Text>
+            <Text style={s.cardBody}>{phase.message}</Text>
+            {notVendor ? null : (
+              <Pressable
+                onPress={() => check(true)}
+                accessibilityRole="button"
+                testID="splash-retry"
+                style={({ pressed }) => [s.primary, pressed && { backgroundColor: Colors.primaryPressed }]}
+              >
+                <Text style={s.primaryText}>Try again</Text>
+              </Pressable>
+            )}
             <Pressable
-              onPress={check}
+              onPress={switchAccount}
               accessibilityRole="button"
-              testID="splash-retry"
-              style={({ pressed }) => [s.primary, pressed && { backgroundColor: Colors.primaryPressed }]}
+              style={({ pressed }) => [notVendor ? s.primary : s.secondary, pressed && { opacity: 0.85 }]}
             >
-              <Text style={s.primaryText}>Try again</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => router.replace('/(auth)/login')}
-              accessibilityRole="button"
-              style={({ pressed }) => [s.secondary, pressed && { backgroundColor: Colors.surface }]}
-            >
-              <Text style={s.secondaryText}>Sign in again</Text>
+              <Text style={notVendor ? s.primaryText : s.secondaryText}>Sign in with another account</Text>
             </Pressable>
           </View>
         ) : (
           <View style={s.loading} accessibilityRole="progressbar" accessibilityLabel="Opening GlowVai Seller">
             <ActivityIndicator color={Colors.primary} />
             <Text style={s.loadingText} accessibilityLiveRegion="polite">
-              {phase === 'slow' ? 'Still connecting. This can take a moment on a slow network.' : 'Opening your store'}
+              {phase.kind === 'slow' ? 'Still connecting. This can take a moment on a slow network.' : 'Opening your store'}
             </Text>
           </View>
         )}

@@ -10,6 +10,8 @@ export default function RecommendedSkusScreen() {
   return (
     <ComingLater
       title="Stock suggestions"
+      heading="Suggestions are not available yet"
+      icon="bulb-outline"
       message="Suggestions on what to stock will come once GlowVai has enough real orders from stores near you. Until then, add products from the GlowVai catalogue."
     />
   );

@@ -1,54 +1,54 @@
 /**
- * Support cases (PRD screen 20). The backend has no support-case endpoint yet, so:
- * - SUPPORT_CASES_CONNECTED is false and the report form is shown read-only, with a notice
- *   before anything can be typed;
- * - fetchCases reports `connected: false`.
- * When POST /api/support/cases and GET /api/support/cases exist, wire them here.
+ * Support tickets (PRD screen 20) for the Help & support screen: status labels and the
+ * on-device checks for a new ticket (the server applies the same limits).
+ * Data: supportApi (src/services/vendorApi/support.ts), GET/POST /api/vendor/support.
  */
-import { pickStr, toMs } from '../money/format';
 import type { Tone } from '../money/ui';
+import { ORDER_ID_RE, TICKET_CATEGORIES, TICKET_LIMITS, type TicketCategory } from '../../services/vendorApi/support';
 
-export const SUPPORT_CASES_CONNECTED = false;
-
-export type CaseStatus = 'open' | 'waiting_for_you' | 'in_review' | 'resolved' | 'unknown';
-
-export interface SupportCase {
-  id: string;
-  subject: string;
-  status: CaseStatus;
-  orderId: string | null;
-  updatedMs: number | null;
-}
-
-export const CASE_STATUS: Record<CaseStatus, { label: string; tone: Tone }> = {
-  open: { label: 'Open', tone: 'info' },
-  waiting_for_you: { label: 'Waiting for you', tone: 'warning' },
-  in_review: { label: 'In review', tone: 'info' },
-  resolved: { label: 'Resolved', tone: 'success' },
-  unknown: { label: 'Status not available', tone: 'neutral' },
+const STATUS: Record<string, { label: string; tone: Tone }> = {
+  OPEN: { label: 'Open', tone: 'info' },
+  IN_PROGRESS: { label: 'In progress', tone: 'info' },
+  WAITING_CUSTOMER: { label: 'Waiting for you', tone: 'warning' },
+  RESOLVED: { label: 'Resolved', tone: 'success' },
 };
 
-export function normalizeCase(raw: any): SupportCase | null {
-  const id = pickStr(raw, ['caseId', 'id']);
-  if (!id) return null;
-  const s = String(raw?.status ?? '').toLowerCase();
-  const status: CaseStatus = s in CASE_STATUS ? (s as CaseStatus) : 'unknown';
+export function ticketStatus(status: string): { label: string; tone: Tone } {
+  return STATUS[String(status || '').toUpperCase()] ?? { label: 'Status not available', tone: 'neutral' };
+}
+
+export const isTicketCategory = (v: string): v is TicketCategory => TICKET_CATEGORIES.some(c => c.id === v);
+
+export interface TicketDraft {
+  category: TicketCategory | '';
+  subject: string;
+  description: string;
+  orderId: string;
+}
+
+export function ticketErrors(t: TicketDraft): Record<keyof TicketDraft, string> {
+  const subject = t.subject.trim();
+  const description = t.description.trim();
+  const orderId = t.orderId.trim();
   return {
-    id,
-    subject: pickStr(raw, ['subject', 'title']) || 'Support case',
-    status,
-    orderId: pickStr(raw, ['orderId']),
-    updatedMs: toMs(raw?.updatedAt ?? raw?.createdAt),
+    category: t.category ? '' : 'Choose what the problem is about',
+    subject:
+      subject.length < TICKET_LIMITS.subjectMin
+        ? 'Add a short subject'
+        : subject.length > TICKET_LIMITS.subjectMax
+          ? `Keep the subject under ${TICKET_LIMITS.subjectMax} characters`
+          : '',
+    description:
+      description.length < TICKET_LIMITS.descriptionMin
+        ? `Describe the problem in at least ${TICKET_LIMITS.descriptionMin} characters`
+        : description.length > TICKET_LIMITS.descriptionMax
+          ? `Keep it under ${TICKET_LIMITS.descriptionMax} characters`
+          : '',
+    orderId: orderId && !ORDER_ID_RE.test(orderId) ? 'Use the order reference exactly as shown on the order' : '',
   };
 }
 
-export async function fetchCases(): Promise<{ connected: false } | { connected: true; items: SupportCase[] }> {
-  return { connected: false };
-}
+/** Text that looks like a secret or a customer contact, which must never go into a ticket. */
+const SENSITIVE = /\b(otp|cvv|upi ?pin|password|pin code is)\b|(\+?91[\s-]?)?[6-9]\d{4}[\s-]?\d{5}/i;
 
-export const ISSUE_TYPES = [
-  { key: 'order', label: 'Order problem' },
-  { key: 'payout', label: 'Payout' },
-  { key: 'account', label: 'Account' },
-  { key: 'other', label: 'Something else' },
-] as const;
+export const looksSensitive = (text: string) => SENSITIVE.test(text);

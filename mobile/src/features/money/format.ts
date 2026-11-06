@@ -5,7 +5,7 @@
  * - Dates are shown in India time (UTC+5:30) without relying on Intl time-zone support,
  *   which is missing on some Android JavaScript engines.
  */
-import { ApiError } from '../../services/api';
+import { VendorApiError, friendlyError as vendorFriendlyError } from '../../services/vendorApi/http';
 
 /** Indian digit grouping for a whole, non-negative number: 1234567 -> "12,34,567". */
 function groupIndian(whole: number): string {
@@ -150,12 +150,6 @@ export function maskTail(value: unknown, prefix = '•••• '): string | nul
 
 /** Plain-language copy for a failed request. Never shows raw messages such as "Failed to fetch". */
 export function friendlyError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.status === 401) return 'Your sign-in has expired. Sign in again to continue.';
-    if (err.status === 403) return 'This account cannot open this information.';
-    if (err.status === 404) return 'We could not find this information for your store.';
-    if (err.status >= 500) return 'GlowVai could not load this right now. Try again in a moment.';
-    return 'Something went wrong while loading this. Try again.';
-  }
+  if (err instanceof VendorApiError) return vendorFriendlyError(err);
   return 'We could not reach GlowVai. Check your internet connection and try again.';
 }

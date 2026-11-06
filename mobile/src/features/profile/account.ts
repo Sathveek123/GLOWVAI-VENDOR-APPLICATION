@@ -1,113 +1,73 @@
 /**
- * The signed-in vendor's account, read from GET /api/vendor/me, shaped for the Profile screen.
- * Identity numbers (GSTIN, PAN, account number) are never shown in full: only "ending 1Z5".
+ * The signed-in vendor's store, from GET /api/vendor/me (VendorMe), shaped for the Profile,
+ * Bank account and Verification screens. Read-only: KYC data changes go through a support ticket.
+ * The server never sends a full PAN, IFSC or account number; the app shows what it gets.
  */
-import { formatDateIST, pickNum, pickStr, toMs } from '../money/format';
+import type { VendorMe, VendorState } from '../../services/vendorApi/account';
+import { categoryName } from '../onboarding/application';
+import { format24hForDisplay } from '../onboarding/validation';
 import type { Tone } from '../money/ui';
 
-export interface Account {
-  vendorId: string | null;
-  ownerName: string | null;
-  storeName: string | null;
-  storeType: string | null;
-  email: string | null;
-  phone: string | null;
-  address: string | null;
-  locality: string | null;
-  city: string | null;
-  pinCode: string | null;
-  openTime: string | null;
-  closeTime: string | null;
-  categories: string[];
-  serviceRadiusKm: number | null;
-  isOnline: boolean | null;
-  verification: Verification;
-  documents: DocumentRow[];
-}
-
-export interface Verification {
+export interface StateView {
   label: string;
   tone: Tone;
-  /** A sentence for the banner at the top of Profile, when the store is not approved. */
+  /** A sentence for a banner, when the store cannot take orders normally. */
   banner: string | null;
-  reason: string | null;
 }
 
-export interface DocumentRow {
-  label: string;
-  value: string;
-  provided: boolean;
-}
-
-/** PRD states: submitted, under review, approved, rejected, more information required, suspended. */
-export function verificationFor(statusRaw: unknown, reason: string | null): Verification {
-  const status = String(statusRaw ?? '').toUpperCase().replace(/[\s-]+/g, '_');
-  switch (status) {
-    case 'APPROVED':
-    case 'VERIFIED':
-      return { label: 'Approved', tone: 'success', banner: null, reason: null };
-    case 'PENDING':
-    case 'SUBMITTED':
-    case 'UNDER_REVIEW':
-    case 'IN_REVIEW':
-      return { label: 'Under review', tone: 'warning', banner: 'Your store is under review. We will let you know when it is approved.', reason: null };
-    case 'MORE_INFO':
-    case 'MORE_INFO_REQUIRED':
-    case 'MORE_INFORMATION_REQUIRED':
-      return { label: 'More information needed', tone: 'warning', banner: 'GlowVai needs more information before approving your store.', reason };
-    case 'REJECTED':
-      return { label: 'Not approved', tone: 'danger', banner: 'Your application was not approved.', reason };
+export function stateView(state: VendorState): StateView {
+  switch (state) {
+    case 'APPROVED_ACTIVE':
+      return { label: 'Approved', tone: 'success', banner: null };
+    case 'APPROVED_PAUSED':
+      return {
+        label: 'Paused by GlowVai',
+        tone: 'warning',
+        banner: 'GlowVai has paused your store, so it does not receive new orders. You can still update stock. Contact support to find out more.',
+      };
     case 'SUSPENDED':
-      return { label: 'Suspended', tone: 'danger', banner: 'Your store is suspended and cannot receive orders. Contact GlowVai support.', reason };
-    case '':
-      return { label: 'Not submitted', tone: 'neutral', banner: 'Your store details have not been submitted for review yet.', reason: null };
+      return { label: 'Suspended', tone: 'danger', banner: 'Your store is suspended and cannot receive orders. Contact GlowVai support.' };
+    case 'UNDER_REVIEW':
+      return { label: 'Under review', tone: 'info', banner: 'Your store is under review.' };
+    case 'SUBMITTED':
+      return { label: 'Submitted', tone: 'info', banner: 'Your application is waiting for review.' };
+    case 'DOCUMENTS_REQUESTED':
+      return { label: 'More information needed', tone: 'warning', banner: 'Our team needs more information before approving your store.' };
+    case 'REJECTED':
+      return { label: 'Not approved', tone: 'danger', banner: 'Your application was not approved.' };
     default:
-      return { label: 'Status not available', tone: 'neutral', banner: 'We could not read your verification status. Contact GlowVai support if this continues.', reason: null };
+      return { label: 'Not submitted', tone: 'neutral', banner: 'Your store details have not been submitted yet.' };
   }
 }
 
-function ending(value: string | null): string | null {
-  if (!value) return null;
-  const clean = value.replace(/\s/g, '');
-  return clean.length >= 4 ? `Provided, ending ${clean.slice(-3)}` : 'Provided';
+/** "+919876543210" -> "+91 98765 43210" */
+export function formatContact(v?: string | null): string {
+  const d = String(v || '').replace(/\D/g, '').slice(-10);
+  return d.length === 10 ? `+91 ${d.slice(0, 5)} ${d.slice(5)}` : '';
 }
 
-export function toAccount(v: any): Account {
-  const reason = pickStr(v, ['kycRejectionReason', 'verificationReason', 'approvalReason']);
-  const licenceExpiryMs = toMs(v?.licenseExpiry);
-  const cosmetics = pickStr(v, ['cosmeticLicense']);
-  const trade = pickStr(v, ['tradeLicense']);
-  const gstin = pickStr(v, ['gstin', 'gst']);
-  const pan = pickStr(v, ['pan', 'panNumber']);
+export function hoursText(h?: { openTime: string; closeTime: string } | null): string {
+  if (!h?.openTime || !h?.closeTime) return '';
+  return `${format24hForDisplay(h.openTime)} to ${format24hForDisplay(h.closeTime)}`;
+}
 
-  const documents: DocumentRow[] = [
-    { label: 'GSTIN', value: ending(gstin) || 'Not added', provided: !!gstin },
-    { label: 'PAN', value: ending(pan) || 'Not added', provided: !!pan },
-    {
-      label: 'Cosmetics licence',
-      value: cosmetics ? (licenceExpiryMs ? `Provided, valid until ${formatDateIST(licenceExpiryMs, { weekday: false })}` : 'Provided') : 'Not added',
-      provided: !!cosmetics,
-    },
-    { label: 'Trade licence', value: trade ? 'Provided' : 'Not added', provided: !!trade },
-  ];
+export function categoriesText(list?: string[] | null): string {
+  return (list ?? []).map(categoryName).join(', ');
+}
 
-  return {
-    vendorId: pickStr(v, ['vendorId', 'id']),
-    ownerName: pickStr(v, ['name', 'ownerName']),
-    storeName: pickStr(v, ['shopName', 'storeName']),
-    storeType: pickStr(v, ['shopType']),
-    email: pickStr(v, ['email']),
-    phone: pickStr(v, ['phone']),
-    address: pickStr(v, ['address']),
-    locality: pickStr(v, ['locality']),
-    city: pickStr(v, ['city']),
-    pinCode: pickStr(v, ['pinCode', 'pincode']),
-    openTime: pickStr(v, ['openTime']),
-    closeTime: pickStr(v, ['closeTime']),
-    categories: Array.isArray(v?.categories) ? v.categories.filter((c: unknown) => typeof c === 'string' && c.trim()) : [],
-    serviceRadiusKm: pickNum(v, ['serviceRadiusKm', 'deliveryRadiusKm']),
-    isOnline: typeof v?.isOnline === 'boolean' ? v.isOnline : null,
-    verification: verificationFor(v?.kycStatus ?? v?.verificationStatus ?? v?.approvalStatus, reason),
-    documents,
-  };
+export function addressText(app: VendorMe['application']): string {
+  if (!app) return '';
+  return [app.streetAddress, app.city, app.state, app.pincode].filter(Boolean).join(', ');
+}
+
+/** "HDFC Bank •••• 1234" */
+export function bankSummary(app: VendorMe['application']): string {
+  const b = app?.bank;
+  if (!b) return '';
+  return [b.bankName, b.accLast4 ? `•••• ${b.accLast4}` : ''].filter(Boolean).join(' ');
+}
+
+/** Opens a prefilled support ticket asking GlowVai to change verified details. */
+export function changeRequestRoute(subject: string): string {
+  return `/(vendor)/support?category=ACCOUNT_ISSUE&subject=${encodeURIComponent(subject)}`;
 }

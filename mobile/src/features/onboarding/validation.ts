@@ -8,7 +8,8 @@ export const PINCODE_RE = /^[1-9]\d{5}$/;
 export const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 export const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
 export const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
-export const UPI_RE = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z][a-zA-Z0-9.-]{1,63}$/;
+// Same pattern as the server (lib/vendor/validation.ts).
+export const UPI_RE = /^[\w.-]{2,}@[a-zA-Z]{2,}$/;
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 const GST_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -78,6 +79,7 @@ export function validateGstin(v: string, required = true): string {
 
 export function validatePan(v: string, gstin?: string): string {
   if (!v) return 'Enter your PAN';
+  v = v.toUpperCase();
   if (v.length < 10) return `PAN has 10 characters (${v.length} entered)`;
   if (!PAN_RE.test(v)) return 'PAN format is 5 letters, 4 digits, 1 letter, e.g. AAAAA0000A';
   if (gstin && GSTIN_RE.test(gstin) && gstin.slice(2, 12) !== v) {
@@ -93,10 +95,94 @@ export function validateIfsc(v: string): string {
   return '';
 }
 
-export function validateAccountNumber(v: string): string {
-  if (!v) return 'Enter your account number';
-  if (v.length < 9) return 'Account numbers have 9 to 18 digits';
+/** Only the last four digits of the bank account are ever collected. */
+export function validateAccLast4(v: string): string {
+  if (!v) return 'Enter the last 4 digits of your account number';
+  if (!/^\d{4}$/.test(v)) return `Enter exactly 4 digits (${v.length} entered)`;
   return '';
+}
+
+export function validateEmail(v: string): string {
+  if (!v.trim()) return 'Enter your email address';
+  return EMAIL_RE.test(v.trim()) ? '' : 'Enter a valid email, like name@example.com';
+}
+
+export const PASSWORD_MIN = 8;
+
+export function validateNewPassword(v: string): string {
+  if (!v) return 'Choose a password';
+  if (v.length < PASSWORD_MIN) return `Use at least ${PASSWORD_MIN} characters (${v.length} entered)`;
+  if (v.length > 128) return 'Use 128 characters or fewer';
+  return '';
+}
+
+/** Trade licence, Shop & Establishment or other registration number. Optional. */
+export function validateRegistrationOptional(v: string): string {
+  if (!v.trim()) return '';
+  if (v.trim().length < 3) return 'This number looks too short';
+  if (!/^[A-Za-z0-9][A-Za-z0-9 /.-]{2,39}$/.test(v.trim())) return 'Use 3 to 40 letters, digits, spaces, / . or -, starting with a letter or digit';
+  return '';
+}
+
+export const MAX_SERVICE_PINCODES = 20;
+
+export function validateServicePincodes(list: string[], storePincode: string): string {
+  if (!list.length) return 'Add at least one pincode you deliver to';
+  if (list.length > MAX_SERVICE_PINCODES) return `Add up to ${MAX_SERVICE_PINCODES} pincodes`;
+  if (list.some(p => !PINCODE_RE.test(p))) return 'Each pincode has 6 digits and does not start with 0';
+  if (PINCODE_RE.test(storePincode) && !list.includes(storePincode)) return 'Your store’s own pincode must be included';
+  return '';
+}
+
+/** Indian states and union territories, as the shop and admin panel store them. */
+export const INDIAN_STATES = [
+  'Andaman and Nicobar Islands',
+  'Andhra Pradesh',
+  'Arunachal Pradesh',
+  'Assam',
+  'Bihar',
+  'Chandigarh',
+  'Chhattisgarh',
+  'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi',
+  'Goa',
+  'Gujarat',
+  'Haryana',
+  'Himachal Pradesh',
+  'Jammu and Kashmir',
+  'Jharkhand',
+  'Karnataka',
+  'Kerala',
+  'Ladakh',
+  'Lakshadweep',
+  'Madhya Pradesh',
+  'Maharashtra',
+  'Manipur',
+  'Meghalaya',
+  'Mizoram',
+  'Nagaland',
+  'Odisha',
+  'Puducherry',
+  'Punjab',
+  'Rajasthan',
+  'Sikkim',
+  'Tamil Nadu',
+  'Telangana',
+  'Tripura',
+  'Uttar Pradesh',
+  'Uttarakhand',
+  'West Bengal',
+] as const;
+
+export function validateState(v: string): string {
+  if (!v) return 'Choose your state';
+  return (INDIAN_STATES as readonly string[]).includes(v) ? '' : 'Choose your state from the list';
+}
+
+/** Minutes after midnight for a 24-hour "HH:mm" value, or null. */
+export function minutes24(v?: string | null): number | null {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec((v || '').trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
 }
 
 export function validateUpiOptional(v: string): string {

@@ -1,56 +1,65 @@
 /**
- * Route guards for sign-in and onboarding screens.
+ * Route guard for the onboarding form steps.
  *
- * Onboarding needs a phone-verified session (the backend takes the phone from it).
- * Without one, the seller is sent to sign in instead of filling a form that cannot be
- * submitted. A seller whose application is already submitted, approved or suspended is
- * sent to the status screen (or the dashboard) instead of re-opening the form steps.
+ * The form needs a signed-in vendor with a verified email whose store state still allows an
+ * application to be (re)submitted: NO_APPLICATION, SUBMITTED, DOCUMENTS_REQUESTED or REJECTED.
+ * Anyone else is sent where they belong (sign in, verify email, status screen or home).
+ * When GlowVai can't be reached the screen gets friendly copy and a Retry, never a blank page.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { getSession, type VendorSession } from '../../services/session';
-import { getCachedStatus, isNetworkError, STATUS_ROUTE, HOME_ROUTE, LOGIN_ROUTE } from './status';
+import type { User } from 'firebase/auth';
+import { loadVendorMe, type MeResponse } from '../../services/vendorApi/account';
+import { VendorApiError, friendlyError } from '../../services/vendorApi/http';
+import { authReady, signOutVendor } from '../../services/session';
+import { claimDrafts } from './draft';
+import { canEditApplication, routeForState, LOGIN_ROUTE, VERIFY_ROUTE } from './status';
 
-export { isNetworkError };
+export type OnboardingGate =
+  | { status: 'loading' }
+  | { status: 'error'; message: string; retry: () => void }
+  | { status: 'ready'; me: MeResponse; user: User };
 
-export function useRequireSession(): { ready: boolean; session: VendorSession | null } {
+export function useOnboardingGate(): OnboardingGate {
   const router = useRouter();
-  const [state, setState] = useState<{ ready: boolean; session: VendorSession | null }>({ ready: false, session: null });
+  const [gate, setGate] = useState<OnboardingGate>({ status: 'loading' });
+  const active = useRef(true);
+
+  const run = useCallback(async () => {
+    setGate({ status: 'loading' });
+    const user = await authReady();
+    if (!active.current) return;
+    if (!user) return router.replace(LOGIN_ROUTE);
+    if (!user.emailVerified) return router.replace(VERIFY_ROUTE);
+    await claimDrafts(user.uid);
+    try {
+      const me = await loadVendorMe();
+      if (!active.current) return;
+      if (!canEditApplication(me.vendor.state)) return router.replace(routeForState(me.vendor.state) as never);
+      setGate({ status: 'ready', me, user });
+    } catch (e) {
+      if (!active.current) return;
+      if (e instanceof VendorApiError && e.code === 'UNAUTHENTICATED') {
+        await signOutVendor();
+        return router.replace(LOGIN_ROUTE);
+      }
+      setGate({ status: 'error', message: friendlyError(e), retry: () => run() });
+    }
+  }, [router]);
 
   useEffect(() => {
-    let active = true;
-    (async () => {
-      const s = await getSession();
-      if (!active) return;
-      if (!s.token) {
-        router.replace(LOGIN_ROUTE);
-        return;
-      }
-      if (s.vendorId) {
-        // Only rejected or "more information needed" applications can be edited.
-        const status = await getCachedStatus();
-        if (!active) return;
-        if (status === 'APPROVED') {
-          router.replace(HOME_ROUTE);
-          return;
-        }
-        if (status === 'SUBMITTED' || status === 'UNDER_REVIEW' || status === 'SUSPENDED') {
-          router.replace(STATUS_ROUTE);
-          return;
-        }
-      }
-      setState({ ready: true, session: s });
-    })();
+    active.current = true;
+    run();
     return () => {
-      active = false;
+      active.current = false;
     };
   }, []);
 
-  return state;
+  return gate;
 }
 
 /** Goes back when there is history (keeps the previous step's values), otherwise opens `fallback`. */
 export function goBackOr(router: ReturnType<typeof useRouter>, fallback: string) {
   if (router.canGoBack()) router.back();
-  else router.replace(fallback as any);
+  else router.replace(fallback as never);
 }

@@ -14,6 +14,7 @@ import { FontFamily } from '../src/theme/typography';
 import { Colors } from '../src/theme/tokens';
 import ErrorBoundary from '../src/components/ErrorBoundary';
 import { getConfigStatus, CONFIG_ERROR_COPY, type ConfigStatus } from '../src/config/env';
+import { startAuthSession } from '../src/services/session';
 import * as SplashScreen from 'expo-splash-screen';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -49,6 +50,11 @@ export default function RootLayout() {
       SplashScreen.hideAsync().catch(() => {});
     }
   }, [ready]);
+
+  // One app-wide Firebase Auth listener: drops the shared store copy when the account changes.
+  useEffect(() => {
+    if (CONFIG.ok) startAuthSession();
+  }, []);
 
   // Safety net: never keep the splash up longer than 3 seconds.
   useEffect(() => {

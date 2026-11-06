@@ -1,91 +1,70 @@
 /**
- * Bank account (PRD screen 24): the payout account on file, masked to the last four digits.
+ * Bank account (PRD screen 24): the payout account on file, from GET /api/vendor/me.
  *
- * Changing the account needs extra authentication, an audit trail and protection against
- * payout redirection. None of that exists in the backend yet, so the app does not offer a
- * change form; it sends the vendor to GlowVai support.
+ * GlowVai never holds the full account number or the full IFSC in the app; the server sends the
+ * last 4 digits and a masked IFSC only. Changing the account is a support request, so a
+ * payout account can never be redirected from a stolen phone.
  */
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useState } from 'react';
+import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import ScreenShell from '../../src/components/ScreenShell';
-import { friendlyError } from '../../src/features/money/format';
-import { readBankAccount, type BankAccount } from '../../src/features/money/records';
-import { Card, ErrorCard, InfoRow, LoadingCard, Pill, StateCard, page } from '../../src/features/money/ui';
-import { SupportContactActions } from '../../src/features/support/contact';
-import { vendorApi } from '../../src/services/api';
+import { Button, Card, ErrorCard, InfoRow, LoadingCard, Note, StateCard, page } from '../../src/features/money/ui';
+import { changeRequestRoute } from '../../src/features/profile/account';
+import { useVendorMe } from '../../src/services/vendorApi/account';
 import { Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily, TypeScale } from '../../src/theme/typography';
 
-type Load = { state: 'loading' } | { state: 'error'; message: string } | { state: 'ready'; account: BankAccount | null };
-
 export default function BankAccountScreen() {
   const router = useRouter();
-  const [load, setLoad] = useState<Load>({ state: 'loading' });
+  const { me, loading, error, refresh } = useVendorMe();
+  const bank = me?.vendor.application?.bank ?? null;
 
-  const fetchData = useCallback(async () => {
-    setLoad({ state: 'loading' });
-    try {
-      const res = await vendorApi.me();
-      setLoad({ state: 'ready', account: readBankAccount(res?.vendor) });
-    } catch (err) {
-      setLoad({ state: 'error', message: friendlyError(err) });
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+  const requestChange = (subject: string) => router.push(changeRequestRoute(subject) as never);
 
   return (
-    <ScreenShell header={{ title: 'Bank account', showBack: true }} backgroundColor={Colors.surface}>
+    <ScreenShell header={{ title: 'Bank account', showBack: true }} backgroundColor={Colors.canvas}>
       <View style={page.body}>
-        {load.state === 'loading' ? <LoadingCard label="Loading your payout account" /> : null}
-        {load.state === 'error' ? <ErrorCard title="Could not load your bank account" message={load.message} onRetry={fetchData} /> : null}
+        {!me && loading ? <LoadingCard label="Loading your payout account" /> : null}
+        {!me && error ? <ErrorCard title="Could not load your bank account" message={error} onRetry={refresh} /> : null}
 
-        {load.state === 'ready' && !load.account ? (
+        {me && !bank ? (
           <StateCard
             icon="card-outline"
             title="No payout account on file"
-            body="Your bank account will show here with only the last four digits visible. To add it, contact GlowVai support."
-          >
-            <SupportContactActions subject="Add payout bank account" />
-          </StateCard>
+            body="Your application has no bank details. Send a request and GlowVai’s team will add your payout account with you."
+            action={{ label: 'Request to add a bank account', onPress: () => requestChange('Add my payout bank account') }}
+          />
         ) : null}
 
-        {load.state === 'ready' && load.account ? (
+        {me && bank ? (
           <>
             <Card padded={false}>
               <View style={s.head}>
                 <Text style={s.bank} numberOfLines={2}>
-                  {[load.account.bankName, load.account.accountMasked].filter(Boolean).join('  ') || 'Payout account'}
+                  {bank.bankName || 'Payout account'}
                 </Text>
-                {load.account.verified === true ? (
-                  <Pill tone="success" label={load.account.verifiedOn ? `Verified ${load.account.verifiedOn}` : 'Verified'} />
-                ) : load.account.verified === false ? (
-                  <Pill tone="warning" label="Not verified yet" />
-                ) : null}
+                <Text style={s.sub}>Account ending in {bank.accLast4}</Text>
               </View>
-              {load.account.holderName ? <InfoRow label="Account holder" value={load.account.holderName} /> : null}
-              {load.account.ifsc ? <InfoRow label="IFSC" value={load.account.ifsc} mono /> : null}
-              {load.account.upiMasked ? <InfoRow label="UPI ID" value={load.account.upiMasked} mono /> : null}
-              <InfoRow label="Account number" value={load.account.accountMasked || 'Not on file'} mono last />
+              <InfoRow label="Account holder" value={bank.holderName} />
+              <InfoRow label="IFSC" value={bank.ifscMasked} mono />
+              <InfoRow label="Account number" value={`•••• ${bank.accLast4}`} mono last={!bank.upiVpa} />
+              {bank.upiVpa ? <InfoRow label="UPI ID" value={bank.upiVpa} mono last /> : null}
             </Card>
 
-            <StateCard
-              icon="lock-closed-outline"
-              title="Changing your bank account"
-              body="Bank changes are not available in the app yet — contact GlowVai support."
-            >
-              <SupportContactActions subject="Change payout bank account" />
-            </StateCard>
-          </>
-        ) : null}
+            <Note icon="shield-checkmark-outline">
+              For your safety, GlowVai never stores your full account number. Our team confirms your bank details with you before
+              payouts start.
+            </Note>
 
-        {load.state === 'ready' ? (
-          <Text style={s.foot} onPress={() => router.push('/(vendor)/payout-detail')} accessibilityRole="link">
-            View settlements
-          </Text>
+            <Card style={{ gap: Spacing.md }}>
+              <Text style={s.title}>Need to change this account?</Text>
+              <Text style={s.body}>
+                Bank changes are checked by GlowVai’s team to protect your payouts. Send a request and we will contact you.
+              </Text>
+              <Button label="Request a change" variant="secondary" icon="create-outline" onPress={() => requestChange('Change my payout bank account')} />
+            </Card>
+          </>
         ) : null}
       </View>
     </ScreenShell>
@@ -95,10 +74,12 @@ export default function BankAccountScreen() {
 const s = StyleSheet.create({
   head: {
     padding: Spacing.lg,
-    gap: Spacing.sm,
+    gap: 4,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: Colors.border,
   },
   bank: { ...TypeScale.subtitle, fontFamily: FontFamily.semibold, color: Colors.textPrimary },
-  foot: { ...TypeScale.bodyStrong, color: Colors.primary, textAlign: 'center', paddingVertical: Spacing.md },
+  sub: { ...TypeScale.body, color: Colors.textSecondary },
+  title: { ...TypeScale.bodyStrong, color: Colors.textPrimary },
+  body: { ...TypeScale.body, color: Colors.textSecondary },
 });

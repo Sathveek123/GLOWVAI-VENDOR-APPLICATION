@@ -14,6 +14,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   ActivityIndicator,
+  Modal,
   Platform,
   StyleSheet,
   useWindowDimensions,
@@ -23,11 +24,9 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import * as DocumentPicker from 'expo-document-picker';
 import Wordmark from '../../components/Wordmark';
 import { Colors, BorderRadii, Shadows } from '../../theme/tokens';
 import { FontFamily } from '../../theme/typography';
-import { formatBytes, type AttachedFile } from './draft';
 
 // ── Scale ─────────────────────────────────────────────────────────────────────
 export const S = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
@@ -108,14 +107,14 @@ const h = StyleSheet.create({
 });
 
 // ── Progress ──────────────────────────────────────────────────────────────────
-export const STEP_NAMES = ['Store details', 'Tax and documents', 'Bank account', 'Categories and review'];
+export const STEP_NAMES = ['Store details', 'Business and tax', 'Bank account', 'Categories and review'];
 
 export function StepProgress({ step, total = 4 }: { step: number; total?: number }) {
   return (
     <View
       accessible
       accessibilityRole="progressbar"
-      accessibilityLabel={`Step ${step} of ${total}`}
+      accessibilityLabel={`Step ${step} of ${total}${STEP_NAMES[step - 1] ? `, ${STEP_NAMES[step - 1]}` : ''}`}
       accessibilityValue={{ min: 0, max: total, now: step }}
       style={pg.wrap}
     >
@@ -633,172 +632,6 @@ const ft = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: S.sm + 2 },
 });
 
-// ── File attach ───────────────────────────────────────────────────────────────
-const MAX_FILE_BYTES = 5 * 1024 * 1024;
-const PDF = 'application/pdf';
-const IMAGES = ['image/jpeg', 'image/png'];
-
-function guessMime(name: string, mime?: string | null): string {
-  if (mime) return mime === 'image/jpg' ? 'image/jpeg' : mime;
-  const ext = name.split('.').pop()?.toLowerCase();
-  if (ext === 'pdf') return PDF;
-  if (ext === 'png') return 'image/png';
-  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
-  return '';
-}
-
-export function FileField({
-  label,
-  helper,
-  value,
-  onChange,
-  allowPdf = true,
-  error,
-  testID,
-}: {
-  label: string;
-  helper?: string;
-  value: AttachedFile | null;
-  onChange: (file: AttachedFile | null) => void;
-  allowPdf?: boolean;
-  error?: string;
-  testID?: string;
-}) {
-  const [picking, setPicking] = useState(false);
-  const [pickError, setPickError] = useState('');
-  const allowed = allowPdf ? [PDF, ...IMAGES] : IMAGES;
-  const typesText = allowPdf ? 'PDF, JPG or PNG' : 'JPG or PNG';
-
-  const pick = async () => {
-    setPickError('');
-    setPicking(true);
-    try {
-      const result = await DocumentPicker.getDocumentAsync({ type: allowed, copyToCacheDirectory: true, multiple: false });
-      if (result.canceled || !result.assets?.length) return;
-      const a = result.assets[0];
-      const mimeType = guessMime(a.name, a.mimeType);
-      const size = a.size ?? (a as any).file?.size ?? 0;
-      if (!allowed.includes(mimeType)) {
-        setPickError(`This file type isn’t accepted. Use ${typesText}.`);
-        return;
-      }
-      if (!size) {
-        setPickError('This file is empty. Choose another file.');
-        return;
-      }
-      if (size > MAX_FILE_BYTES) {
-        setPickError(`This file is ${formatBytes(size)}. The limit is 5 MB.`);
-        return;
-      }
-      // Web pickers return blob:/data: URIs that cannot be stored; keep only the details.
-      const uri = /^(blob|data):/.test(a.uri) ? '' : a.uri;
-      onChange({ name: a.name, size, mimeType, uri });
-    } catch (_) {
-      setPickError('The file picker didn’t open. Try again.');
-    } finally {
-      setPicking(false);
-    }
-  };
-
-  const shownError = pickError || error;
-
-  return (
-    <View style={fl.wrap} testID={testID}>
-      <Text style={tf.label}>{label}</Text>
-      {helper ? <Text style={fl.helper}>{helper}</Text> : null}
-      {value ? (
-        <View style={fl.file}>
-          <View style={fl.fileIcon}>
-            <Ionicons name={value.mimeType === PDF ? 'document-text-outline' : 'image-outline'} size={22} color={C.primary} />
-          </View>
-          <View style={{ flex: 1, minWidth: 0 }} accessible accessibilityLabel={`${label}: ${value.name} selected`}>
-            <Text style={fl.fileName} numberOfLines={1} ellipsizeMode="middle">
-              {value.name}
-            </Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-              <Ionicons name="checkmark-circle" size={14} color={C.successText} style={{ marginRight: 4 }} />
-              <Text style={fl.fileMeta}>
-                {value.mimeType === PDF ? 'PDF' : value.mimeType === 'image/png' ? 'PNG' : 'JPG'} · {formatBytes(value.size)}
-              </Text>
-            </View>
-          </View>
-          <View style={fl.fileActions}>
-            <Button label="Replace" variant="ghost" compact onPress={pick} accessibilityLabel={`Replace ${label}`} />
-            <Button label="Remove" variant="ghost" compact onPress={() => onChange(null)} accessibilityLabel={`Remove ${label}`} />
-          </View>
-        </View>
-      ) : (
-        <Pressable
-          onPress={pick}
-          disabled={picking}
-          accessibilityRole="button"
-          accessibilityLabel={`Choose a file for ${label}`}
-          accessibilityHint={`${typesText}, up to 5 MB`}
-          style={({ pressed }) => [fl.drop, !!shownError && { borderColor: C.errorText }, pressed && { backgroundColor: C.primaryLight }]}
-        >
-          {picking ? (
-            <ActivityIndicator size="small" color={C.primary} />
-          ) : (
-            <Ionicons name="cloud-upload-outline" size={22} color={C.primary} />
-          )}
-          <View style={{ marginLeft: S.md, flex: 1 }}>
-            <Text style={fl.dropTitle}>{picking ? 'Opening your files…' : 'Choose file'}</Text>
-            <Text style={fl.dropSub}>{typesText}, up to 5 MB</Text>
-          </View>
-        </Pressable>
-      )}
-      {shownError ? (
-        <View style={tf.msgRow} accessibilityLiveRegion="polite">
-          <Ionicons name="alert-circle" size={15} color={C.errorText} style={tf.msgIcon} />
-          <Text style={[tf.msg, tf.msgInRow, { color: C.errorText }]}>{shownError}</Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-const fl = StyleSheet.create({
-  wrap: { marginBottom: S.lg + 2 },
-  helper: { fontSize: 13, lineHeight: 19, color: C.textSubtle, marginTop: -2, marginBottom: S.sm },
-  drop: {
-    minHeight: 64,
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderStyle: 'dashed',
-    borderColor: C.inputBorder,
-    borderRadius: R.input,
-    paddingHorizontal: S.lg,
-    paddingVertical: S.md,
-    backgroundColor: C.background,
-  },
-  dropTitle: { fontFamily: FontFamily.semibold, fontSize: 15, color: C.primary },
-  dropSub: { fontSize: 13, color: C.textSubtle, marginTop: 1 },
-  file: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    borderWidth: 1,
-    borderColor: C.successBorder,
-    backgroundColor: C.successLight,
-    borderRadius: R.input,
-    paddingLeft: S.md,
-    paddingVertical: S.xs,
-  },
-  fileIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    backgroundColor: C.primaryLight,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: S.md,
-  },
-  fileName: { fontFamily: FontFamily.semibold, fontSize: 15, color: C.textPrimary },
-  fileMeta: { fontSize: 13, color: C.textSecondary },
-  fileActions: { flexDirection: 'row', marginLeft: 'auto' },
-});
-
 // ── Small pieces ──────────────────────────────────────────────────────────────
 export function Segmented<T extends string>({
   options,
@@ -863,5 +696,266 @@ export function CenteredLoader({ label }: { label: string }) {
     </View>
   );
 }
+
+// ── Password field ────────────────────────────────────────────────────────────
+/** A TextField that hides its value, with a 44px show/hide toggle. */
+export const PasswordField = React.forwardRef<TextInput, Omit<TextFieldProps, 'secureTextEntry' | 'right'>>(function PasswordField(
+  props,
+  ref,
+) {
+  const [shown, setShown] = useState(false);
+  return (
+    <TextField
+      ref={ref}
+      autoCapitalize="none"
+      autoCorrect={false}
+      {...props}
+      secureTextEntry={!shown}
+      right={
+        <Pressable
+          onPress={() => setShown(v => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={shown ? `Hide ${props.label.toLowerCase()}` : `Show ${props.label.toLowerCase()}`}
+          style={({ pressed }) => [pw.toggle, pressed && { opacity: 0.6 }]}
+        >
+          <Ionicons name={shown ? 'eye-off-outline' : 'eye-outline'} size={20} color={C.textSecondary} />
+        </Pressable>
+      }
+    />
+  );
+});
+
+const pw = StyleSheet.create({
+  toggle: { width: 48, minHeight: 46, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
+});
+
+// ── Select (bottom sheet list) ───────────────────────────────────────────────
+export function SelectField({
+  label,
+  value,
+  options,
+  onChange,
+  placeholder = 'Choose',
+  error,
+  helper,
+  testID,
+  last,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  onChange: (v: string) => void;
+  placeholder?: string;
+  error?: string;
+  helper?: string;
+  testID?: string;
+  last?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const insets = useSafeAreaInsets();
+  const q = query.trim().toLowerCase();
+  const shown = q ? options.filter(o => o.toLowerCase().includes(q)) : options;
+  const close = () => {
+    setOpen(false);
+    setQuery('');
+  };
+  return (
+    <View style={[tf.wrap, last && { marginBottom: 0 }]}>
+      <Text style={tf.label}>{label}</Text>
+      <Pressable
+        testID={testID}
+        onPress={() => setOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${value || 'not chosen'}`}
+        accessibilityHint="Opens a list to choose from"
+        style={({ pressed }) => [tf.box, sl.box, !!error && tf.boxError, pressed && { backgroundColor: C.surface }]}
+      >
+        <Text style={[sl.value, !value && { color: C.textSubtle }]} numberOfLines={1}>
+          {value || placeholder}
+        </Text>
+        <Ionicons name="chevron-down" size={18} color={C.textSecondary} />
+      </Pressable>
+      {error ? (
+        <View style={tf.msgRow} accessibilityLiveRegion="polite">
+          <Ionicons name="alert-circle" size={15} color={C.errorText} style={tf.msgIcon} />
+          <Text style={[tf.msg, tf.msgInRow, { color: C.errorText }]}>{error}</Text>
+        </View>
+      ) : helper ? (
+        <Text style={tf.msg}>{helper}</Text>
+      ) : null}
+      <Modal visible={open} transparent animationType="fade" onRequestClose={close}>
+        <View style={sl.backdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="Close list" />
+          <View style={[sl.sheet, { paddingBottom: Math.max(insets.bottom, S.md) }]}>
+            <View style={sl.sheetHead}>
+              <Text accessibilityRole="header" style={sl.sheetTitle}>
+                {label}
+              </Text>
+              <Pressable onPress={close} accessibilityRole="button" accessibilityLabel="Close" style={h.iconBtn}>
+                <Ionicons name="close" size={22} color={C.textPrimary} />
+              </Pressable>
+            </View>
+            {options.length > 10 ? (
+              <View style={{ paddingHorizontal: S.lg, paddingBottom: S.sm }}>
+                <TextField
+                  label="Search"
+                  value={query}
+                  onChangeText={setQuery}
+                  placeholder={`Search ${label.toLowerCase()}`}
+                  autoCorrect={false}
+                  last
+                />
+              </View>
+            ) : null}
+            <ScrollView keyboardShouldPersistTaps="handled" style={{ flexGrow: 0 }}>
+              {shown.map(o => {
+                const on = o === value;
+                return (
+                  <Pressable
+                    key={o}
+                    onPress={() => {
+                      onChange(o);
+                      close();
+                    }}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: on, selected: on }}
+                    style={({ pressed }) => [sl.option, on && { backgroundColor: C.primaryLight }, pressed && { backgroundColor: C.surface }]}
+                  >
+                    <Text style={[sl.optionText, on && sl.optionTextOn]}>{o}</Text>
+                    {on ? <Ionicons name="checkmark" size={20} color={C.primary} /> : null}
+                  </Pressable>
+                );
+              })}
+              {!shown.length ? <Text style={[tf.msg, { paddingHorizontal: S.lg, paddingBottom: S.lg }]}>Nothing matches your search.</Text> : null}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+const sl = StyleSheet.create({
+  box: { paddingHorizontal: 14, justifyContent: 'space-between' },
+  value: { flex: 1, fontSize: 16, color: C.textPrimary, fontFamily: FontFamily.regular },
+  backdrop: { flex: 1, backgroundColor: C.overlay, justifyContent: 'flex-end', alignItems: 'center' },
+  sheet: {
+    width: '100%',
+    maxWidth: 560,
+    maxHeight: '80%',
+    backgroundColor: C.card,
+    borderTopLeftRadius: R.card,
+    borderTopRightRadius: R.card,
+    ...Shadows.raised,
+  },
+  sheetHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: S.lg, paddingRight: S.sm, paddingVertical: S.sm },
+  sheetTitle: { fontFamily: FontFamily.bold, fontSize: 18, lineHeight: 24, color: C.textPrimary },
+  option: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: S.lg },
+  optionText: { fontSize: 16, lineHeight: 22, color: C.textPrimary },
+  optionTextOn: { color: C.primary, fontFamily: FontFamily.semibold },
+});
+
+// ── Auth frame ────────────────────────────────────────────────────────────────
+/** One centred white card for the sign-in, create account, reset and verify screens. */
+export function AuthFrame({
+  title,
+  lead,
+  children,
+  below,
+  onBack,
+  headerRight,
+  testID,
+}: {
+  title: string;
+  lead?: string;
+  children: React.ReactNode;
+  below?: React.ReactNode;
+  onBack?: () => void;
+  headerRight?: React.ReactNode;
+  testID?: string;
+}) {
+  const { isPhone } = useLayout();
+  return (
+    <SafeAreaView edges={['left', 'right', 'bottom']} style={f.root} testID={testID}>
+      <SellerHeader onBack={onBack} right={headerRight} maxWidth={440} />
+      <KeyboardAvoidingView style={f.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView
+          contentContainerStyle={[af.scroll, { paddingHorizontal: isPhone ? S.lg : S.xl }]}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={af.col}>
+            <Section style={{ marginBottom: 0 }}>
+              <Text accessibilityRole="header" style={[f.title, !isPhone && f.titleLarge]}>
+                {title}
+              </Text>
+              {lead ? <Text style={af.lead}>{lead}</Text> : <View style={{ height: S.xl }} />}
+              {children}
+            </Section>
+            {below ? <View style={af.below}>{below}</View> : null}
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+const af = StyleSheet.create({
+  scroll: { flexGrow: 1, justifyContent: 'center', paddingVertical: S.xxl },
+  col: { width: '100%', maxWidth: 440, alignSelf: 'center' },
+  lead: { fontSize: 15, lineHeight: 22, color: C.textSecondary, marginTop: S.sm, marginBottom: S.xl },
+  below: { marginTop: S.lg, alignItems: 'center', gap: S.xs },
+});
+
+/** A short muted line followed by a link, under an auth card. */
+export function AuthLinkRow({ text, link, onPress, testID }: { text?: string; link: string; onPress: () => void; testID?: string }) {
+  return (
+    <View style={af2.row}>
+      {text ? <Text style={af2.text}>{text}</Text> : null}
+      <LinkButton label={link} onPress={onPress} testID={testID} />
+    </View>
+  );
+}
+
+const af2 = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center' },
+  text: { fontSize: 15, lineHeight: 22, color: C.textSecondary },
+});
+
+// ── Loading or failed gate ───────────────────────────────────────────────────
+/** What a guarded screen shows while it checks the account, or when GlowVai can't be reached. */
+export function GateFallback({
+  gate,
+  loadingLabel,
+  onSignOut,
+}: {
+  gate: { status: 'loading' } | { status: 'error'; message: string; retry: () => void };
+  loadingLabel: string;
+  onSignOut?: () => void;
+}) {
+  if (gate.status === 'loading') return <CenteredLoader label={loadingLabel} />;
+  return (
+    <SellerFrame headerRight={onSignOut ? <Button label="Sign out" variant="ghost" compact onPress={onSignOut} /> : undefined}>
+      <Section>
+        <View style={gf.icon}>
+          <Ionicons name="cloud-offline-outline" size={24} color={C.dangerText} />
+        </View>
+        <Text accessibilityRole="header" style={gf.title}>
+          We couldn’t open your store account
+        </Text>
+        <Text style={gf.body} accessibilityRole="alert">
+          {gate.message}
+        </Text>
+        <Button label="Try again" icon="refresh" onPress={gate.retry} style={{ marginTop: S.xl }} testID="gate-retry" />
+      </Section>
+    </SellerFrame>
+  );
+}
+
+const gf = StyleSheet.create({
+  icon: { width: 48, height: 48, borderRadius: 24, backgroundColor: C.dangerLight, alignItems: 'center', justifyContent: 'center', marginBottom: S.lg },
+  title: { fontFamily: FontFamily.bold, fontSize: 20, lineHeight: 26, color: C.textPrimary },
+  body: { fontSize: 15, lineHeight: 22, color: C.textSecondary, marginTop: S.sm },
+});
 
 export { C as SellerColors };

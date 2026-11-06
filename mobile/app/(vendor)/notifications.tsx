@@ -87,6 +87,13 @@ export default function AlertsScreen() {
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
     >
       <View style={page.body}>
+        <Card style={s.pushCard}>
+          <Ionicons name="notifications-off-outline" size={20} color={Colors.textSecondary} />
+          <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+            <Text style={s.title}>Notifications are not set up yet</Text>
+            <Text style={kit.muted}>Phone alerts for new orders will turn on once GlowVai enables them for this app. The list below is built from your recent orders.</Text>
+          </View>
+        </Card>
         <SyncNotice />
         {!sync.hasLoaded && sync.state === 'error' ? (
           <StateCard icon="cloud-offline-outline" tone="danger" title="Could not load your orders" body={sync.error || undefined} action={{ label: 'Retry', onPress: () => void sync.retry() }} />
@@ -134,4 +141,5 @@ const s = StyleSheet.create({
   divider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border },
   icon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   title: { ...TypeScale.body, fontFamily: FontFamily.medium, color: Colors.textPrimary },
+  pushCard: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
 });

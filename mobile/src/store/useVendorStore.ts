@@ -11,7 +11,8 @@
  * The customer's first name is kept only on orders this store has accepted.
  */
 import { create } from 'zustand';
-import type { InventoryRecord } from '../services/vendorApi/inventory';
+import { inventoryKey, type CatalogVariant, type InventoryRecord } from '../services/vendorApi/inventory';
+import type { SubstitutionPreference, TimelineEvent, TimelineStage } from '../services/vendorApi/orders';
 
 // ── Orders ───────────────────────────────────────────────────────────────────
 
@@ -23,7 +24,12 @@ export interface OrderItem {
   /** Unit price of the item (₹). */
   price: number;
   imageUrl?: string;
+  variantId?: string | null;
+  variantLabel?: string | null;
 }
+
+const SUBSTITUTION_VALUES: readonly string[] = ['ALLOW_SUBSTITUTE', 'NO_SUBSTITUTE', 'CALL_ME'];
+const TIMELINE_STAGES: readonly string[] = ['ACCEPTED', 'PACKED', 'HANDED_TO_RIDER'];
 
 /** A vendor-safe order (the server's VendorOrder projection, with safe types). */
 export interface Order {
@@ -46,6 +52,10 @@ export interface Order {
   customerFirstName?: string;
   cancelled: boolean;
   cancellationReason?: string;
+  /** Read-only: what the customer chose if an item cannot be supplied. */
+  substitutionPreference: SubstitutionPreference | null;
+  /** Stages reached (my orders only). */
+  timeline: TimelineEvent[];
 }
 
 function num(value: unknown): number | undefined {
@@ -70,6 +80,8 @@ export function normalizeOrder(raw: any): Order {
     quantity: Math.max(0, Math.floor(num(it?.quantity) ?? 0)),
     price: num(it?.unitPrice) ?? 0,
     imageUrl: text(it?.imageUrl) && /^https?:\/\//i.test(String(it.imageUrl)) ? String(it.imageUrl).trim() : undefined,
+    variantId: text(it?.variantId) ?? null,
+    variantLabel: text(it?.variantLabel) ?? null,
   }));
   const orderId = text(r.orderId) || '';
   const status = text(r.status) || 'UNKNOWN';
@@ -93,6 +105,12 @@ export function normalizeOrder(raw: any): Order {
     customerFirstName: firstName,
     cancelled,
     cancellationReason: cancelled ? text(r.cancellationReason) : undefined,
+    substitutionPreference: !isOffer && SUBSTITUTION_VALUES.includes(r.substitutionPreference) ? (r.substitutionPreference as SubstitutionPreference) : null,
+    timeline: !isOffer && Array.isArray(r.timeline)
+      ? r.timeline
+          .filter((e: any) => TIMELINE_STAGES.includes(e?.stage))
+          .map((e: any) => ({ stage: e.stage as TimelineStage, at: num(e.at) ?? null }))
+      : [],
   };
 }
 
@@ -156,6 +174,9 @@ interface VendorStore {
   inventoryStatus: InventoryStatus;
   replaceInventory: (records: InventoryRecord[]) => void;
   mergeInventory: (records: InventoryRecord[]) => void;
+  /** Catalogue variants of the store's products (read-only), keyed by product id. */
+  variantCatalogue: Record<string, CatalogVariant[]>;
+  setVariantCatalogue: (v: Record<string, CatalogVariant[]>) => void;
   setInventoryStatus: (patch: Partial<InventoryStatus>) => void;
 
   /** True when the last presence heartbeat failed (GlowVai may stop sending offers). */
@@ -233,9 +254,11 @@ const useVendorStore = create<VendorStore>((set) => ({
   inventory: {},
   inventoryStatus: initialInventory,
   replaceInventory: (records) =>
-    set({ inventory: Object.fromEntries(records.map(r => [r.productId, r])) }),
+    set({ inventory: Object.fromEntries(records.map(r => [inventoryKey(r.productId, r.variantId), r])) }),
   mergeInventory: (records) =>
-    set((s) => ({ inventory: { ...s.inventory, ...Object.fromEntries(records.map(r => [r.productId, r])) } })),
+    set((s) => ({ inventory: { ...s.inventory, ...Object.fromEntries(records.map(r => [inventoryKey(r.productId, r.variantId), r])) } })),
+  variantCatalogue: {},
+  setVariantCatalogue: (variantCatalogue) => set({ variantCatalogue }),
   setInventoryStatus: (patch) => set((s) => ({ inventoryStatus: { ...s.inventoryStatus, ...patch } })),
 
   heartbeatFailed: false,
@@ -250,6 +273,7 @@ const useVendorStore = create<VendorStore>((set) => ({
       ordersSync: initialSync,
       dismissedOffers: {},
       inventory: {},
+      variantCatalogue: {},
       inventoryStatus: initialInventory,
       heartbeatFailed: false,
       vendor: null,

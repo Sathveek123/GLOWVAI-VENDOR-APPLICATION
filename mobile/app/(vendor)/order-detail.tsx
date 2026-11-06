@@ -27,6 +27,7 @@ import {
   useOrder,
 } from '../../src/features/orders';
 import { Banner, Card, PrimaryButton, StateView, StatusPill, ui } from '../../src/features/orders/ui';
+import { OrderTimeline, SubstitutionCard } from '../../src/features/orders/OrderExtras';
 
 export default function OrderDetailScreen() {
   const router = useRouter();
@@ -150,6 +151,9 @@ export default function OrderDetailScreen() {
           <Banner tone="info" message="GlowVai is updating this order. Check again in a moment." />
         ) : null}
 
+        {bucket !== 'cancelled' ? <OrderTimeline events={order.timeline} /> : null}
+        <SubstitutionCard preference={order.substitutionPreference} />
+
         <Card style={{ paddingVertical: Spacing.xs }}>
           <Text style={[ui.sectionTitle, { paddingVertical: Spacing.sm }]}>Items · {unitsLabel(units)}</Text>
           {order.items.map((it, idx) => (
@@ -196,6 +200,7 @@ function ItemRow({ item }: { item: OrderItem }) {
       <View style={{ flex: 1, minWidth: 0 }}>
         {item.brand ? <Text style={ui.muted} numberOfLines={1}>{item.brand}</Text> : null}
         <Text style={s.itemName} numberOfLines={2}>{item.productName}</Text>
+        {item.variantLabel ? <Text style={ui.muted}>{item.variantLabel}</Text> : null}
         <Text style={ui.muted}>{formatINR(item.price)} each</Text>
       </View>
       <View style={{ alignItems: 'flex-end' }}>

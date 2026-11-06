@@ -3,7 +3,7 @@
  * The vendor finds a published GlowVai product that is not in the store yet and enters how
  * many are on the shelf (and, optionally, their own price up to the MRP). Product details,
  * photos and the GlowVai price come from the catalogue, so no duplicate products are created.
- * Requesting a product that is not in the catalogue is not available yet; the screen says so.
+ * A product that is not in the catalogue can be requested from GlowVai (product-request screen).
  * File: mobile/app/(vendor)/add-sku.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -20,7 +20,6 @@ import { useInventory } from '../../src/features/catalog/inventory';
 import { formatRupees } from '../../src/features/catalog/stock';
 import StockSheet from '../../src/features/catalog/StockSheet';
 import { Chip, ChipRow, EmptyState, ProductThumb, SearchBox, SkeletonRows, Toast, cardStyle, useToast } from '../../src/features/catalog/ui';
-import { Banner } from '../../src/features/orders/ui';
 
 export default function AddFromCatalogueScreen() {
   const router = useRouter();
@@ -138,11 +137,18 @@ export default function AddFromCatalogueScreen() {
             </View>
           )}
 
-          <Banner
-            tone="info"
-            title="Not in the GlowVai catalogue?"
-            message="Asking GlowVai to add a new product is not available in the app yet. Only products already in the catalogue can be stocked for now."
-          />
+          <Pressable
+            onPress={() => router.push('/(vendor)/product-request')}
+            accessibilityRole="link"
+            accessibilityLabel="Not in the catalogue? Request a product from GlowVai"
+            style={({ pressed }) => [s.requestCard, pressed && { backgroundColor: Colors.primaryLight }]}
+          >
+            <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+              <Text style={s.requestTitle}>Not in the GlowVai catalogue?</Text>
+              <Text style={s.requestBody}>Request a product. GlowVai reviews it and you see the status in the app.</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.primary} />
+          </Pressable>
         </View>
       </ScreenShell>
 
@@ -184,4 +190,17 @@ const s = StyleSheet.create({
     backgroundColor: Colors.primaryLight,
   },
   addChipText: { fontFamily: FontFamily.semibold, fontSize: 13, color: Colors.primary },
+  requestCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: S.md,
+    minHeight: 64,
+    padding: S.lg,
+    borderRadius: 14,
+    backgroundColor: Colors.card,
+    borderWidth: 1,
+    borderColor: Colors.primaryBorder,
+  },
+  requestTitle: { fontFamily: FontFamily.semibold, fontSize: 15, color: Colors.textPrimary },
+  requestBody: { ...TypeScale.caption, color: Colors.textSecondary },
 });

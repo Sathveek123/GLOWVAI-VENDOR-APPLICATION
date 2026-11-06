@@ -22,10 +22,11 @@ export function loadInventory(force = false): Promise<void> {
   const store = useVendorStore.getState();
   store.setInventoryStatus({ state: 'loading' });
   inflight = inventoryApi
-    .list()
-    .then(records => {
+    .list({ withVariants: true })
+    .then(({ records, variants }) => {
       const s = useVendorStore.getState();
       s.replaceInventory(records);
+      s.setVariantCatalogue(variants);
       s.setInventoryStatus({ state: 'ready', hasLoaded: true, error: null, loadedAt: Date.now() });
     })
     .catch(err => {

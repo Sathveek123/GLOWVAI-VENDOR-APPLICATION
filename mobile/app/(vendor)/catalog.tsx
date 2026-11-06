@@ -15,7 +15,8 @@ import ScreenShell from '../../src/components/ScreenShell';
 import { Colors, Spacing as S } from '../../src/theme/tokens';
 import { FontFamily, TypeScale } from '../../src/theme/typography';
 import { friendlyError } from '../../src/services/vendorApi/http';
-import { MAX_STOCK, type InventoryInput } from '../../src/services/vendorApi/inventory';
+import { MAX_STOCK, inventoryKey, type CatalogVariant, type InventoryInput, type InventoryRecord } from '../../src/services/vendorApi/inventory';
+import useVendorStore from '../../src/store/useVendorStore';
 import { useLayout, useDocumentTitle } from '../../src/features/onboarding/kit';
 import { CATALOG_CATEGORIES, catalogTitle, matchesCatalogSearch } from '../../src/features/catalog/catalogSource';
 import { useCatalogue } from '../../src/features/catalog/hooks';
@@ -26,6 +27,7 @@ import {
   ChipRow,
   EmptyState,
   Pill,
+  type PillTone,
   ProductThumb,
   SearchBox,
   SkeletonRows,
@@ -53,6 +55,7 @@ export default function InventoryScreen() {
   const [category, setCategory] = useState<string>('All');
   const [view, setView] = useState<ViewKey | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingVariant, setEditingVariant] = useState<{ productId: string; variantId: string } | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [counting, setCounting] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -97,6 +100,10 @@ export default function InventoryScreen() {
   }, [rows, category, activeView, search]);
 
   const editing = rows.find(r => r.product.id === editingId) || null;
+  const variantCatalogue = useVendorStore(s => s.variantCatalogue);
+  const editingVariantTarget = editingVariant
+    ? (variantCatalogue[editingVariant.productId] ?? []).find(v => v.id === editingVariant.variantId) ?? null
+    : null;
   const canEdit = inv.hasLoaded;
 
   const onRefresh = async () => {
@@ -312,16 +319,26 @@ export default function InventoryScreen() {
               ) : (
                 <View style={[cardStyle, s.list]}>
                   {visible.map((r, i) => (
-                    <StockRow
-                      key={r.product.id}
-                      row={r}
-                      first={i === 0}
-                      counting={counting}
-                      draft={drafts[r.product.id]}
-                      onDraft={t => setDrafts(d => ({ ...d, [r.product.id]: t.replace(/[^0-9]/g, '').slice(0, 6) }))}
-                      onPress={() => (canEdit ? setEditingId(r.product.id) : undefined)}
-                      disabled={!canEdit}
-                    />
+                    <React.Fragment key={r.product.id}>
+                      <StockRow
+                        row={r}
+                        first={i === 0}
+                        counting={counting}
+                        draft={drafts[r.product.id]}
+                        onDraft={t => setDrafts(d => ({ ...d, [r.product.id]: t.replace(/[^0-9]/g, '').slice(0, 6) }))}
+                        onPress={() => (canEdit ? setEditingId(r.product.id) : undefined)}
+                        disabled={!canEdit}
+                      />
+                      {!counting && (variantCatalogue[r.product.id]?.length ?? 0) > 0 ? (
+                        <VariantRows
+                          productId={r.product.id}
+                          variants={variantCatalogue[r.product.id]}
+                          records={inventory}
+                          disabled={!canEdit}
+                          onPress={variantId => setEditingVariant({ productId: r.product.id, variantId })}
+                        />
+                      ) : null}
+                    </React.Fragment>
                   ))}
                 </View>
               )}
@@ -349,6 +366,16 @@ export default function InventoryScreen() {
           showToast(message);
         }}
       />
+      <StockSheet
+        product={editingVariant ? rows.find(r => r.product.id === editingVariant.productId)?.product ?? null : null}
+        record={editingVariant && editingVariantTarget ? inventory[inventoryKey(editingVariant.productId, editingVariant.variantId)] : undefined}
+        variant={editingVariantTarget}
+        onClose={() => setEditingVariant(null)}
+        onSaved={message => {
+          setEditingVariant(null);
+          showToast(message);
+        }}
+      />
 
       <Toast text={toast} bottom={isPhone ? 84 : 24} />
     </View>
@@ -373,6 +400,60 @@ function AttentionRow({
       <Text style={s.attText}>{text}</Text>
       <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
     </Pressable>
+  );
+}
+
+/** A product's variants, nested under its row. Each variant is its own stock line; tap to set its stock. */
+function VariantRows({
+  productId,
+  variants,
+  records,
+  disabled,
+  onPress,
+}: {
+  productId: string;
+  variants: CatalogVariant[];
+  records: Record<string, InventoryRecord>;
+  disabled: boolean;
+  onPress: (variantId: string) => void;
+}) {
+  return (
+    <View style={s.variantBox}>
+      {variants.map(v => {
+        const rec = records[inventoryKey(productId, v.id)];
+        const label = rec
+          ? !rec.isAvailable
+            ? 'Paused'
+            : rec.stock === 0
+              ? 'Out of stock'
+              : rec.stock <= LOW_STOCK_LEVEL
+                ? 'Running low'
+                : 'Selling'
+          : 'Not set';
+        const tone: PillTone = !rec || !rec.isAvailable ? 'neutral' : rec.stock === 0 ? 'danger' : rec.stock <= LOW_STOCK_LEVEL ? 'warning' : 'success';
+        return (
+          <Pressable
+            key={v.id}
+            onPress={() => onPress(v.id)}
+            disabled={disabled}
+            accessibilityRole="button"
+            accessibilityLabel={`${v.label}, ${rec ? `${rec.stock} on the shelf, ${label}` : 'stock not set'}. Update variant stock`}
+            style={({ pressed }) => [s.variantRow, pressed && { backgroundColor: Colors.surface }]}
+          >
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={s.variantLabel} numberOfLines={1}>{v.label}</Text>
+              <Text style={s.meta}>
+                {formatRupees(v.price)}
+                {!v.isAvailable ? ' · not on sale at GlowVai' : ''}
+              </Text>
+            </View>
+            <Pill label={label} tone={tone} />
+            <Text style={s.variantStock}>{rec ? rec.stock : '–'}</Text>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </Pressable>
+        );
+      })}
+    </View>
   );
 }
 
@@ -494,6 +575,10 @@ const s = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: S.md, paddingHorizontal: S.lg, paddingVertical: S.md, minHeight: 76 },
   rowDivider: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.border },
   rowInfo: { flex: 1, minWidth: 0, gap: 3 },
+  variantBox: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: Colors.border, backgroundColor: Colors.surface, paddingLeft: S.lg + 52 + S.md, paddingRight: S.lg },
+  variantRow: { flexDirection: 'row', alignItems: 'center', gap: S.sm, minHeight: 56, paddingVertical: S.sm },
+  variantLabel: { fontFamily: FontFamily.semibold, fontSize: 14, color: Colors.textPrimary },
+  variantStock: { fontFamily: FontFamily.bold, fontSize: 16, color: Colors.textPrimary, minWidth: 36, textAlign: 'right', fontVariant: ['tabular-nums'] },
   brand: { ...TypeScale.caption, color: Colors.textMuted },
   name: { fontFamily: FontFamily.semibold, fontSize: 15, lineHeight: 20, color: Colors.textPrimary },
   metaRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: S.sm },

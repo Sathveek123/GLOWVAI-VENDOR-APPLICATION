@@ -7,7 +7,7 @@
  */
 import type Ionicons from '@expo/vector-icons/Ionicons';
 import type { Order } from '../../store/useVendorStore';
-import type { InventoryRecord } from '../../services/vendorApi/inventory';
+import { inventoryKey, type InventoryRecord } from '../../services/vendorApi/inventory';
 
 export type OrderBucket = 'offers' | 'preparing' | 'packed' | 'completed' | 'cancelled' | 'other';
 
@@ -171,16 +171,18 @@ export function stockCoverage(
   inventoryLoaded: boolean,
 ): Coverage {
   if (!inventoryLoaded) return { kind: 'unknown' };
-  const need = new Map<string, { title: string; qty: number }>();
+  // A variant item counts against its own variant line ("productId::variantId"), as the server does.
+  const need = new Map<string, { productId: string; title: string; qty: number }>();
   for (const it of order.items) {
-    const prev = need.get(it.productId);
-    need.set(it.productId, { title: it.productName, qty: (prev?.qty ?? 0) + it.quantity });
+    const key = inventoryKey(it.productId, it.variantId ?? null);
+    const prev = need.get(key);
+    need.set(key, { productId: it.productId, title: it.productName, qty: (prev?.qty ?? 0) + it.quantity });
   }
   const lines: CoverageLine[] = [];
-  need.forEach((v, productId) => {
-    const rec = inventory[productId];
+  need.forEach((v, key) => {
+    const rec = inventory[key];
     const have = rec && rec.isAvailable ? rec.stock : 0;
-    if (have < v.qty) lines.push({ productId, title: v.title, need: v.qty, have });
+    if (have < v.qty) lines.push({ productId: v.productId, title: v.title, need: v.qty, have });
   });
   return lines.length ? { kind: 'short', lines } : { kind: 'covered' };
 }

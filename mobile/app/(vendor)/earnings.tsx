@@ -1,34 +1,85 @@
 /**
- * Earnings (PRD screen 21). The app does not know GlowVai's fees for a store, so it shows no
- * earnings figure, commission or payout cycle. Earnings appear here after GlowVai sets up
- * settlements for the store. The order value the store handled is on Home and in Store activity.
+ * Earnings (PRD screen 21). GlowVai has no payout provider or commission rate for stores yet, so
+ * the app shows no earnings, percentages, fees or payouts. It shows the real gross value of the
+ * items in this store's accepted, packed and delivered orders (from GET /api/vendor/analytics),
+ * labelled "Order value — not your earnings".
  * File: mobile/app/(vendor)/earnings.tsx
  */
 import { useRouter } from 'expo-router';
-import React from 'react';
-import { StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { RefreshControl, StyleSheet, Text, View } from 'react-native';
 import ScreenShell from '../../src/components/ScreenShell';
-import { Card, LinkRow, Note, SectionLabel, StateCard, page } from '../../src/features/money/ui';
+import { Card, ErrorCard, LinkRow, LoadingCard, Note, SectionLabel, StateCard, kit, page } from '../../src/features/money/ui';
+import { formatINR } from '../../src/features/orders';
+import { analyticsApi, type Analytics } from '../../src/services/vendorApi/analytics';
+import { friendlyError } from '../../src/services/vendorApi/http';
 import { Colors, Spacing } from '../../src/theme/tokens';
+import { FontFamily } from '../../src/theme/typography';
 
 export default function EarningsScreen() {
   const router = useRouter();
+  const [data, setData] = useState<Analytics | null>(null);
+  const [error, setError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      setData(await analyticsApi.get(30));
+    } catch (err) {
+      setError(friendlyError(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
+
   return (
     <View style={s.screen}>
-      <ScreenShell header={{ title: 'Earnings' }} backgroundColor={Colors.surface} contentContainerStyle={s.content}>
+      <ScreenShell
+        header={{ title: 'Earnings' }}
+        backgroundColor={Colors.surface}
+        contentContainerStyle={s.content}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
+      >
         <View style={page.body}>
           <StateCard
             icon="wallet-outline"
-            title="Earnings appear after GlowVai sets up settlements"
-            body="GlowVai sets up settlements for each store. Once yours is set up, what you will receive for your orders, and each transfer to your bank, will show here. No amounts are shown before then, so you never see a guess."
+            title="Settlements will appear here once GlowVai sets up payouts"
+            body="No payout has been made through the app yet, so there is no amount to show as your earnings."
           />
+
+          <SectionLabel>Order value (last 30 days)</SectionLabel>
+          {error && !data ? (
+            <ErrorCard message={error} onRetry={() => void load()} title="Could not load order value" />
+          ) : !data ? (
+            <LoadingCard label="Loading order value" />
+          ) : data.orderValue.orderCount === 0 ? (
+            <StateCard icon="receipt-outline" title="No accepted orders in the last 30 days" body="Order value appears here once you accept orders." />
+          ) : (
+            <Card>
+              <Text style={kit.muted}>{data.orderValue.label}</Text>
+              <Text style={s.big}>{formatINR(data.orderValue.amount)}</Text>
+              <Text style={kit.muted}>
+                {data.orderValue.orderCount} {data.orderValue.orderCount === 1 ? 'order' : 'orders'}: accepted, packed and delivered. Cancelled orders are not counted.
+              </Text>
+              {data.bounds.truncated ? <Text style={kit.muted}>Based on the latest {data.bounds.perQueryLimit} orders.</Text> : null}
+            </Card>
+          )}
 
           <SectionLabel>Your orders</SectionLabel>
           <Card padded={false}>
             <LinkRow
               icon="stats-chart-outline"
               label="Store activity"
-              detail="Orders per day and the value of items you handled"
+              detail="Orders per day, accepted and declined"
               onPress={() => router.push('/(vendor)/analytics')}
               last
             />
@@ -41,7 +92,7 @@ export default function EarningsScreen() {
             <LinkRow icon="document-text-outline" label="Tax documents" detail="Statements from GlowVai" onPress={() => router.push('/(vendor)/tax-documents')} last />
           </Card>
 
-          <Note>Fees and deductions follow your agreement with GlowVai. For a payment question, contact GlowVai support.</Note>
+          <Note>For a payment question, contact GlowVai support.</Note>
         </View>
       </ScreenShell>
     </View>
@@ -51,4 +102,5 @@ export default function EarningsScreen() {
 const s = StyleSheet.create({
   screen: { flex: 1, backgroundColor: Colors.surface },
   content: { paddingBottom: Spacing.lg },
+  big: { fontFamily: FontFamily.bold, fontSize: 28, lineHeight: 36, color: Colors.textPrimary, marginVertical: 2, fontVariant: ['tabular-nums'] },
 });

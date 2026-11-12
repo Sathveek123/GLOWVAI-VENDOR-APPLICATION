@@ -1,6 +1,6 @@
 /**
- * Settlements (PRD screen 22). GlowVai sets up settlements for each store; until then there
- * are no transfers to list. No sample transfers, amounts, UTRs or payout cycles.
+ * Settlements (PRD screen 22). GlowVai has not set up payouts for stores yet, so there are no
+ * transfers to list: no sample transfers, amounts, UTRs or payout cycles.
  * File: mobile/app/(vendor)/payout-detail.tsx
  */
 import React from 'react';
@@ -16,12 +16,12 @@ export default function SettlementsScreen() {
       <View style={page.body}>
         <StateCard
           icon="swap-horizontal-outline"
-          title="Settlements are set up by GlowVai"
-          body="Once GlowVai sets up settlements for your store, each bank transfer will appear here with its date, amount, bank reference (UTR) and status. Nothing has been paid through the app yet."
+          title="Settlements will appear here once GlowVai sets up payouts"
+          body="When payouts are set up for your store, each bank transfer will show here. Nothing has been paid through the app yet."
         >
           <SupportContactActions subject="Payout question" />
         </StateCard>
-        <Note>The app does not hold your bank account number. GlowVai pays to the account on record with it.</Note>
+        <Note>The app does not hold your bank account number. Payouts go to the account on record with GlowVai.</Note>
       </View>
     </ScreenShell>
   );

@@ -1,7 +1,7 @@
 /**
  * Alerts: what happened to this store's orders recently, newest first, built from the real
  * order list (new offers, accepted, packed, out for delivery, delivered, cancelled).
- * GlowVai does not send separate messages to stores yet; the screen says so.
+ * Order-update push is turned on only when the vendor taps the card. Until then the screen says so.
  * File: mobile/app/(vendor)/notifications.tsx
  */
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -19,6 +19,8 @@ import {
   useOrdersDemand,
   useOrdersSync,
 } from '../../src/features/orders';
+import { enableOrderUpdates } from '../../src/features/notifications/pushRegistration';
+import { enableMessage, PUSH_PERMISSION_COPY } from '../../src/features/notifications/pushRules';
 import { Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily, TypeScale } from '../../src/theme/typography';
 
@@ -72,12 +74,22 @@ export default function AlertsScreen() {
   useOrdersDemand();
   const sync = useOrdersSync();
   const [refreshing, setRefreshing] = useState(false);
+  const [enabling, setEnabling] = useState(false);
+  const [pushMessage, setPushMessage] = useState<string | null>(null);
   const alerts = useMemo(() => alertsFrom(sync.orders), [sync.orders]);
 
   const onRefresh = async () => {
     setRefreshing(true);
     await refreshOrdersNow();
     setRefreshing(false);
+  };
+
+  // Runs only when the vendor taps the button. Nothing asks for permission on load.
+  const onEnablePush = async () => {
+    if (enabling) return;
+    setEnabling(true);
+    setPushMessage(enableMessage(await enableOrderUpdates()));
+    setEnabling(false);
   };
 
   return (
@@ -87,6 +99,17 @@ export default function AlertsScreen() {
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
     >
       <View style={page.body}>
+        <Card style={s.pushCard}>
+          <Ionicons name="notifications-outline" size={20} color={Colors.textSecondary} />
+          <View style={{ flex: 1, minWidth: 0, gap: Spacing.sm }}>
+            <Text style={s.title}>Order updates</Text>
+            <Text style={kit.muted}>{PUSH_PERMISSION_COPY}</Text>
+            <Pressable onPress={onEnablePush} disabled={enabling} accessibilityRole="button" style={({ pressed }) => [s.enableBtn, pressed && { opacity: 0.7 }]}>
+              <Text style={s.enableText}>{enabling ? 'Turning on...' : 'Turn on order updates'}</Text>
+            </Pressable>
+            {pushMessage ? <Text style={kit.muted}>{pushMessage}</Text> : null}
+          </View>
+        </Card>
         <SyncNotice />
         {!sync.hasLoaded && sync.state === 'error' ? (
           <StateCard icon="cloud-offline-outline" tone="danger" title="Could not load your orders" body={sync.error || undefined} action={{ label: 'Retry', onPress: () => void sync.retry() }} />
@@ -134,4 +157,7 @@ const s = StyleSheet.create({
   divider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Colors.border },
   icon: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   title: { ...TypeScale.body, fontFamily: FontFamily.medium, color: Colors.textPrimary },
+  pushCard: { flexDirection: 'row', alignItems: 'flex-start', gap: Spacing.md },
+  enableBtn: { alignSelf: 'flex-start', borderWidth: 1, borderColor: Colors.primary, borderRadius: 12, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
+  enableText: { ...TypeScale.body, fontFamily: FontFamily.medium, color: Colors.primary },
 });

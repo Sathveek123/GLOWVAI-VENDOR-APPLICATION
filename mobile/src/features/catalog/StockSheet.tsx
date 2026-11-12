@@ -9,7 +9,7 @@ import { View, Text, Pressable, StyleSheet, Switch, TextInput, Platform } from '
 import { Colors, Spacing as S } from '../../theme/tokens';
 import { FontFamily, TypeScale } from '../../theme/typography';
 import { friendlyError } from '../../services/vendorApi/http';
-import { MAX_STOCK, type InventoryRecord } from '../../services/vendorApi/inventory';
+import { MAX_STOCK, type CatalogVariant, type InventoryRecord } from '../../services/vendorApi/inventory';
 import { Banner, PrimaryButton } from '../orders/ui';
 import { catalogTitle, type CatalogProduct } from './catalogSource';
 import { saveInventory } from './inventory';
@@ -21,11 +21,15 @@ const QUICK = [1, 6, 12];
 export default function StockSheet({
   product,
   record,
+  variant,
   onClose,
   onSaved,
 }: {
   product: CatalogProduct | null;
+  /** The store's line: the product line, or the variant line when `variant` is set. */
   record?: InventoryRecord;
+  /** When set, this sheet edits one variant: stock and availability only. Its price and MRP are GlowVai's. */
+  variant?: CatalogVariant | null;
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
@@ -52,8 +56,8 @@ export default function StockSheet({
   if (trimmed === '') qtyError = 'Enter how many are on the shelf now.';
   else if (!Number.isInteger(parsed)) qtyError = 'Use whole numbers only, 0 or more.';
   else if (parsed > MAX_STOCK) qtyError = `That is more than ${MAX_STOCK.toLocaleString('en-IN')}. Check the number.`;
-  const pErr = priceError(price, product.mrp);
-  const priceValue = price.trim() ? Number(price.trim()) : undefined;
+  const pErr = variant ? '' : priceError(price, product.mrp);
+  const priceValue = variant || !price.trim() ? undefined : Number(price.trim());
 
   const changed =
     !record ||
@@ -61,6 +65,7 @@ export default function StockSheet({
     available !== record.isAvailable ||
     (priceValue ?? 0) !== (record.unitPriceOverride ?? 0);
   const canSave = !qtyError && !pErr && changed && !saving;
+  const variantLabel = variant ? ` · ${variant.label}` : '';
 
   const bump = (n: number) => {
     const base = Number.isInteger(parsed) ? parsed : 0;
@@ -73,7 +78,11 @@ export default function StockSheet({
     setSaving(true);
     setError('');
     try {
-      await saveInventory([{ productId: product.id, stock: parsed, isAvailable: available, unitPriceOverride: priceValue }]);
+      await saveInventory([
+        variant
+          ? { productId: product.id, variantId: variant.id, stock: parsed, isAvailable: available }
+          : { productId: product.id, stock: parsed, isAvailable: available, unitPriceOverride: priceValue },
+      ]);
       onSaved(
         !available
           ? 'Saved. This product is paused for your store.'
@@ -91,7 +100,7 @@ export default function StockSheet({
   return (
     <Sheet
       visible
-      title={record ? 'Update stock' : 'Add to your store'}
+      title={variant ? 'Update variant stock' : record ? 'Update stock' : 'Add to your store'}
       onClose={onClose}
       footer={
         <PrimaryButton
@@ -107,12 +116,20 @@ export default function StockSheet({
         <ProductThumb uri={product.pictures[0]} brand={product.brandName} label={product.productName} size={56} />
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
           {product.brandName ? <Text style={st.brand}>{product.brandName}</Text> : null}
-          <Text style={st.name} numberOfLines={2}>{catalogTitle(product)}</Text>
+          <Text style={st.name} numberOfLines={2}>{catalogTitle(product)}{variantLabel}</Text>
           <Text style={st.meta}>
-            GlowVai price {formatRupees(product.brandPrice)}{product.mrp > product.brandPrice ? ` · MRP ${formatRupees(product.mrp)}` : ''}
+            {variant
+              ? `GlowVai price ${formatRupees(variant.price)}${variant.mrp > variant.price ? ` · MRP ${formatRupees(variant.mrp)}` : ''}`
+              : `GlowVai price ${formatRupees(product.brandPrice)}${product.mrp > product.brandPrice ? ` · MRP ${formatRupees(product.mrp)}` : ''}`}
           </Text>
         </View>
       </View>
+      {variant ? (
+        <Text style={st.hint}>
+          Price and MRP for this option come from GlowVai and cannot be changed here.
+          {variant.stock !== null ? ` GlowVai holds ${variant.stock} for sale.` : ''}
+        </Text>
+      ) : null}
 
       <Text style={st.label} nativeID="qtyLabel">How many are on the shelf now?</Text>
       <TextInput
@@ -162,30 +179,34 @@ export default function StockSheet({
         />
       </View>
 
-      <Text style={[st.label, { marginTop: S.lg }]}>Your price (optional)</Text>
-      <View style={[st.input, st.priceWrap, !!pErr && st.inputError]}>
-        <Text style={st.rupee}>₹</Text>
-        <TextInput
-          value={price}
-          onChangeText={t => {
-            setPrice(t.replace(/[^0-9.]/g, '').slice(0, 9));
-            setError('');
-          }}
-          keyboardType="decimal-pad"
-          inputMode="decimal"
-          placeholder={String(Math.round(product.brandPrice))}
-          placeholderTextColor={Colors.textSubtle}
-          accessibilityLabel="Your price in rupees, optional"
-          style={st.priceInput}
-        />
-      </View>
-      {pErr ? (
-        <Text style={st.error}>{pErr}</Text>
-      ) : (
-        <Text style={st.hint}>
-          Leave empty to use the GlowVai price.{product.mrp > 0 ? ` At most the MRP, ${formatRupees(product.mrp)}.` : ''}
-        </Text>
-      )}
+      {!variant ? (
+        <>
+          <Text style={[st.label, { marginTop: S.lg }]}>Your price (optional)</Text>
+          <View style={[st.input, st.priceWrap, !!pErr && st.inputError]}>
+            <Text style={st.rupee}>₹</Text>
+            <TextInput
+              value={price}
+              onChangeText={t => {
+                setPrice(t.replace(/[^0-9.]/g, '').slice(0, 9));
+                setError('');
+              }}
+              keyboardType="decimal-pad"
+              inputMode="decimal"
+              placeholder={String(Math.round(product.brandPrice))}
+              placeholderTextColor={Colors.textSubtle}
+              accessibilityLabel="Your price in rupees, optional"
+              style={st.priceInput}
+            />
+          </View>
+          {pErr ? (
+            <Text style={st.error}>{pErr}</Text>
+          ) : (
+            <Text style={st.hint}>
+              Leave empty to use the GlowVai price.{product.mrp > 0 ? ` At most the MRP, ${formatRupees(product.mrp)}.` : ''}
+            </Text>
+          )}
+        </>
+      ) : null}
 
       {error ? <View style={{ marginTop: S.md }}><Banner tone="danger" message={error} /></View> : null}
     </Sheet>

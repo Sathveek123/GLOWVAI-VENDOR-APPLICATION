@@ -15,6 +15,25 @@ export interface VendorOrderItem {
   quantity: number;
   unitPrice: number;
   imageUrl: string;
+  /** Set when the item is a variant (size, shade, pack). */
+  variantId?: string | null;
+  variantLabel?: string | null;
+}
+
+export type SubstitutionPreference = 'ALLOW_SUBSTITUTE' | 'NO_SUBSTITUTE' | 'CALL_ME';
+
+/** Read-only on the vendor side: the customer sets it, the store cannot change it. */
+export const SUBSTITUTION_LABEL: Record<SubstitutionPreference, string> = {
+  ALLOW_SUBSTITUTE: 'Allow a similar substitute',
+  NO_SUBSTITUTE: 'Do not substitute',
+  CALL_ME: 'Call me before any change',
+};
+
+export type TimelineStage = 'ACCEPTED' | 'PACKED' | 'HANDED_TO_RIDER';
+
+export interface TimelineEvent {
+  stage: TimelineStage;
+  at: number | null;
 }
 
 /** The only order shape the app receives. */
@@ -35,6 +54,9 @@ export interface VendorOrder {
   customerFirstName?: string;
   cancelled: boolean;
   cancellationReason?: string;
+  substitutionPreference?: SubstitutionPreference | null;
+  /** Only the stages this order has reached (my orders). */
+  timeline?: TimelineEvent[];
 }
 
 export interface OrdersPage {

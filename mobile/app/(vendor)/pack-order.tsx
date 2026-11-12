@@ -29,6 +29,7 @@ import {
   withTimeout,
 } from '../../src/features/orders';
 import { Banner, Card, PrimaryButton, SecondaryButton, StateView, StatusPill, ui } from '../../src/features/orders/ui';
+import { OrderTimeline, SubstitutionCard } from '../../src/features/orders/OrderExtras';
 
 const ticksKey = (orderId: string) => `pack_ticks_${orderId}`;
 const lineKey = (it: OrderItem, idx: number) => `${idx}:${it.productId}`;
@@ -243,6 +244,8 @@ export default function PackOrderScreen() {
       <View style={s.stack}>
         <Card><StatusStrip order={order} /></Card>
 
+        <SubstitutionCard preference={order.substitutionPreference} />
+
         <Card style={{ gap: Spacing.sm }}>
           <View style={s.refRow}>
             <Text style={ui.code} selectable numberOfLines={1}>{order.reference}</Text>
@@ -287,6 +290,7 @@ export default function PackOrderScreen() {
                   <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
                     {it.brand ? <Text style={ui.muted} numberOfLines={1}>{it.brand}</Text> : null}
                     <Text style={[s.itemName, on && s.itemNameDone]} numberOfLines={2}>{it.productName}</Text>
+                    {it.variantLabel ? <Text style={ui.muted}>{it.variantLabel}</Text> : null}
                   </View>
                   <View style={s.qty}>
                     <Text style={s.qtyText}>x{it.quantity}</Text>

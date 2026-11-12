@@ -12,7 +12,7 @@ import ScreenShell from '../../src/components/ScreenShell';
 import { Card, LoadingCard, Note, Segmented, SectionLabel, StateCard, ErrorCard, kit, page } from '../../src/features/money/ui';
 import { formatINR } from '../../src/features/orders';
 import { analyticsApi, type Analytics, type AnalyticsDays } from '../../src/services/vendorApi/analytics';
-import { friendlyError } from '../../src/services/vendorApi/http';
+import { friendlyError, isNotAvailableError } from '../../src/services/vendorApi/http';
 import { Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily, TypeScale } from '../../src/theme/typography';
 
@@ -43,13 +43,16 @@ export default function StoreActivityScreen() {
   const [days, setDays] = useState<AnalyticsDays>(7);
   const [data, setData] = useState<Analytics | null>(null);
   const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async (d: AnalyticsDays) => {
     setError('');
+    setUnavailable(false);
     try {
       setData(await analyticsApi.get(d));
     } catch (err) {
+      setUnavailable(isNotAvailableError(err));
       setError(friendlyError(err));
     }
   }, []);
@@ -84,7 +87,9 @@ export default function StoreActivityScreen() {
           onChange={k => setDays(k === '30' ? 30 : 7)}
         />
 
-        {error && !data ? (
+        {error && !data && unavailable ? (
+          <StateCard icon="time-outline" title={error} body="Store activity is not live yet. No numbers are shown." />
+        ) : error && !data ? (
           <ErrorCard message={error} onRetry={() => void load(days)} title="Could not load store activity" />
         ) : !data ? (
           <LoadingCard label="Loading store activity" />

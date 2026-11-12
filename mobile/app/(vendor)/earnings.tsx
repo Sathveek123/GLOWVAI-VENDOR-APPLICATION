@@ -12,7 +12,7 @@ import ScreenShell from '../../src/components/ScreenShell';
 import { Card, ErrorCard, LinkRow, LoadingCard, Note, SectionLabel, StateCard, kit, page } from '../../src/features/money/ui';
 import { formatINR } from '../../src/features/orders';
 import { analyticsApi, type Analytics } from '../../src/services/vendorApi/analytics';
-import { friendlyError } from '../../src/services/vendorApi/http';
+import { friendlyError, isNotAvailableError } from '../../src/services/vendorApi/http';
 import { Colors, Spacing } from '../../src/theme/tokens';
 import { FontFamily } from '../../src/theme/typography';
 
@@ -20,13 +20,16 @@ export default function EarningsScreen() {
   const router = useRouter();
   const [data, setData] = useState<Analytics | null>(null);
   const [error, setError] = useState('');
+  const [unavailable, setUnavailable] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     setError('');
+    setUnavailable(false);
     try {
       setData(await analyticsApi.get(30));
     } catch (err) {
+      setUnavailable(isNotAvailableError(err));
       setError(friendlyError(err));
     }
   }, []);
@@ -57,7 +60,9 @@ export default function EarningsScreen() {
           />
 
           <SectionLabel>Order value (last 30 days)</SectionLabel>
-          {error && !data ? (
+          {error && !data && unavailable ? (
+            <StateCard icon="time-outline" title={error} body="Order value is not live yet. No amount is shown." />
+          ) : error && !data ? (
             <ErrorCard message={error} onRetry={() => void load()} title="Could not load order value" />
           ) : !data ? (
             <LoadingCard label="Loading order value" />

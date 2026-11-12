@@ -12,7 +12,7 @@ import ScreenShell from '../../src/components/ScreenShell';
 import { Card, LoadingCard, Note, SectionLabel, StateCard, ErrorCard, page } from '../../src/features/money/ui';
 import { Banner, PrimaryButton } from '../../src/features/orders/ui';
 import { Pill, type PillTone } from '../../src/features/catalog/ui';
-import { friendlyError, VendorApiError } from '../../src/services/vendorApi/http';
+import { friendlyError, isNotAvailableError, VendorApiError } from '../../src/services/vendorApi/http';
 import {
   DAILY_REQUEST_LIMIT,
   MAX_PICTURES,
@@ -45,6 +45,7 @@ function startOfIstDay(now = Date.now()): number {
 export default function ProductRequestScreen() {
   const [requests, setRequests] = useState<ProductRequest[] | null>(null);
   const [loadError, setLoadError] = useState('');
+  const [loadUnavailable, setLoadUnavailable] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const [name, setName] = useState('');
@@ -61,9 +62,11 @@ export default function ProductRequestScreen() {
 
   const load = useCallback(async () => {
     setLoadError('');
+    setLoadUnavailable(false);
     try {
       setRequests(await productRequestsApi.list());
     } catch (err) {
+      setLoadUnavailable(isNotAvailableError(err));
       setLoadError(friendlyError(err));
     }
   }, []);
@@ -251,7 +254,9 @@ export default function ProductRequestScreen() {
         </Card>
 
         <SectionLabel>Your requests</SectionLabel>
-        {loadError && !requests ? (
+        {loadError && !requests && loadUnavailable ? (
+          <StateCard icon="time-outline" title={loadError} body="Product requests are not live yet. Nothing is shown until they are." />
+        ) : loadError && !requests ? (
           <ErrorCard message={loadError} onRetry={() => void load()} title="Could not load your requests" />
         ) : !requests ? (
           <LoadingCard label="Loading your requests" />

@@ -9,7 +9,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#FFFFFF"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.glowvai.vendor"
@@ -27,7 +29,13 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "color": "#0057FB"
+        }
+      ]
     ],
     "scheme": "glowvaivendor",
     "experiments": {

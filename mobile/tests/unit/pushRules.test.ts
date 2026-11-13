@@ -57,3 +57,9 @@ test('the Android channel is the order-updates channel at high importance', () =
   assert.equal(ORDER_UPDATES_CHANNEL.id, 'order-updates');
   assert.equal(ORDER_UPDATES_CHANNEL.importance, 4);
 });
+
+test('the channel id matches the shop server EXPO_CHANNEL_ID (lib/shop/notifications/expoPush.ts)', () => {
+  // Copied from the shop's constant. The shop sends vendor offer pushes on this channel id; if it changes there, change it here too.
+  const SHOP_EXPO_CHANNEL_ID = 'order-updates';
+  assert.equal(ORDER_UPDATES_CHANNEL.id, SHOP_EXPO_CHANNEL_ID);
+});
